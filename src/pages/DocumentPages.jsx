@@ -1,27 +1,59 @@
-import React from "react";
+import React,{useState} from "react";
 import {quoteStatus} from "../procurement.js";
 
-const button=(background,color="white")=>({background,color,border:"none",borderRadius:6,padding:"7px 11px",fontWeight:700,cursor:"pointer"});
-const card={background:"white",borderRadius:9,marginBottom:8,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",overflow:"hidden"};
+const navy="#073B83",ink="#17243A",muted="#6D7A8B",line="#E4EAF1",surface="#F5F8FC";
+const button=(background,color="white")=>({background,color,border:"1px solid transparent",borderRadius:9,padding:"10px 14px",fontWeight:800,cursor:"pointer",fontSize:12,boxShadow:"0 1px 2px rgba(16,35,61,.08)"});
+const card={background:"white",borderRadius:12,marginBottom:8,border:`1px solid ${line}`,boxShadow:"0 3px 12px rgba(16,35,61,.05)",overflow:"hidden"};
 
-function VendorFilters({vendors,value,onChange,vendorColors}){
-  return <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:18}}>
-    <button onClick={()=>onChange(null)} style={{...button(value?"rgba(255,255,255,0.15)":"white",value?"white":"#003584"),border:"1px solid rgba(255,255,255,0.35)"}}>All vendors</button>
-    {vendors.map(v=>{const color=vendorColors.get(v.id)||{accent:"#003584",bg:"#EEF4FF"};const selected=value===v.id;return <button key={v.id} onClick={()=>onChange(selected?null:v.id)} style={{...button(selected?color.accent:color.bg,selected?"white":color.accent),border:`1px solid ${selected?color.accent:"transparent"}`}}>{v.name}</button>;})}
-  </div>;
+function VendorFilter({vendors,value,onChange,label="View vendor"}){
+  return <label style={{display:"flex",alignItems:"center",gap:10,fontSize:11,fontWeight:800,color:muted}}>{label}
+    <select value={value||""} onChange={event=>onChange(event.target.value||null)} style={{minWidth:220,background:"white",color:ink,border:`1px solid ${line}`,borderRadius:9,padding:"9px 34px 9px 11px",fontWeight:700}}>
+      <option value="">All vendors</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+    </select>
+  </label>;
 }
 
 function PageHeader({eyebrow,title,description,actionLabel,onAction,secondaryLabel,onSecondary}){
-  return <div style={{background:"white",borderRadius:12,padding:18,marginBottom:16,boxShadow:"0 2px 8px rgba(0,0,0,0.12)"}}>
+  return <div style={{background:"linear-gradient(135deg,#FFFFFF 0%,#F3F8FF 100%)",border:`1px solid ${line}`,borderRadius:16,padding:"22px 24px",marginBottom:14,boxShadow:"0 8px 28px rgba(16,35,61,.08)"}}>
     <div style={{fontSize:10,fontWeight:800,color:"#4A90D9",letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:4}}>{eyebrow}</div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-      <div><h2 style={{margin:"0 0 4px",fontSize:21,color:"#003584"}}>{title}</h2><div style={{fontSize:12,color:"#777"}}>{description}</div></div>
+      <div><h2 style={{margin:"0 0 5px",fontSize:24,color:navy,letterSpacing:"-.02em"}}>{title}</h2><div style={{fontSize:12,color:muted,maxWidth:720,lineHeight:1.5}}>{description}</div></div>
       <div style={{display:"flex",gap:8}}>
         {secondaryLabel&&<button onClick={onSecondary} style={button("#E8F5E9","#2E7D32")}>{secondaryLabel}</button>}
         {actionLabel&&<button onClick={onAction} style={button("#003584")}>{actionLabel}</button>}
       </div>
     </div>
   </div>;
+}
+
+function MoreMenu({children,label="Vendor actions"}){
+  const [open,setOpen]=useState(false);
+  return <div style={{position:"relative"}}><button aria-label={label} title={label} onClick={()=>setOpen(!open)} style={{...button("white",navy),border:`1px solid ${line}`,padding:"7px 11px",fontSize:17,lineHeight:1}}>•••</button>
+    {open&&<div onMouseLeave={()=>setOpen(false)} style={{position:"absolute",right:0,top:36,zIndex:5,minWidth:220,background:"white",border:`1px solid ${line}`,borderRadius:10,boxShadow:"0 12px 30px rgba(16,35,61,.18)",padding:6}}>{children}</div>}
+  </div>;
+}
+
+function MenuButton({children,onClick,danger=false}){return <button onClick={onClick} style={{width:"100%",textAlign:"left",background:"transparent",color:danger?"#B53722":ink,border:0,borderRadius:7,padding:"9px 10px",fontWeight:700,cursor:"pointer"}}>{children}</button>;}
+
+function VendorSection({name,count,accent,children,actions,defaultOpen=false}){
+  const [open,setOpen]=useState(defaultOpen);
+  return <section style={{...card,marginBottom:12}}>
+    <div style={{height:4,background:accent||navy}}/>
+    <div onClick={()=>setOpen(!open)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,padding:"15px 17px",cursor:"pointer",userSelect:"none"}}>
+      <div style={{display:"flex",alignItems:"center",gap:12}}><span style={{width:9,height:9,borderRadius:99,background:accent||navy}}/><div><h3 style={{margin:0,fontSize:15,color:ink}}>{name}</h3><div style={{fontSize:11,color:muted,marginTop:2}}>{count}</div></div></div>
+      <div onClick={event=>event.stopPropagation()} style={{display:"flex",alignItems:"center",gap:10}}>{actions}<button onClick={()=>setOpen(!open)} aria-label={open?"Collapse vendor":"Open vendor"} style={{border:0,background:"transparent",color:muted,cursor:"pointer",fontSize:15}}>{open?"▲":"▼"}</button></div>
+    </div>
+    {open&&<div style={{background:surface,borderTop:`1px solid ${line}`,padding:12}}>{children}</div>}
+  </section>;
+}
+
+function DocumentRow({title,meta,amount,warning,open,onToggle,children,controls}){
+  return <article style={{...card,boxShadow:"none",marginBottom:8}}>
+    <div onDoubleClick={onToggle} title="Double-click to open details" style={{padding:"13px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:14,cursor:"pointer",userSelect:"none"}}>
+      <div style={{minWidth:0}}><div style={{fontWeight:800,fontSize:13,color:ink,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>▤ {title}</div><div style={{fontSize:11,color:muted,marginTop:3}}>{meta}</div>{warning}</div>
+      <div style={{display:"flex",alignItems:"center",gap:11,flexShrink:0}}>{amount&&<b style={{fontSize:14,color:ink}}>{amount}</b>}{controls}<span style={{color:"#9AA6B5"}}>{open?"▲":"▼"}</span></div>
+    </div>{open&&<div style={{borderTop:`1px solid ${line}`,padding:14,background:"#FBFCFE"}}>{children}</div>}
+  </article>;
 }
 
 export function InvoicesPage({vendors,invoices,vendorFilter,setVendorFilter,vendorColors,formatDate,formatMoney,
@@ -39,23 +71,16 @@ export function InvoicesPage({vendors,invoices,vendorFilter,setVendorFilter,vend
   const visible=vendorFilter?vendorGroups.filter(group=>group.vendorId===vendorFilter):vendorGroups;
   return <div>
     <PageHeader eyebrow="Purchasing records" title="Invoice History" description="Import invoices here. Files stay closed and organized by vendor and date until you double-click one." actionLabel="🧾 Import Invoice" onAction={()=>onImport(vendorFilter)} secondaryLabel="Export Variance Report" onSecondary={onExport}/>
-    <VendorFilters vendors={vendors} value={vendorFilter} onChange={setVendorFilter} vendorColors={vendorColors}/>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"0 0 14px",padding:"10px 12px",background:"rgba(255,255,255,.10)",borderRadius:11}}><VendorFilter vendors={vendors} value={vendorFilter} onChange={setVendorFilter}/><span style={{fontSize:11,color:"rgba(255,255,255,.78)"}}>{visible.reduce((sum,group)=>sum+group.rows.length,0)} invoice file{visible.reduce((sum,group)=>sum+group.rows.length,0)===1?"":"s"}</span></div>
     {attentionCount>0&&<div style={{background:"#FFF3E0",color:"#8A5A00",borderRadius:8,padding:"9px 12px",fontSize:12,marginBottom:14}}>{attentionCount} invoice line{attentionCount===1?"":"s"} need review. Open the applicable invoice for details.</div>}
     {!visible.length?<div style={{...card,padding:34,textAlign:"center",color:"#888"}}>No invoices recorded yet. Use <b>Import Invoice</b> above.</div>:visible.map(group=>{
       const color=vendorColors.get(group.vendorId)||{accent:"#003584"};
-      return <section key={group.vendorId} style={{marginBottom:18}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7}}><h3 style={{margin:0,fontSize:14,color:color.accent}}>{group.vendorName}</h3><button onClick={()=>onImport(group.vendorId)} style={button("white",color.accent)}>+ Import invoice</button></div>
-        {group.rows.map(invoice=>{const open=expandedId===invoice.id;return <article key={invoice.id} style={card}>
-          <div onDoubleClick={()=>setExpandedId(open?null:invoice.id)} title="Double-click to open invoice details" style={{padding:14,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,cursor:"pointer",userSelect:"none"}}>
-            <div><div style={{fontWeight:800,fontSize:13}}>📄 {invoice.file_name||`Invoice${invoice.invoice_number?` #${invoice.invoice_number}`:""}`}</div><div style={{fontSize:11,color:"#888",marginTop:2}}>{formatDate(invoice.invoice_date)||formatDate(invoice.created_at)}{invoice.invoice_number?` · Invoice #${invoice.invoice_number}`:""} · Double-click to open</div>{invoice._flagged.length>0&&<div style={{fontSize:11,fontWeight:700,color:invoice._totalVariance>0?"#E65100":"#0A8A4B",marginTop:3}}>⚠ {formatMoney(Math.abs(invoice._totalVariance))} {invoice._totalVariance>0?"over":"under"} quoted</div>}</div>
-            <div style={{display:"flex",alignItems:"center",gap:9}}><b>{formatMoney(invoice.total_amount)}</b><span style={{color:"#BBB"}}>{open?"▲":"▼"}</span><button onClick={event=>{event.stopPropagation();onEdit(invoice);}} style={{background:"none",border:"none",cursor:"pointer"}}>✎</button><button onClick={event=>{event.stopPropagation();onDelete(invoice);}} style={{background:"none",border:"none",color:"#E65100",fontSize:16,cursor:"pointer"}}>×</button></div>
-          </div>
-          {open&&<div style={{borderTop:"1px solid #EEE",padding:14,background:"#FAFAFA"}}>
+      return <VendorSection key={group.vendorId} name={group.vendorName} count={`${group.rows.length} invoice${group.rows.length===1?"":"s"}`} accent={color.accent} defaultOpen={Boolean(vendorFilter)} actions={<MoreMenu><MenuButton onClick={()=>onImport(group.vendorId)}>Import invoice for {group.vendorName}</MenuButton></MoreMenu>}>
+        {group.rows.map(invoice=>{const open=expandedId===invoice.id;return <DocumentRow key={invoice.id} title={invoice.file_name||`Invoice${invoice.invoice_number?` #${invoice.invoice_number}`:""}`} meta={`${formatDate(invoice.invoice_date)||formatDate(invoice.created_at)}${invoice.invoice_number?` · Invoice #${invoice.invoice_number}`:""} · Double-click to open`} amount={formatMoney(invoice.total_amount)} open={open} onToggle={()=>setExpandedId(open?null:invoice.id)} warning={invoice._flagged.length>0&&<div style={{fontSize:11,fontWeight:700,color:invoice._totalVariance>0?"#C64A1B":"#0A7C48",marginTop:3}}>⚠ {formatMoney(Math.abs(invoice._totalVariance))} {invoice._totalVariance>0?"over":"under"} quoted</div>} controls={<><button onClick={event=>{event.stopPropagation();onEdit(invoice);}} title="Edit invoice" style={{background:"none",border:"none",cursor:"pointer",color:muted}}>✎</button><button onClick={event=>{event.stopPropagation();onDelete(invoice);}} title="Delete invoice" style={{background:"none",border:"none",color:"#C64A1B",fontSize:16,cursor:"pointer"}}>×</button></>}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}><b style={{fontSize:11,color:"#777"}}>INVOICE DETAILS</b>{invoice.file_path&&<button onClick={()=>onViewOriginal(invoice.file_path)} style={button("#003584")}>Open original file</button>}</div>
             {invoice._lines.map(line=><div key={line.id} style={{display:"flex",justifyContent:"space-between",gap:12,padding:"6px 0",borderBottom:"1px solid #EEE",fontSize:12}}><div>{line.description}{!line.vendor_item_id&&<span style={{marginLeft:6,color:"#C62828"}}>⚠ no match</span>}{line.match_method==="fuzzy"&&<span style={{marginLeft:6,color:"#B26A00"}}>🔍 {line.match_confidence}% match</span>}</div><div style={{textAlign:"right"}}><b>{formatMoney(line.unit_price)}</b>{line.price_variance!=null&&<div style={{fontSize:10,color:Math.abs(line.price_variance)<0.009?"#0A8A4B":"#E65100"}}>{Math.abs(line.price_variance)<0.009?"matches quote ✓":`${line.price_variance>0?"+":""}${formatMoney(line.price_variance)} vs quote`}</div>}</div></div>)}
-          </div>}
-        </article>;})}
-      </section>;
+        </DocumentRow>;})}
+      </VendorSection>;
     })}
   </div>;
 }
@@ -81,15 +106,13 @@ export function PriceSheetsPage({vendors,vendorItems,priceHistory,importDocument
   const visible=vendorFilter?vendorGroups.filter(group=>group.vendorId===vendorFilter):vendorGroups;
   return <div>
     <PageHeader eyebrow="Vendor source files" title="Price Sheet History" description="Import price sheets here. History stays as closed files; products live once in Item Catalog and are not duplicated on this page." actionLabel={role!=="employee"?"📋 Import Price Sheet":null} onAction={()=>onImport(vendorFilter)}/>
-    <VendorFilters vendors={vendors} value={vendorFilter} onChange={setVendorFilter} vendorColors={vendorColors}/>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"0 0 14px",padding:"10px 12px",background:"rgba(255,255,255,.10)",borderRadius:11}}><VendorFilter vendors={vendors} value={vendorFilter} onChange={setVendorFilter}/><span style={{fontSize:11,color:"rgba(255,255,255,.78)"}}>{visible.reduce((sum,group)=>sum+group.documents.length,0)} source file{visible.reduce((sum,group)=>sum+group.documents.length,0)===1?"":"s"}</span></div>
     {(unavailableCount+expiredCount)>0&&<div style={{background:"#FFF3E0",color:"#8A5A00",borderRadius:8,padding:"9px 12px",fontSize:12,marginBottom:14}}>{unavailableCount+expiredCount} price{unavailableCount+expiredCount===1?"":"s"} need attention. Items remain in Item Catalog; only unavailable or expired prices are blocked from ordering.</div>}
-    {!visible.length?<div style={{...card,padding:34,textAlign:"center",color:"#888"}}>No price sheets imported yet. Use <b>Import Price Sheet</b> above.</div>:visible.map(group=>{const color=vendorColors.get(group.vendorId)||{accent:"#003584"};return <section key={group.vendorId} style={{marginBottom:18}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:7}}><h3 style={{margin:0,fontSize:14,color:color.accent}}>{group.vendorName}</h3>{role!=="employee"&&<div style={{display:"flex",gap:6}}><button onClick={()=>onExpireVendor(group.vendorId)} style={button("#FFF0ED","#C53D16")}>Remove current prices from Order Guide</button><button onClick={()=>onImport(group.vendorId)} style={button("white",color.accent)}>+ Import price sheet</button></div>}</div>
-      {group.documents.map(doc=>{const key=String(doc.id),open=expandedId===key;return <article key={key} style={card}>
-        <div onDoubleClick={()=>setExpandedId(open?null:key)} title="Double-click to open price-sheet details" style={{padding:14,display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",userSelect:"none"}}><div><div style={{fontWeight:800,fontSize:13}}>📄 {doc.fileName}</div><div style={{fontSize:11,color:"#888",marginTop:2}}>{formatDate(doc.date)} · {doc.entries.length} price row{doc.entries.length===1?"":"s"} · {doc.status} · Double-click to open</div></div><span style={{color:"#BBB"}}>{open?"▲":"▼"}</span></div>
-        {open&&<div style={{borderTop:"1px solid #EEE",padding:14,background:"#FAFAFA"}}>{doc.filePath&&<button onClick={()=>onViewOriginal(doc.filePath)} style={{...button("#003584"),marginBottom:8}}>Open original file</button>}{doc.entries.map(entry=>{const item=itemMap.get(entry.vendor_item_id);const current=item&&quoteStatus(item,orgSettings||{})==="current"&&Number(item.price)===Number(entry.price);return <div key={entry.id} style={{display:"flex",justifyContent:"space-between",gap:12,fontSize:12,padding:"6px 0",borderBottom:"1px solid #EEE"}}><div>{entry.description}</div><div style={{textAlign:"right"}}><b>{formatMoney(entry.price)}</b>{entry.quote_valid_until&&<div style={{fontSize:10,color:"#999"}}>Valid through {formatDate(entry.quote_valid_until)}</div>}{entry.source_document_id&&<button onClick={()=>onViewSource(entry.source_document_id)} style={{display:"block",marginLeft:"auto",background:"none",border:"none",fontSize:10,color:"#003584",cursor:"pointer"}}>Original source ↗</button>}{current&&role!=="employee"&&<button onClick={()=>onExpireOne(item)} style={{display:"block",marginLeft:"auto",background:"none",border:"none",fontSize:10,fontWeight:700,color:"#E65100",cursor:"pointer"}}>Remove price from Order Guide</button>}</div></div>;})}</div>}
-      </article>;})}
-    </section>;})}
+    {!visible.length?<div style={{...card,padding:34,textAlign:"center",color:"#888"}}>No price sheets imported yet. Use <b>Import Price Sheet</b> above.</div>:visible.map(group=>{const color=vendorColors.get(group.vendorId)||{accent:"#003584"};return <VendorSection key={group.vendorId} name={group.vendorName} count={`${group.documents.length} source file${group.documents.length===1?"":"s"}`} accent={color.accent} defaultOpen={Boolean(vendorFilter)} actions={role!=="employee"&&<MoreMenu><MenuButton onClick={()=>onImport(group.vendorId)}>Import price sheet</MenuButton><MenuButton danger onClick={()=>onExpireVendor(group.vendorId)}>Remove current prices from Order Guide</MenuButton></MoreMenu>}>
+      {group.documents.map(doc=>{const key=String(doc.id),open=expandedId===key;return <DocumentRow key={key} title={doc.fileName} meta={`${formatDate(doc.date)} · ${doc.entries.length} price row${doc.entries.length===1?"":"s"} · ${doc.status} · Double-click to open`} open={open} onToggle={()=>setExpandedId(open?null:key)}>
+        {doc.filePath&&<button onClick={()=>onViewOriginal(doc.filePath)} style={{...button("#003584"),marginBottom:8}}>Open original file</button>}{doc.entries.map(entry=>{const item=itemMap.get(entry.vendor_item_id);const current=item&&quoteStatus(item,orgSettings||{})==="current"&&Number(item.price)===Number(entry.price);return <div key={entry.id} style={{display:"flex",justifyContent:"space-between",gap:12,fontSize:12,padding:"7px 0",borderBottom:`1px solid ${line}`}}><div>{entry.description}</div><div style={{textAlign:"right"}}><b>{formatMoney(entry.price)}</b>{entry.quote_valid_until&&<div style={{fontSize:10,color:"#999"}}>Valid through {formatDate(entry.quote_valid_until)}</div>}{entry.source_document_id&&<button onClick={()=>onViewSource(entry.source_document_id)} style={{display:"block",marginLeft:"auto",background:"none",border:"none",fontSize:10,color:"#003584",cursor:"pointer"}}>Original source ↗</button>}{current&&role!=="employee"&&<button onClick={()=>onExpireOne(item)} style={{display:"block",marginLeft:"auto",background:"none",border:"none",fontSize:10,fontWeight:700,color:"#E65100",cursor:"pointer"}}>Remove price from Order Guide</button>}</div></div>;})}
+      </DocumentRow>;})}
+    </VendorSection>;})}
     {hasMore&&<button onClick={onLoadMore} disabled={loadingMore} style={button("white","#003584")}>{loadingMore?"Loading…":"Load earlier price-sheet history"}</button>}
   </div>;
 }
