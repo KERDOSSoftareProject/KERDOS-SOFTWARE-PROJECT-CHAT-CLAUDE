@@ -4009,7 +4009,7 @@ export default function App() {
                               }}
                               aria-expanded={menuOpen}
                               title="Power ranked vendor prices"
-                              style={{width:"100%",display:"grid",gridTemplateColumns:"minmax(72px,1fr) auto minmax(82px,auto) 14px",gap:8,alignItems:"center",background:"white",border:`1px solid ${activeBlocked?"#FFCC80":isBestPrice?"#81C784":vc.light}`,borderRadius:8,padding:"8px 10px",cursor:unitOptions.length?"pointer":"default",textAlign:"left",boxShadow:isBestPrice?"0 1px 3px rgba(46,125,50,.12)":"none"}}>
+                              style={{width:"100%",display:"grid",gridTemplateColumns:"minmax(72px,1fr) auto minmax(72px,auto) 14px",gap:8,alignItems:"center",background:"white",border:"1px solid #CBD5E1",borderRadius:8,padding:"8px 10px",cursor:"pointer",textAlign:"left"}}>
                               {activeBlocked?(
                                 <>
                                   <span style={{fontWeight:700,fontSize:11,color:"#E65100",gridColumn:"1 / 4",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>⚠ {activeBlockReason}{activeOption?` · last ${formatMoney(activeOption.casePrice)}`:""}</span>
@@ -4020,7 +4020,7 @@ export default function App() {
                                   <span style={{fontSize:11,fontWeight:800,color:vc.accent,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{activeVendorName}</span>
                                   <span style={{fontWeight:900,fontSize:13,color:isBestPrice?"#2E7D32":vc.accent,whiteSpace:"nowrap"}}>{formatMoney(activePrice)}{customPriceIsWinner&&<span title="Custom price" style={{marginLeft:2,fontSize:9}}>✎</span>}</span>
                                   <span style={{fontSize:10,fontWeight:700,color:isBestPrice?"#2E7D32":"#667085",whiteSpace:"nowrap",textAlign:"right"}}>{compactDifferenceLabel}</span>
-                                  <span style={{fontSize:10,color:vc.accent,textAlign:"right"}}>{unitOptions.length>1?(menuOpen?"▲":"▼"):""}</span>
+                                  <span style={{fontSize:10,color:"#64748B",textAlign:"right"}}>{menuOpen?"▲":"▼"}</span>
                                 </>
                               )}
                             </button>
@@ -4051,8 +4051,7 @@ export default function App() {
 
                         if(menuOpen){
                           cells.push(
-                            <div key={item.catalogItemId+"_menu"} style={{gridColumn:"1 / -1",background:"#FAFAFA",borderTop:"1px solid #F0F0F0",borderRadius:6,padding:"8px 10px",marginBottom:4}}>
-                              <div style={{fontSize:10,color:"#BBB",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>Power ranked — tap to select</div>
+                            <div key={item.catalogItemId+"_menu"} style={{gridColumn:"4",background:"white",border:"1px solid #CBD5E1",borderRadius:8,padding:4,margin:"0 6px 6px",boxShadow:"0 8px 20px rgba(15,23,42,.12)"}}>
                               {unitOptions.map((opt,rank)=>{
                                 const isSelected=displayOption?.vendorItemId===opt.vendorItemId;
                                 const blocked=!orderable(opt);
@@ -4065,32 +4064,22 @@ export default function App() {
                                     }}
                                     disabled={blocked}
                                     title={blocked?blockReason(opt):undefined}
-                                    style={{width:"100%",display:"grid",gridTemplateColumns:"24px minmax(90px,1fr) auto minmax(72px,auto)",gap:8,alignItems:"center",
-                                      background:blocked?"#FAFAFA":isSelected?"#E8F5E9":"white",border:`1px solid ${blocked?"#F0F0F0":isSelected?"#A5D6A7":"#EEE"}`,
-                                      borderRadius:6,padding:"7px 10px",marginBottom:4,cursor:blocked?"not-allowed":"pointer",textAlign:"left",opacity:blocked?0.6:1}}>
-                                    <span style={{fontSize:10,color:"#999",textAlign:"center"}}>{rank+1}</span>
-                                    <span style={{fontSize:12,fontWeight:isSelected?700:500,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{isSelected&&"✓ "}{opt.vendorName}</span>
+                                    style={{width:"100%",display:"grid",gridTemplateColumns:"minmax(90px,1fr) auto minmax(72px,auto) 18px",gap:8,alignItems:"center",
+                                      background:blocked?"#F8FAFC":isSelected?"#E8F1FF":"white",border:"none",borderBottom:rank<unitOptions.length-1?"1px solid #E2E8F0":"none",
+                                      borderRadius:4,padding:"9px 10px",cursor:blocked?"not-allowed":"pointer",textAlign:"left",opacity:blocked?0.58:1}}>
+                                    <span style={{fontSize:12,fontWeight:isSelected?700:500,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{opt.vendorName}</span>
                                     {blocked?(
-                                      <span style={{fontSize:11,fontWeight:700,color:"#E65100",gridColumn:"3 / 5",textAlign:"right"}}>{opt.expired?"⚠":"🔒"} {blockReason(opt)}</span>
+                                      <span style={{fontSize:11,fontWeight:600,color:"#94A3B8",gridColumn:"2 / 4",textAlign:"right"}}>Unavailable</span>
                                     ):(
                                       <>
                                         <span style={{fontSize:12,fontWeight:700,textAlign:"right",whiteSpace:"nowrap"}}>{formatMoney(opt.unitPrice)}</span>
-                                        <span style={{fontSize:10,fontWeight:700,color:rank===0?"#2E7D32":"#667085",textAlign:"right",whiteSpace:"nowrap"}}>{rank===0?"Best":`+${formatMoney(opt.unitPrice-cheapestUnitPrice)}`}</span>
+                                        <span style={{fontSize:10,fontWeight:600,color:"#64748B",textAlign:"right",whiteSpace:"nowrap"}}>{rank===0?"—":`+${formatMoney(opt.unitPrice-cheapestUnitPrice)}`}</span>
                                       </>
                                     )}
+                                    <span style={{fontSize:12,color:"#2563EB",textAlign:"center"}}>{isSelected?"✓":""}</span>
                                   </button>
                                 );
                               })}
-                              {(vendorOverride[activeKey]||isCustomPrice)&&(
-                                <button onClick={()=>{
-                                    setVendorOverride(prev=>{const n={...prev};delete n[activeKey];return n;});
-                                    setPriceOverride(prev=>{const n={...prev};delete n[activeKey];return n;});
-                                    setOpenPriceMenu(null);
-                                  }}
-                                  style={{background:"none",border:"none",color:"#888",fontSize:11,cursor:"pointer",padding:"6px 0 0",textDecoration:"underline"}}>
-                                  Reset to automatic
-                                </button>
-                              )}
                             </div>
                           );
                         }
