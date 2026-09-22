@@ -29,7 +29,9 @@ create table if not exists import_documents (
 );
 
 do $$ begin
-  if not exists(select 1 from pg_constraint where conname='price_history_source_document_fk') then
+  if not exists(select 1 from pg_constraint
+                where conname='price_history_source_document_fk'
+                  and conrelid='public.price_history'::regclass) then
     alter table price_history add constraint price_history_source_document_fk
       foreign key (source_document_id) references import_documents(id) on delete set null;
   end if;

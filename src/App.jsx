@@ -765,7 +765,7 @@ function TeamPanel({orgId,orgName,orgIndustry,orgSettings,categories,myRole,curr
   const [savingLocale,setSavingLocale]=useState(false);
   const [editingRefresh,setEditingRefresh]=useState(false);
   const [refreshInput,setRefreshInput]=useState(orgSettings?.price_refresh_days!=null?String(orgSettings.price_refresh_days):"");
-  const [refreshMode,setRefreshMode]=useState(orgSettings?.price_refresh_mode||(orgSettings?.price_refresh_days?"automatic":"manual"));
+  const [refreshMode,setRefreshMode]=useState(orgSettings?.price_refresh_mode==="automatic"?"automatic":"manual");
   const [savingRefresh,setSavingRefresh]=useState(false);
   const [templatedIndustries,setTemplatedIndustries]=useState([]);
   const [members,setMembers]=useState([]);
@@ -1013,9 +1013,9 @@ function TeamPanel({orgId,orgName,orgIndustry,orgSettings,categories,myRole,curr
           {!editingRefresh?(
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <div style={{fontWeight:700,fontSize:15,color:orgSettings?.price_refresh_days?"#111":"#BBB"}}>
-                {(orgSettings?.price_refresh_mode||(orgSettings?.price_refresh_days?"automatic":"manual"))==="manual"?"Manual expiration — prices remain current until explicitly expired":`${orgSettings?.price_refresh_days||"?"} days — automatic expiration`}
+                {orgSettings?.price_refresh_mode!=="automatic"?"Manual expiration — prices remain current until explicitly expired":`${orgSettings?.price_refresh_days||"?"} days — automatic expiration`}
               </div>
-              <button onClick={()=>{setRefreshInput(orgSettings?.price_refresh_days!=null?String(orgSettings.price_refresh_days):"");setRefreshMode(orgSettings?.price_refresh_mode||(orgSettings?.price_refresh_days?"automatic":"manual"));setEditingRefresh(true);}} style={{background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:12,padding:0}}>✎ Edit</button>
+              <button onClick={()=>{setRefreshInput(orgSettings?.price_refresh_days!=null?String(orgSettings.price_refresh_days):"");setRefreshMode(orgSettings?.price_refresh_mode==="automatic"?"automatic":"manual");setEditingRefresh(true);}} style={{background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:12,padding:0}}>✎ Edit</button>
             </div>
           ):(
             <div>
@@ -1360,13 +1360,6 @@ function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mappings,vendo
   const [newItemName,setNewItemName]=useState("");
   const [newItemCategoryId,setNewItemCategoryId]=useState("");
   const [addingBusy,setAddingBusy]=useState(false);
-  // How items are ordered inside a category (or the full list): by when
-  // they were actually added to the catalog (the default - "chronological"),
-  // pure alphabetical, this org's own client item number sequence, or the
-  // vendor's own item code on the cheapest/first-listed vendor for that
-  // item. Independent of which category chip (or Full List) is selected -
-  // all four sort modes work in any filter combination.
-  const [sortMode,setSortMode]=useState("added"); // "added" | "alpha" | "itemNumber" | "vendorCode"
   const [error,setError]=useState("");
 
   const vMap=useMemo(()=>new Map(vendors.map(v=>[v.id,v])),[vendors]);
@@ -1390,24 +1383,19 @@ function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mappings,vendo
     new Set(productList.filter(item=>item.options.some(o=>["similar","review"].includes(o.matchTrack))).map(item=>item.catalogItemId)),
   [productList]);
 
-  // Grouped by category (whatever this org's own categories are) - these headers ARE the
-  // browsing structure, alphabetical top to bottom. Ordered within each
-  // by whichever sortMode is active (chronological by default).
+  // Full List is one alphabetical client catalog. Selecting a product type
+  // narrows that same alphabetized list without changing item identity or
+  // client master numbers. Vendor codes remain mappings beneath each item.
   const groupedItems=useMemo(()=>{
     const items=productList.filter(item=>{
       if(categoryFilter===REVIEW_FILTER){ if(!needsReviewItems.has(item.catalogItemId)) return false; }
       else if(categoryFilter&&item.category!==categoryFilter) return false;
       return itemMatchesSearch(item,search);
     });
-    const byCategory=new Map();
-    for(const item of items){
-      if(!byCategory.has(item.category)) byCategory.set(item.category,[]);
-      byCategory.get(item.category).push(item);
-    }
-    return [...byCategory.entries()]
-      .map(([category,catItems])=>({category,items:catItems.sort((a,b)=>compareItems(a,b,sortMode))}))
-      .sort((a,b)=>a.category.localeCompare(b.category));
-  },[productList,search,categoryFilter,needsReviewItems,sortMode]);
+    const alphabetized=[...items].sort((a,b)=>compareItems(a,b,"alpha"));
+    const label=categoryFilter===REVIEW_FILTER?"Needs Review":categoryFilter||"Full List";
+    return alphabetized.length?[{category:label,items:alphabetized}]:[];
+  },[productList,search,categoryFilter,needsReviewItems]);
 
   // A single-vendor "new" item has nothing to compare against, so it's
   // a clean 100% match by definition - only "similar" is a real fuzzy
@@ -1674,18 +1662,6 @@ function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mappings,vendo
       )}
 
       <input style={{...inp,marginBottom:10}} placeholder="Search by name, vendor wording, or item code..." value={search} onChange={e=>setSearch(e.target.value)} />
-
-      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:10}}>
-        <span style={{fontSize:10,fontWeight:700,color:"rgba(255,255,255,0.6)",textTransform:"uppercase",letterSpacing:"0.05em"}}>Sort:</span>
-        {[["added","Date Added"],["alpha","A–Z"],["itemNumber","Item #"],["vendorCode","Vendor Code"]].map(([id,label])=>{
-          const isSelected=sortMode===id;
-          return (
-            <button key={id} onClick={()=>setSortMode(id)} style={chipStyle(isSelected,"sm")}>
-              {label}
-            </button>
-          );
-        })}
-      </div>
 
       <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:18}}>
         <button onClick={()=>setCategoryFilter("")} style={chipStyle(!categoryFilter)}>
@@ -2306,7 +2282,7 @@ function CatalogPanel({orgId,orgIndustry,categories,catalogItems,vocabulary,onUp
   );
 }
 
-function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,priceHistory,mappings,catalogItems,orgId,myRole,onBack,onOpenImport,onOpenRecordInvoice,onUpdated,onEditInvoice,onDeleteInvoice}) {
+function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,priceHistory,mappings,catalogItems,orgId,myRole,onBack,onUpdated,onEditInvoice,onDeleteInvoice}) {
   const [editing,setEditing]=useState(false);
   const [name,setName]=useState(vendor.name);
   const [email,setEmail]=useState(vendor.email||"");
@@ -2427,11 +2403,8 @@ function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,priceHistor
               {canManage&&<button onClick={()=>setEditing(true)} style={{background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:12,padding:0}}>✎ Edit</button>}
             </div>
           </div>
-          <div style={{display:"flex",gap:8}}>
-            {myRole!=="employee"&&(
-              <button onClick={onOpenImport} style={{...btn(vc.accent,"white",{flex:1})}}>📥 Import Price Sheet</button>
-            )}
-            <button onClick={onOpenRecordInvoice} style={{...btn("#003584","white",{flex:1})}}>🧾 Record Invoice</button>
+          <div style={{fontSize:12,color:"#777",background:"#F7F9FC",padding:"9px 11px",borderRadius:7}}>
+            Import price sheets from the Price Sheets tab and invoices from the Invoices tab.
           </div>
         </>):(<>
           <div style={{marginBottom:10}}>
@@ -2607,9 +2580,6 @@ function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,priceHistor
                       <div>{vi?.description||"Item"}</div>
                       <div style={{textAlign:"right"}}><div style={{fontWeight:700}}>{formatMoney(entry.price)}</div>
                                   {entry.quote_valid_until&&<div style={{fontSize:10,color:"#999"}}>Vendor valid through {formatDate(entry.quote_valid_until)}</div>}
-                                  {entry.source_file_name&&<div style={{fontSize:10,color:"#999"}}>{entry.source_file_name}</div>}
-                                  {entry.source_document_id&&<button onClick={()=>viewSourceDocument(entry.source_document_id)} style={{background:"none",border:"none",fontSize:10,color:"#003584",cursor:"pointer"}}>Original source ↗</button>}
-                                  {!entry.source_document_id&&entry.source_file_path&&<button onClick={()=>viewStoredFile(entry.source_file_path)} style={{background:"none",border:"none",fontSize:10,color:"#003584",cursor:"pointer"}}>Original ↗</button>}
                                 </div>
                     </div>
                   );
@@ -2734,7 +2704,7 @@ function AddVendorModal({orgId,onClose,onDone}) {
 // ── PASTE MODAL ───────────────────────────────────────────────────────
 function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,onClose,onDone,initialVendorId,initialMode}) {
   const [vendorId,setVendorId]=useState(initialVendorId||vendors[0]?.id||"");
-  const [mode,setMode]=useState(initialMode||"pricelist");
+  const mode=initialMode||"pricelist";
   const [pastedText,setPastedText]=useState("");
   const [fileGroups,setFileGroups]=useState([]); // [{id,file,name,text}] — one entry per dragged/selected file
   const [parsedGroups,setParsedGroups]=useState([]); // after Parse: fileGroups (+pasted text) each with rows/skipped attached
@@ -3007,7 +2977,7 @@ function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,onClose,o
             const quote=historical?.[0];
             const withinVendorTerm=!quote?.quote_valid_until||quote.quote_valid_until>=invoiceDate;
             const refreshDays=Number(orgSettings?.price_refresh_days);
-            const mode=orgSettings?.price_refresh_mode||(refreshDays>0?"automatic":"manual");
+            const mode=orgSettings?.price_refresh_mode==="automatic"?"automatic":"manual";
             const withinClientWindow=mode!=="automatic"||!refreshDays||
               ((new Date(`${invoiceDate}T12:00:00Z`)-new Date(quote?.effective_date||0))/86400000)<=refreshDays;
             if(quote&&withinVendorTerm&&withinClientWindow&&["price_list","manual_edit"].includes(quote.source))quotedPrice=Number(quote.price);
@@ -3039,6 +3009,7 @@ function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,onClose,o
     }
 
     setResult({mode,vendor:vendor?.name,updated,created,mapped,invoiceTotal:r2(invoiceTotal),invoicesCreated,count:allRows.length,error:saveError});
+    await onDone();
     setStep(3);setLoading(false);
   }
 
@@ -3051,10 +3022,6 @@ function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,onClose,o
         </div>
 
         {step===1&&<>
-          <div style={{display:"flex",gap:8,marginBottom:14}}>
-            <button onClick={()=>setMode("pricelist")} style={{...btn(mode==="pricelist"?"#003584":"#EEE",mode==="pricelist"?"white":"#555"),flex:1}}>Import Price Sheet</button>
-            <button onClick={()=>setMode("invoice")} style={{...btn(mode==="invoice"?"#003584":"#EEE",mode==="invoice"?"white":"#555"),flex:1}}>Import Invoice</button>
-          </div>
           <div style={{marginBottom:14}}>
             <div style={{fontSize:12,fontWeight:600,color:"#666",marginBottom:4}}>Vendor</div>
             <select style={inp} value={vendorId} onChange={e=>setVendorId(e.target.value)}>
@@ -3166,7 +3133,7 @@ function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,onClose,o
               ?<p style={{color:"#666",fontSize:14}}>{result.updated} items updated · {result.created} new items added · {result.mapped} linked to your catalog for ordering</p>
               :<p style={{color:"#666",fontSize:14}}>{result.invoicesCreated} invoice{result.invoicesCreated===1?"":"s"} recorded · {result.count} line{result.count===1?"":"s"} · {formatMoney(result.invoiceTotal)} total</p>}
             {result.error&&<div style={{background:"#FFF3E0",color:"#E65100",padding:"10px 12px",borderRadius:8,fontSize:13,marginTop:12,textAlign:"left"}}>{result.error}</div>}
-            <button onClick={()=>{onDone();onClose();}} style={{...btn("#003584"),marginTop:16}}>Done</button>
+            <button onClick={onClose} style={{...btn("#003584"),marginTop:16}}>Done</button>
           </div>
         )}
       </div>
@@ -3187,6 +3154,7 @@ export default function App() {
   const [invoices,setInvoices]=useState([]);
   const [purchaseOrders,setPurchaseOrders]=useState([]);
   const [priceHistory,setPriceHistory]=useState([]);
+  const [importDocuments,setImportDocuments]=useState([]);
   const [priceHistoryHasMore,setPriceHistoryHasMore]=useState(false);
   const [loadingOlderPrices,setLoadingOlderPrices]=useState(false);
   const [vocabulary,setVocabulary]=useState([]);
@@ -3222,6 +3190,12 @@ export default function App() {
   const [loading,setLoading]=useState(true);
   const [clockTick,setClockTick]=useState(0);
   useEffect(()=>{const timer=setInterval(()=>setClockTick(n=>n+1),60000);return ()=>clearInterval(timer);},[]);
+  // Imported documents always arrive and remain closed. Switching tabs also
+  // closes any document that had been opened; history never expands itself.
+  useEffect(()=>{
+    setExpandedInvoiceId(null);
+    setExpandedPricePeriod(null);
+  },[tab]);
   // Order Guide's own category filter + sort mode - separate state from
   // Item Catalog's (different tab, different job: this one is for
   // PLACING orders, so it only ever shows items with a vendor price -
@@ -3339,6 +3313,7 @@ export default function App() {
     setInvoices(snapshot.invoices);
     setPurchaseOrders(snapshot.purchaseOrders);
     setPriceHistory(snapshot.priceHistory);
+    setImportDocuments(snapshot.importDocuments||[]);
     setPriceHistoryHasMore(snapshot.priceHistory.length===2000);
     setLoading(false);
   }
@@ -4358,38 +4333,19 @@ export default function App() {
             </div>
 
             {(flaggedInvoiceLines.length>0||invoiceDerivedItems.length>0)&&(
-              <div style={{marginBottom:22}}>
-                <Section title="Invoice lines needing review" count={flaggedInvoiceLines.length} emptyText="Nothing flagged — every invoice line matched cleanly.">
-                  {flaggedInvoiceLines.map(l=>(
-                    <div key={l.lineId} onClick={()=>{if(l.vendorId){setVendorDetailId(l.vendorId);setTab("vendorDetail");}}}
-                      style={{background:"white",borderRadius:8,padding:"10px 12px",marginBottom:6,cursor:l.vendorId?"pointer":"default",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
-                      <div style={{display:"flex",justifyContent:"space-between"}}>
-                        <div style={{fontWeight:600,fontSize:13}}>{l.description}</div>
-                        <div style={{fontSize:11,fontWeight:700,color:l.noMatch?"#C62828":"#B26A00"}}>{l.noMatch?"⚠ no match":`🔍 ${l.confidence}% match`}</div>
-                      </div>
-                      <div style={{fontSize:11,color:"#999",marginTop:2}}>{l.vendorName} — {formatDate(l.invoiceDate)} — {formatMoney(l.price)}</div>
-                    </div>
-                  ))}
-                </Section>
-                <Section title="Found on an invoice, not yet confirmed by a price sheet" count={invoiceDerivedItems.length} emptyText="Nothing flagged — every item on file came from a confirmed price sheet.">
-                  {invoiceDerivedItems.map(i=>(
-                    <div key={i.id} onClick={()=>{setVendorDetailId(i.vendorId);setTab("vendorDetail");}}
-                      style={{background:"white",borderRadius:8,padding:"10px 12px",marginBottom:6,cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
-                      <div style={{display:"flex",justifyContent:"space-between"}}>
-                        <div style={{fontWeight:600,fontSize:13}}>{i.description}</div>
-                        <div style={{fontSize:11,fontWeight:700,color:"#0288D1"}}>{formatMoney(i.price)}</div>
-                      </div>
-                      <div style={{fontSize:11,color:"#999",marginTop:2}}>{i.vendorName} — this price came from an invoice; will be replaced once a real price sheet confirms it</div>
-                    </div>
-                  ))}
-                </Section>
+              <div style={{background:"#FFF3E0",color:"#8A5A00",borderRadius:8,padding:"9px 12px",fontSize:12,marginBottom:14}}>
+                {flaggedInvoiceLines.length+invoiceDerivedItems.length} invoice line{flaggedInvoiceLines.length+invoiceDerivedItems.length===1?"":"s"} need attention. Open the applicable invoice file to review its details.
               </div>
             )}
 
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"0 0 12px"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,margin:"0 0 12px"}}>
               <h3 style={{margin:0,fontSize:16,color:"white"}}>Invoice History</h3>
-              <button onClick={()=>downloadTextFile(`price-variance-report-${new Date().toISOString().split("T")[0]}.csv`,buildVarianceReportCSV(invoices,vendors),"text/csv")}
-                style={{...btn("#2E7D32","white",{fontSize:11,padding:"7px 12px"})}}>📄 Export Variance Report (CSV)</button>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>downloadTextFile(`price-variance-report-${new Date().toISOString().split("T")[0]}.csv`,buildVarianceReportCSV(invoices,vendors),"text/csv")}
+                  style={{...btn("#2E7D32","white",{fontSize:11,padding:"7px 12px"})}}>📄 Export Variance Report</button>
+                <button onClick={()=>{setSelectedVendorId(recordsVendorFilter);setImportMode("invoice");setShowPaste(true);}}
+                  style={{...btn("white","#003584",{fontSize:11,padding:"7px 12px"})}}>🧾 Import Invoice</button>
+              </div>
             </div>
             {visibleInvoiceGroups.length===0?(
               <div style={{background:"white",borderRadius:10,padding:32,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.08)"}}>
@@ -4412,38 +4368,31 @@ export default function App() {
               return (
               <div key={inv.id} style={{background:"white",borderRadius:8,marginBottom:8,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",overflow:"hidden"}}>
                 <div style={{padding:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <div style={{cursor:inv.file_path?"pointer":inv._lines.length?"pointer":"default"}}
-                    onClick={()=>{
-                      // Pulling up an invoice means seeing what was actually
-                      // submitted, not a reformatted table - if the original
-                      // document is on file, that's what opens. The extracted
-                      // "Price verification" breakdown is still available, just
-                      // as its own explicit action below, not the default one.
-                      if(inv.file_path) viewStoredFile(inv.file_path);
-                      else if(inv._lines.length) setExpandedInvoiceId(isOpen?null:inv.id);
-                    }}>
-                    <div style={{fontWeight:700,fontSize:13}}>{formatDate(inv.invoice_date)||formatDate(inv.created_at)} · {inv.status}{inv.invoice_number?` · #${inv.invoice_number}`:""}</div>
+                  <div style={{cursor:inv._lines.length?"pointer":"default",userSelect:"none"}}
+                    title={inv._lines.length?"Double-click to open invoice details":undefined}
+                    onDoubleClick={()=>{if(inv._lines.length)setExpandedInvoiceId(isOpen?null:inv.id);}}>
+                    <div style={{fontWeight:700,fontSize:13}}>📄 {inv.file_name||`Invoice${inv.invoice_number?` #${inv.invoice_number}`:""}`}</div>
+                    <div style={{fontSize:11,color:"#888",marginTop:2}}>{formatDate(inv.invoice_date)||formatDate(inv.created_at)}{inv.invoice_number?` · Invoice #${inv.invoice_number}`:""}</div>
+                    {inv._lines.length>0&&<div style={{fontSize:10,color:"#AAA",marginTop:2}}>Double-click to open</div>}
                     {hasVariance&&(
                       <div style={{fontSize:11,fontWeight:700,color:inv._totalVariance>0?"#E65100":"#0A8A4B",marginTop:2}}>
                         ⚠️ Paid {formatMoney(Math.abs(inv._totalVariance))} {inv._totalVariance>0?"more":"less"} than quoted
                       </div>
                     )}
-                    {inv.file_path&&<div style={{fontSize:10,color:"#0288D1",marginTop:2}}>📄 Tap to view the original invoice</div>}
                   </div>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
                     <div style={{fontWeight:800,fontSize:16}}>{formatMoney(inv.total_amount)}</div>
-                    {inv._lines.length>0&&(
-                      <button onClick={()=>setExpandedInvoiceId(isOpen?null:inv.id)}
-                        title="Show the extracted, line-by-line price verification instead of the original document"
-                        style={{...btn("#EEE","#555",{fontSize:11,padding:"5px 10px"})}}>{isOpen?"Hide":"Verify"} {isOpen?"▲":"▾"}</button>
-                    )}
+                    {inv._lines.length>0&&<span style={{color:"#BBB",fontSize:12}}>{isOpen?"▲":"▼"}</span>}
                     <button onClick={()=>setEditingInvoice(inv)} style={{background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:14,padding:0}} title="Edit">✎</button>
                     <button onClick={()=>deleteInvoice(inv)} style={{background:"none",border:"none",cursor:"pointer",color:"#E65100",fontSize:16,padding:0}} title="Delete">×</button>
                   </div>
                 </div>
                 {isOpen&&inv._lines.length>0&&(
                   <div style={{borderTop:"1px solid #F0F0F0",padding:"10px 14px",background:"#FAFAFA"}}>
-                    <div style={{fontSize:10,color:"#BBB",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>Price verification</div>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                      <div style={{fontSize:10,color:"#BBB",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase"}}>Price verification</div>
+                      {inv.file_path&&<button onClick={()=>viewStoredFile(inv.file_path)} style={{...btn("#003584","white",{fontSize:11,padding:"5px 10px"})}}>Open original file</button>}
+                    </div>
                     {inv._lines.map(line=>(
                       <div key={line.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,padding:"5px 0",borderBottom:"1px solid #F0F0F0"}}>
                         <div>
@@ -4483,24 +4432,48 @@ export default function App() {
         {/* PRICE SHEETS TAB */}
         {tab==="priceSheets"&&(()=>{
           const vendorItemMap=new Map(vendorItems.map(vi=>[vi.id,vi]));
-          const periodGroups=new Map();
+          const entriesByDocument=new Map();
+          const legacyDocuments=new Map();
           (priceHistory||[]).forEach(ph=>{
             const vi=vendorItemMap.get(ph.vendor_item_id);
             if(!vi) return;
-            const key=`${vi.vendor_id}__${ph.effective_date}`;
-            if(!periodGroups.has(key)) periodGroups.set(key,{vendorId:vi.vendor_id,date:ph.effective_date,entries:[]});
-            periodGroups.get(key).entries.push({...ph,description:ph.source_description||vi.description});
+            const entry={...ph,description:ph.source_description||vi.description};
+            if(ph.source_document_id){
+              if(!entriesByDocument.has(ph.source_document_id)) entriesByDocument.set(ph.source_document_id,[]);
+              entriesByDocument.get(ph.source_document_id).push(entry);
+            }else{
+              const key=`legacy__${vi.vendor_id}__${ph.effective_date}__${ph.source_file_name||""}`;
+              if(!legacyDocuments.has(key)) legacyDocuments.set(key,{
+                id:key,vendorId:vi.vendor_id,date:ph.effective_date,fileName:ph.source_file_name||"Imported price sheet",
+                filePath:ph.source_file_path||null,status:"complete",entries:[],
+              });
+              legacyDocuments.get(key).entries.push(entry);
+            }
           });
+          const priceDocuments=importDocuments.filter(d=>d.document_kind==="pricelist").map(d=>({
+            id:d.id,vendorId:d.vendor_id,date:d.created_at,fileName:d.file_name||"Imported price sheet",
+            filePath:d.file_path||null,status:d.status,entries:entriesByDocument.get(d.id)||[],
+          }));
+          const knownDocumentIds=new Set(priceDocuments.map(d=>d.id));
+          for(const [documentId,entries] of entriesByDocument){
+            if(knownDocumentIds.has(documentId)||!entries.length) continue;
+            const first=entries[0];
+            const vi=vendorItemMap.get(first.vendor_item_id);
+            priceDocuments.push({id:documentId,vendorId:vi?.vendor_id,date:first.effective_date,
+              fileName:first.source_file_name||"Imported price sheet",filePath:first.source_file_path||null,
+              status:"complete",entries});
+          }
+          priceDocuments.push(...legacyDocuments.values());
           const byVendor=new Map();
-          for(const period of periodGroups.values()){
-            if(!byVendor.has(period.vendorId)) byVendor.set(period.vendorId,[]);
-            byVendor.get(period.vendorId).push(period);
+          for(const document of priceDocuments){
+            if(!byVendor.has(document.vendorId)) byVendor.set(document.vendorId,[]);
+            byVendor.get(document.vendorId).push(document);
           }
           const vendorPriceGroups=[...byVendor.entries()]
-            .map(([vendorId,periods])=>({
+            .map(([vendorId,documents])=>({
               vendorId,
               vendorName:vendors.find(v=>v.id===vendorId)?.name||"Unknown vendor",
-              periods:periods.sort((a,b)=>new Date(b.date)-new Date(a.date)),
+              documents:documents.sort((a,b)=>new Date(b.date)-new Date(a.date)),
             }))
             .sort((a,b)=>a.vendorName.localeCompare(b.vendorName));
 
@@ -4534,48 +4507,18 @@ export default function App() {
             </div>
 
             {(priceUnavailableItems.length>0||expiredItems.length>0)&&(
-              <div style={{marginBottom:22}}>
-                <Section title="Prices marked unavailable" count={priceUnavailableItems.length} emptyText="Nothing flagged — no vendor has an open 'no price given' item.">
-                  {priceUnavailableItems.map(i=>(
-                    <div key={i.id} onClick={()=>{setVendorDetailId(i.vendorId);setTab("vendorDetail");}}
-                      style={{background:"white",borderRadius:8,padding:"10px 12px",marginBottom:6,cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
-                      <div style={{fontWeight:600,fontSize:13}}>{i.description}</div>
-                      <div style={{fontSize:11,color:"#999",marginTop:2}}>{i.vendorName} — last confirmed {daysAgo(i.lastUpdated)}; ordering blocked until a valid quote arrives</div>
-                    </div>
-                  ))}
-                </Section>
-                <Section title="Expired quotations (manual, client period, or vendor term)" count={expiredItems.length} emptyText={org?.settings?.price_refresh_days?"Nothing flagged — every price is within the refresh window.":"Price refresh period is off — set one in Admin to enable this check."}>
-                  {expiredItems.map(i=>(
-                    <div key={i.id} onClick={()=>{setVendorDetailId(i.vendorId);setTab("vendorDetail");}}
-                      style={{background:"white",borderRadius:8,padding:"10px 12px",marginBottom:6,cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
-                      <div style={{fontWeight:600,fontSize:13}}>{i.description}</div>
-                      <div style={{fontSize:11,color:"#999",marginTop:2}}>{i.vendorName} — last confirmed {daysAgo(i.lastUpdated)}</div>
-                    </div>
-                  ))}
-                </Section>
+              <div style={{background:"#FFF3E0",color:"#8A5A00",borderRadius:8,padding:"9px 12px",fontSize:12,marginBottom:14}}>
+                {priceUnavailableItems.length+expiredItems.length} price{priceUnavailableItems.length+expiredItems.length===1?"":"s"} need attention. They remain excluded from current Order Guide purchasing until a valid price sheet replaces them.
               </div>
             )}
 
-            <h3 style={{margin:"0 0 12px",fontSize:16,color:"white"}}>Current vendor quotations</h3>
-            {vendors.filter(v=>!priceSheetVendorFilter||v.id===priceSheetVendorFilter).map(v=>(
-              <div key={v.id} style={{background:"white",borderRadius:8,padding:12,marginBottom:10}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                  <b style={{fontSize:13}}>{v.name}</b>
-                  {org.role!=="employee"&&<button onClick={()=>expireVendorQuotes(v.id)}
-                    style={{...btn("#FFF3E0","#A14C00",{fontSize:11,padding:"6px 9px"})}}>Expire this vendor's current prices</button>}
-                </div>
-                {vendorItems.filter(vi=>vi.vendor_id===v.id).map(vi=>{
-                  const status=quoteStatus(vi,org?.settings||{});
-                  return <div key={vi.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,borderTop:"1px solid #EEE",padding:"5px 0",fontSize:12}}>
-                    <span style={{minWidth:0,flex:1}}>{vi.description} · {vi.pack_size||"pack not confirmed"}</span>
-                    <span style={{fontWeight:700}}>{vi.price!=null?formatMoney(vi.price):"—"}</span>
-                    <span style={{color:status==="current"?"#2E7D32":"#B26A00"}}>{status==="current"?"Current":status==="expired"?"Expired":status==="invoice_only"?"Invoice only — quote needed":"Price needed"}</span>
-                    {org.role!=="employee"&&status==="current"&&<button onClick={()=>expireOneQuote(vi)} style={{...btn("#EEE","#555",{fontSize:10,padding:"4px 7px"})}}>Expire</button>}
-                  </div>;
-                })}
-              </div>
-            ))}
-            <h3 style={{margin:"20px 0 12px",fontSize:16,color:"white"}}>Price Sheet History — every original quote retained</h3>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"0 0 12px"}}>
+              <h3 style={{margin:0,fontSize:16,color:"white"}}>Price Sheet History</h3>
+              {org.role!=="employee"&&(
+                <button onClick={()=>{setSelectedVendorId(priceSheetVendorFilter);setImportMode("pricelist");setShowPaste(true);}}
+                  style={{...btn("white","#003584",{fontSize:11,padding:"7px 12px"})}}>📋 Import Price Sheet</button>
+              )}
+            </div>
             {visiblePriceGroups.length===0?(
               <div style={{background:"white",borderRadius:10,padding:32,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.08)"}}>
                 <div style={{fontSize:32,marginBottom:8}}>📋</div>
@@ -4591,26 +4534,33 @@ export default function App() {
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
                     <div style={{fontWeight:800,fontSize:13,color:vc.accent,paddingLeft:2}}>{vendorGroup.vendorName}</div>
                     {org.role!=="employee"&&(
-                      <button onClick={()=>{setSelectedVendorId(vendorGroup.vendorId);setImportMode("pricelist");setShowPaste(true);}}
-                        style={{...btn(vc.accent,"white",{fontSize:10,padding:"4px 9px"})}}>📋 Import</button>
+                      <div style={{display:"flex",gap:6}}>
+                        <button onClick={()=>expireVendorQuotes(vendorGroup.vendorId)}
+                          style={{...btn("#E65100","white",{fontSize:10,padding:"4px 9px"})}}>Remove Current Prices from Order Guide</button>
+                        <button onClick={()=>{setSelectedVendorId(vendorGroup.vendorId);setImportMode("pricelist");setShowPaste(true);}}
+                          style={{...btn(vc.accent,"white",{fontSize:10,padding:"4px 9px"})}}>📋 Import</button>
+                      </div>
                     )}
                   </div>
-                  {vendorGroup.periods.map(period=>{
-                    const periodKey=`${period.vendorId}__${period.date}`;
-                    const isOpen=expandedPricePeriod===periodKey;
+                  {vendorGroup.documents.map(document=>{
+                    const documentKey=String(document.id);
+                    const isOpen=expandedPricePeriod===documentKey;
                     return (
-                      <div key={periodKey} style={{background:"white",borderRadius:8,marginBottom:8,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",overflow:"hidden"}}>
-                        <button onClick={()=>setExpandedPricePeriod(isOpen?null:periodKey)}
-                          style={{width:"100%",background:"none",border:"none",cursor:"pointer",padding:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div key={documentKey} style={{background:"white",borderRadius:8,marginBottom:8,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",overflow:"hidden"}}>
+                        <button onDoubleClick={()=>setExpandedPricePeriod(isOpen?null:documentKey)}
+                          title="Double-click to open price-sheet details"
+                          style={{width:"100%",background:"none",border:"none",cursor:"pointer",padding:14,display:"flex",justifyContent:"space-between",alignItems:"center",userSelect:"none"}}>
                           <div style={{textAlign:"left"}}>
-                            <div style={{fontWeight:700,fontSize:13}}>Quoted {formatDate(period.date)}</div>
-                            <div style={{fontSize:11,color:"#888"}}>{period.entries.length} item{period.entries.length===1?"":"s"} in this sheet</div>
+                            <div style={{fontWeight:700,fontSize:13}}>📄 {document.fileName}</div>
+                            <div style={{fontSize:11,color:"#888"}}>{formatDate(document.date)} · {document.entries.length} item{document.entries.length===1?"":"s"} · {document.status}</div>
+                            <div style={{fontSize:10,color:"#AAA",marginTop:2}}>Double-click to open</div>
                           </div>
                           <span style={{color:"#CCC"}}>{isOpen?"▲":"▼"}</span>
                         </button>
                         {isOpen&&(
                           <div style={{borderTop:"1px solid #F0F0F0",padding:"10px 14px",background:"#FAFAFA"}}>
-                            {period.entries.map(entry=>(
+                            {document.filePath&&<button onClick={()=>viewStoredFile(document.filePath)} style={{...btn("#003584","white",{fontSize:11,padding:"6px 10px",marginBottom:8})}}>Open original file</button>}
+                            {document.entries.map(entry=>(
                               <div key={entry.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"5px 0",borderBottom:"1px solid #F0F0F0"}}>
                                 <div>{entry.description}</div>
                                 <div style={{textAlign:"right"}}><div style={{fontWeight:700}}>{formatMoney(entry.price)}</div>
@@ -4618,6 +4568,14 @@ export default function App() {
                                   {entry.source_file_name&&<div style={{fontSize:10,color:"#999"}}>{entry.source_file_name}</div>}
                                   {entry.source_document_id&&<button onClick={()=>viewSourceDocument(entry.source_document_id)} style={{background:"none",border:"none",fontSize:10,color:"#003584",cursor:"pointer"}}>Original source ↗</button>}
                                   {!entry.source_document_id&&entry.source_file_path&&<button onClick={()=>viewStoredFile(entry.source_file_path)} style={{background:"none",border:"none",fontSize:10,color:"#003584",cursor:"pointer"}}>Original ↗</button>}
+                                  {(()=>{
+                                    const currentItem=vendorItemMap.get(entry.vendor_item_id);
+                                    const isCurrent=currentItem&&quoteStatus(currentItem,org?.settings||{})==="current"&&Number(currentItem.price)===Number(entry.price);
+                                    return isCurrent&&org.role!=="employee"?(
+                                      <button onClick={()=>expireOneQuote(currentItem)}
+                                        style={{display:"block",margin:"4px 0 0 auto",background:"none",border:"none",fontSize:10,fontWeight:700,color:"#E65100",cursor:"pointer"}}>Remove from Order Guide</button>
+                                    ):null;
+                                  })()}
                                 </div>
                               </div>
                             ))}
@@ -4646,8 +4604,6 @@ export default function App() {
               mappings={mappings} catalogItems={catalogItems}
               orgId={org.id} myRole={org.role}
               onBack={()=>setTab("order")}
-              onOpenImport={()=>{setSelectedVendorId(v.id);setImportMode("pricelist");setShowPaste(true);}}
-              onOpenRecordInvoice={()=>{setSelectedVendorId(v.id);setImportMode("invoice");setShowPaste(true);}}
               onUpdated={loadData}
               onEditInvoice={setEditingInvoice}
               onDeleteInvoice={deleteInvoice}
@@ -4695,10 +4651,7 @@ export default function App() {
                         <div style={{fontWeight:700,color:vc.accent}}>{v.name}</div>
                         <div style={{fontSize:11,color:"#888"}}>{count} items · {invCount} invoice{invCount===1?"":"s"} · tap for full history</div>
                       </div>
-                      <div style={{display:"flex",gap:6}}>
-                        <button onClick={()=>{setSelectedVendorId(v.id);setImportMode("pricelist");setShowPaste(true);}} style={{...btn(vc.accent,"white",{fontSize:11,padding:"6px 10px"})}}>📋 Prices</button>
-                        <button onClick={()=>{setSelectedVendorId(v.id);setImportMode("invoice");setShowPaste(true);}} style={{...btn("white",vc.accent,{fontSize:11,padding:"6px 10px",border:`1px solid ${vc.accent}`})}}>🧾 Invoice</button>
-                      </div>
+                      <button onClick={()=>{setVendorDetailId(v.id);setTab("vendorDetail");}} style={{...btn("white",vc.accent,{fontSize:11,padding:"6px 10px",border:`1px solid ${vc.accent}`})}}>Open vendor</button>
                     </div>
                   </div>
                 );

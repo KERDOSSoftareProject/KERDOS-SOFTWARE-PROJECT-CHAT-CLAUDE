@@ -25,6 +25,20 @@ as $$
 declare
   v_item_id uuid;
 begin
+  if auth.uid() is null then raise exception 'Authentication is required'; end if;
+  if not exists (
+    select 1 from organization_members m
+    where m.organization_id=p_organization_id and m.user_id=auth.uid()
+      and m.role in ('owner','manager')
+  ) then raise exception 'Owner or manager access is required for this organization'; end if;
+  if not exists (
+    select 1 from vendors v where v.id=p_vendor_id and v.organization_id=p_organization_id
+  ) then raise exception 'Vendor is outside the requested organization'; end if;
+  if p_source_document_id is not null and not exists (
+    select 1 from import_documents d
+    where d.id=p_source_document_id and d.organization_id=p_organization_id and d.vendor_id=p_vendor_id
+  ) then raise exception 'Source document is outside the requested organization/vendor'; end if;
+  if p_effective_date is null then raise exception 'A price quotation requires an effective date'; end if;
   if p_price_unavailable is not true and (p_price is null or p_price <= 0) then
     raise exception 'A current quotation requires a positive price';
   end if;

@@ -10,6 +10,7 @@ const SNAPSHOT_QUERIES = Object.freeze([
   ["invoices", c=>c.from("invoices").select("*,vendors(name),invoice_lines(*)").order("invoice_date",{ascending:false,nullsFirst:false}).order("created_at",{ascending:false}).limit(30)],
   ["purchaseOrders", c=>c.from("purchase_orders").select("*,purchase_order_lines(*)").order("created_at",{ascending:false}).limit(30)],
   ["priceHistory", c=>c.from("price_history").select("*").order("effective_date",{ascending:false}).order("id",{ascending:false}).limit(2000)],
+  ["importDocuments", c=>c.from("import_documents").select("*").order("created_at",{ascending:false}).limit(500)],
   ["vocabulary", c=>c.from("org_vocabulary").select("*")],
 ]);
 

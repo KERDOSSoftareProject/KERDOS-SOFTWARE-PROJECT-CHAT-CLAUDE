@@ -104,11 +104,12 @@ t("uncertain boneless not auto linked",bestCatalogMatch("Boneless chicken breast
 t("same identity wins over fuzzy candidate",bestCatalogMatch("Chicken breast 40lb",[{name:"Chicken breast"},{name:"Chicken breast 40 lb"}])?.catalogItem?.name,"Chicken breast 40 lb");
 t("invoice price cannot become live quote",quoteStatus({price_source:"invoice",price:40}),"invoice_only");
 t("manual quote remains current",quoteStatus({price_source:"price_list",price:40,last_updated:"2020-01-01"},{price_refresh_mode:"manual"},new Date("2026-09-21")),"current");
+t("legacy day count cannot silently enable expiration",quoteStatus({price_source:"price_list",price:40,last_updated:"2020-01-01"},{price_refresh_days:7},new Date("2026-09-21")),"current");
 t("automatic 7-day quote expires",quoteStatus({price:40,last_updated:"2026-09-01"},{price_refresh_mode:"automatic",price_refresh_days:7},new Date("2026-09-21")),"expired");
 t("automatic quote without timestamp expires",quoteStatus({price:40},{price_refresh_mode:"automatic",price_refresh_days:7},new Date("2026-09-21")),"expired");
 t("malformed quote timestamp expires",quoteStatus({price:40,last_updated:"not-a-date"},{price_refresh_mode:"automatic",price_refresh_days:7},new Date("2026-09-21")),"expired");
 t("manual expiration overrides policy",quoteStatus({price:40,price_expired_at:"2026-09-20",last_updated:"2026-09-21"},{price_refresh_mode:"manual"},new Date("2026-09-21")),"expired");
-t("vendor stated expiry overrides manual",quoteStatus({price:40,price_quote_valid_until:"2026-09-20",last_updated:"2026-09-21"},{price_refresh_mode:"manual"},new Date("2026-09-21")),"expired");
+t("vendor stated expiry overrides manual",quoteStatus({price:40,price_quote_valid_until:"2026-09-20",last_updated:"2026-09-21"},{price_refresh_mode:"manual"},new Date(2026,8,21,12)),"expired");
 t("unpriced offer not orderable",quoteStatus({price:0,price_source:"price_list"}),"unavailable");
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

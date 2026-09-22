@@ -358,7 +358,10 @@ function quoteStatus(item,settings={},now=new Date()){
   const localDate=`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
   if(item.price_quote_valid_until && String(item.price_quote_valid_until).slice(0,10)<localDate) return "expired";
   const days=Number(settings?.price_refresh_days);
-  const mode=settings?.price_refresh_mode||(days>0?"automatic":"manual");
+  // Manual is always the default. A legacy day count alone must never
+  // silently remove prices from the Order Guide; the client has to choose
+  // automatic expiration explicitly.
+  const mode=settings?.price_refresh_mode==="automatic"?"automatic":"manual";
   if(mode==="automatic"&&days>0){
     const updated=new Date(item.last_updated);
     if(!item.last_updated||!Number.isFinite(updated.getTime())) return "expired";

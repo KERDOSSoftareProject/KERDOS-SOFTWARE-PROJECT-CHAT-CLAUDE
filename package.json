@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "database:build": "node scripts/build-database-update.mjs",
     "preview": "vite preview",
     "test": "node src/regression.mjs && node src/ingestion-test.mjs && node src/session-test.mjs && node src/backend-contract-test.mjs && node src/offline-store-test.mjs && node src/deployment-test.mjs"
   },

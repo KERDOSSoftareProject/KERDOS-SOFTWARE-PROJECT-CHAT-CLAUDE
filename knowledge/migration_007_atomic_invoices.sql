@@ -11,6 +11,20 @@ declare
   v_line jsonb;
   v_vendor_item_id uuid;
 begin
+  if auth.uid() is null then raise exception 'Authentication is required'; end if;
+  if nullif(p_header->>'organization_id','') is null or nullif(p_header->>'vendor_id','') is null then
+    raise exception 'Invoice organization and vendor are required';
+  end if;
+  if not exists (
+    select 1 from organization_members m
+    where m.organization_id=(p_header->>'organization_id')::uuid
+      and m.user_id=auth.uid() and m.role in ('owner','manager')
+  ) then raise exception 'Owner or manager access is required for this organization'; end if;
+  if not exists (
+    select 1 from vendors v
+    where v.id=(p_header->>'vendor_id')::uuid
+      and v.organization_id=(p_header->>'organization_id')::uuid
+  ) then raise exception 'Vendor is outside the requested organization'; end if;
   if jsonb_typeof(p_lines) <> 'array' or jsonb_array_length(p_lines)=0 then
     raise exception 'An invoice requires at least one line';
   end if;
@@ -27,6 +41,17 @@ begin
 
   for v_line in select value from jsonb_array_elements(p_lines) loop
     v_vendor_item_id=nullif(v_line->>'vendor_item_id','')::uuid;
+    if v_vendor_item_id is not null and not exists (
+      select 1 from vendor_items vi
+      where vi.id=v_vendor_item_id
+        and vi.organization_id=(p_header->>'organization_id')::uuid
+        and vi.vendor_id=(p_header->>'vendor_id')::uuid
+    ) then raise exception 'Invoice vendor item is outside the requested organization/vendor'; end if;
+    if nullif(v_line->>'catalog_item_id','') is not null and not exists (
+      select 1 from catalog_items ci
+      where ci.id=(v_line->>'catalog_item_id')::uuid
+        and ci.organization_id=(p_header->>'organization_id')::uuid
+    ) then raise exception 'Catalog item is outside the requested organization'; end if;
     if v_vendor_item_id is null and coalesce((v_line->>'create_vendor_item')::boolean,false) then
       select id into v_vendor_item_id from vendor_items
       where organization_id=(p_header->>'organization_id')::uuid

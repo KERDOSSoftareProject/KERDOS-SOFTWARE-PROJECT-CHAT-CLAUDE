@@ -12,9 +12,32 @@ const requiredMigrations=[
 for(const file of requiredMigrations) assert.ok(fs.statSync(path.join(root,"knowledge",file)).size>100,`${file} missing or empty`);
 
 const adapter=fs.readFileSync(path.join(root,"src/backend/supabase.js"),"utf8");
+const app=fs.readFileSync(path.join(root,"src/App.jsx"),"utf8");
 const migrationSql=requiredMigrations.map(file=>fs.readFileSync(path.join(root,"knowledge",file),"utf8")).join("\n");
 for(const rpc of [...adapter.matchAll(/client\.rpc\("([^"]+)"/g)].map(match=>match[1]))
   assert.match(migrationSql,new RegExp(`function\\s+${rpc}\\b`,`i`),`adapter RPC ${rpc} has no migration`);
+
+assert.match(migrationSql,/security\s+definer[\s\S]*set\s+search_path\s*=\s*pg_catalog[\s\S]*update\s+public\.invite_codes/i,
+  "invite acceptance must bypass member-only RLS with a restricted search path");
+for(const guard of [
+  "KERDOS base schema is missing required columns",
+  "Owner or manager access is required for this organization",
+  "Vendor is outside the requested organization",
+  "Invoice vendor item is outside the requested organization/vendor",
+  "Catalog item is outside the requested organization",
+]) assert.ok(migrationSql.includes(guard),`database safety guard missing: ${guard}`);
+
+const combined=fs.readFileSync(path.join(root,"KERDOS_DATABASE_UPDATE_CLEAN.sql"),"utf8");
+assert.match(combined,/^begin;$/m,"combined database update lacks transaction start");
+assert.match(combined,/^commit;$/m,"combined database update lacks transaction commit");
+for(const file of requiredMigrations)
+  assert.ok(combined.includes(fs.readFileSync(path.join(root,"knowledge",file),"utf8").trim()),`${file} differs from combined database update`);
+
+for(const requiredUi of [
+  "Price Sheet History","Import Price Sheet","Invoice History","Import Invoice",
+  "Double-click to open","Remove Current Prices from Order Guide","Remove from Order Guide",
+  "price_refresh_mode===\"automatic\"?\"automatic\":\"manual\"",
+]) assert.ok(app.includes(requiredUi),`requested import/history behavior missing: ${requiredUi}`);
 
 const ocrFiles=["worker.min.js","eng.traineddata.gz"];
 for(const file of ocrFiles) assert.ok(fs.statSync(path.join(root,"public/ocr",file)).size>1000,`OCR asset ${file} missing`);
