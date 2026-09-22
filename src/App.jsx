@@ -3835,14 +3835,11 @@ export default function App() {
               .order-layout { display:flex; gap:18px; align-items:flex-start; max-width:1320px; margin:0 auto; }
               .order-aside { width:330px; flex-shrink:0; }
               .order-aside-inner { position:sticky; top:90px; }
-              .order-price-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:6px; }
-              .order-price-card { min-width:0; border-radius:8px; padding:6px 8px; background:white; text-align:left; }
               .order-column-head { font-size:9px; font-weight:800; color:#718096; letter-spacing:.06em; text-transform:uppercase; }
               @media (max-width:720px) {
                 .order-layout { flex-direction:column; }
                 .order-aside { width:100%; }
                 .order-aside-inner { position:static; }
-                .order-price-grid { grid-template-columns:1fr; }
               }
             `}</style>
             <main style={{flex:1,minWidth:0}}>
@@ -3909,7 +3906,7 @@ export default function App() {
                 <div key={group.category} style={{marginBottom:8}}>
                   <div style={{fontSize:11,fontWeight:800,color:"rgba(255,255,255,0.75)",letterSpacing:"0.08em",textTransform:"uppercase",margin:"14px 0 6px"}}>{group.category}</div>
                   <div style={{background:"white",borderRadius:8,overflow:"hidden"}}>
-                    <div style={{display:"grid",gridTemplateColumns:"minmax(220px,1fr) 88px 104px 286px",columnGap:10,rowGap:2,alignItems:"center",padding:"8px 12px"}}>
+                    <div style={{display:"grid",gridTemplateColumns:"minmax(220px,1fr) 88px 104px 176px",columnGap:10,rowGap:2,alignItems:"center",padding:"8px 12px"}}>
                       <div className="order-column-head" style={{padding:"2px 2px 7px"}}>Item</div>
                       <div className="order-column-head" style={{padding:"2px 6px 7px"}}>Unit</div>
                       <div className="order-column-head" style={{padding:"2px 6px 7px",textAlign:"center"}}>Qty</div>
@@ -3990,33 +3987,25 @@ export default function App() {
                               title={activeBlocked?activeBlockReason:undefined}
                               style={{width:26,height:26,borderRadius:7,border:"none",background:activeBlocked?"#DDD":"#2E7D32",cursor:activeBlocked?"not-allowed":"pointer",fontSize:15,fontWeight:800,color:"white",flexShrink:0}}>+</button>
                           </div>,
-                          <div key={item.catalogItemId+"_price"} style={{padding:"6px",borderTop:"1px solid #F2F2F2",borderLeft:"1px solid #EEE",background:"#FAFBFC"}}>
-                            <div className="order-price-grid">
-                            <button className="order-price-card" onClick={()=>{
+                          <div key={item.catalogItemId+"_price"} style={{padding:"6px",borderTop:"1px solid #F2F2F2",borderLeft:"1px solid #EEE",background:vc.bg}}>
+                            <button onClick={()=>{
                                 setOpenPriceMenu(menuOpen?null:activeKey);
                                 setCustomPriceInput(activePrice!=null?String(activePrice):"");
                               }}
-                              style={{border:`1px solid ${activeBlocked?"#FFCC80":isBestPrice?"#81C784":vc.light}`,cursor:unitOptions.length?"pointer":"default",boxShadow:isBestPrice?"0 1px 3px rgba(46,125,50,.12)":"none"}}>
+                              style={{width:"100%",background:"white",border:`1px solid ${activeBlocked?"#FFCC80":isBestPrice?"#81C784":vc.light}`,borderRadius:8,padding:"6px 8px",cursor:unitOptions.length?"pointer":"default",textAlign:"right",boxShadow:isBestPrice?"0 1px 3px rgba(46,125,50,.12)":"none"}}>
                               {activeBlocked?(
                                 <div style={{fontWeight:700,fontSize:11,color:"#E65100"}}>⚠ {activeBlockReason}{activeOption?` (last ${formatMoney(activeOption.casePrice)})`:""}</div>
                               ):(
                                 <>
-                                  <div style={{fontSize:8,fontWeight:900,letterSpacing:".06em",textTransform:"uppercase",color:isBestPrice?"#2E7D32":"#667085",marginBottom:2}}>{primaryPriceLabel}</div>
-                                  <div style={{fontWeight:900,fontSize:15,color:isBestPrice?"#2E7D32":vc.accent}}>{formatMoney(activePrice)}{isCustomPrice&&<span title="Custom price" style={{marginLeft:2,fontSize:9}}>✎</span>}</div>
+                                  <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:5}}>
+                                    <span style={{fontSize:8,fontWeight:900,letterSpacing:".05em",textTransform:"uppercase",color:isBestPrice?"#2E7D32":"#667085"}}>{primaryPriceLabel}</span>
+                                    <span style={{fontWeight:900,fontSize:15,color:isBestPrice?"#2E7D32":vc.accent}}>{formatMoney(activePrice)}{isCustomPrice&&<span title="Custom price" style={{marginLeft:2,fontSize:9}}>✎</span>}</span>
+                                  </div>
                                 </>
                               )}
                               <div style={{fontSize:10,fontWeight:800,color:activeBlocked?"#E65100":vc.accent,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{activeBlocked?"":activeVendorName} {unitOptions.length>1&&(menuOpen?"▲":"▾")}</div>
-                              {!activeBlocked&&nextRankedOption&&nextPriceDifference!=null&&nextPriceDifference>=0&&<div style={{fontSize:8,color:"#2E7D32",marginTop:2,fontWeight:700}}>Save {formatMoney(nextPriceDifference)} vs next</div>}
+                              {!activeBlocked&&nextRankedOption&&<div style={{fontSize:8.5,color:"#667085",marginTop:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>Next: {nextRankedOption.vendorName}{nextPriceDifference!=null?` (+${formatMoney(Math.max(0,nextPriceDifference))})`:""}</div>}
                             </button>
-                            {nextRankedOption?(
-                              <div className="order-price-card" style={{border:"1px solid #E3E7ED",color:"#667085"}}>
-                                <div style={{fontSize:8,fontWeight:900,letterSpacing:".06em",textTransform:"uppercase",color:"#98A2B3",marginBottom:2}}>Next price</div>
-                                <div style={{fontWeight:800,fontSize:14,color:"#344054"}}>{formatMoney(nextRankedOption.unitPrice)}</div>
-                                <div style={{fontSize:9,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{nextRankedOption.vendorName}</div>
-                                {nextPriceDifference!=null&&<div style={{fontSize:8,color:"#98A2B3",marginTop:2}}>{nextPriceDifference>=0?"+":""}{formatMoney(nextPriceDifference)}</div>}
-                              </div>
-                            ):<div className="order-price-card" style={{border:"1px dashed #E3E7ED",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#B0B7C3"}}>No alternate quote</div>}
-                            </div>
                           </div>,
                         ];
 
@@ -4024,7 +4013,7 @@ export default function App() {
                           cells.push(
                             <div key={item.catalogItemId+"_menu"} style={{gridColumn:"1 / -1",background:"#FAFAFA",borderTop:"1px solid #F0F0F0",borderRadius:6,padding:"8px 10px",marginBottom:4}}>
                               <div style={{fontSize:10,color:"#BBB",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>Power ranked — tap to select</div>
-                              {unitOptions.map(opt=>{
+                              {unitOptions.map((opt,rank)=>{
                                 const isSelected=assignment?.vendorItemId===opt.vendorItemId&&!isCustomPrice;
                                 const blocked=!orderable(opt);
                                 return (
@@ -4040,6 +4029,8 @@ export default function App() {
                                       background:blocked?"#FAFAFA":isSelected?"#E8F5E9":"white",border:`1px solid ${blocked?"#F0F0F0":isSelected?"#A5D6A7":"#EEE"}`,
                                       borderRadius:6,padding:"7px 10px",marginBottom:4,cursor:blocked?"not-allowed":"pointer",textAlign:"left",opacity:blocked?0.6:1}}>
                                     <span style={{fontSize:12,fontWeight:isSelected?700:500}}>{isSelected&&"✓ "}{opt.vendorName}
+                                      {!blocked&&rank===0&&<span style={{marginLeft:6,fontSize:9,fontWeight:800,color:"#2E7D32",background:"#E8F5E9",padding:"1px 5px",borderRadius:4}}>BEST</span>}
+                                      {!blocked&&rank===1&&<span style={{marginLeft:6,fontSize:9,fontWeight:800,color:"#667085",background:"#EEF2F6",padding:"1px 5px",borderRadius:4}}>NEXT</span>}
                                       {opt.brand&&<span style={{marginLeft:5,fontSize:10,color:"#999"}}>{opt.brand}</span>}
                                       {!blocked&&opt.priceUnavailable&&(
                                         <span title="Vendor's latest price sheet listed no price for this item - showing the last known price instead" style={{marginLeft:6,fontSize:10,fontWeight:700,color:"#B26A00",background:"#FFF3E0",padding:"1px 5px",borderRadius:4}}>
@@ -4056,7 +4047,7 @@ export default function App() {
                                       <span style={{fontSize:11,fontWeight:700,color:"#E65100"}}>{opt.expired?"⚠":"🔒"} {blockReason(opt)}</span>
                                     ):(
                                       <span style={{textAlign:"right"}}>
-                                        <span style={{fontSize:12,fontWeight:700}}>{formatMoney(opt.unitPrice)} {cheapestUnitPrice!=null&&opt.unitPrice>cheapestUnitPrice&&<span style={{color:"#E65100",fontWeight:600}}>(+{formatMoney(opt.unitPrice-cheapestUnitPrice)})</span>}</span>
+                                        <span style={{fontSize:12,fontWeight:700}}>{formatMoney(opt.unitPrice)} {cheapestUnitPrice!=null&&opt.unitPrice>cheapestUnitPrice&&<span style={{color:"#667085",fontWeight:600}}>(+{formatMoney(opt.unitPrice-cheapestUnitPrice)})</span>}</span>
                                         {opt.perUnit&&(
                                           <span style={{display:"block",fontSize:10,color:bestPerUnit?.vendorItemId===opt.vendorItemId?"#2E7D32":"#888",fontWeight:bestPerUnit?.vendorItemId===opt.vendorItemId?700:500}}>
                                             {formatMoney(opt.perUnit.price)}/{opt.perUnit.unit}{bestPerUnit?.vendorItemId===opt.vendorItemId&&unitOptions.filter(orderable).length>1?" · best per unit":""}
