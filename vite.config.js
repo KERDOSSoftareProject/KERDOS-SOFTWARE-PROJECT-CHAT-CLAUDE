@@ -5,7 +5,8 @@ import react from "@vitejs/plugin-react";
 // Use "/" for a custom domain and "/repository-name/" for GitHub Pages.
 export default defineConfig(({mode})=>{
   const env=loadEnv(mode,process.cwd(),"");
-  const raw=env.VITE_BASE_PATH||"/";
+  const repositoryName=(process.env.GITHUB_REPOSITORY||"").split("/").pop();
+  const raw=env.VITE_BASE_PATH||repositoryName||"/";
   const base=raw==="/"?"/":`/${raw.replace(/^\/+|\/+$/g,"")}/`;
   return {base,plugins:[react()]};
 });
