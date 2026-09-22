@@ -5,6 +5,7 @@ import { fileToText } from "./document-reader.js";
 import { createDocumentService } from "./services/documents.js";
 import { loadSnapshot, saveSnapshot } from "./offline-store.js";
 import { configureVocabulary, classifyCategory, nextCategoryRange, eachPrice, pricePerUnit, unitsForDimension, parsePackSize, packsEquivalent, brandsMatch, bestCatalogMatch, bestInvoiceMatch, compareProductIdentity, quoteStatus, MATCH_POLICY } from "./procurement.js";
+import {InvoicesPage,PriceSheetsPage} from "./pages/DocumentPages.jsx";
 
 const documents=createDocumentService(backend);
 
@@ -4276,322 +4277,32 @@ export default function App() {
           </div>
         )}
 
-        {/* IMPORT TAB */}
-        {/* INVOICES TAB */}
-        {tab==="invoices"&&(()=>{
-          const invoicesWithVariance=invoices.map(inv=>{
-            const lines=inv.invoice_lines||[];
-            const flagged=lines.filter(l=>l.price_variance!=null&&Math.abs(l.price_variance)>0.009);
-            const totalVariance=flagged.reduce((s,l)=>s+l.price_variance,0);
-            return {...inv,_lines:lines,_flagged:flagged,_totalVariance:r2(totalVariance)};
-          });
-          const invoicesByVendor=new Map();
-          for(const inv of invoicesWithVariance){
-            const vid=inv.vendor_id||"unknown";
-            if(!invoicesByVendor.has(vid)) invoicesByVendor.set(vid,[]);
-            invoicesByVendor.get(vid).push(inv);
-          }
-          const vendorInvoiceGroups=[...invoicesByVendor.entries()]
-            .map(([vendorId,invs])=>({
-              vendorId,
-              vendorName:invs[0]?.vendors?.name||"Unknown vendor",
-              invoices:invs.sort((a,b)=>{
-                const ad=a.invoice_date?new Date(a.invoice_date):new Date(a.created_at);
-                const bd=b.invoice_date?new Date(b.invoice_date):new Date(b.created_at);
-                return bd-ad;
-              }),
-            }))
-            .sort((a,b)=>a.vendorName.localeCompare(b.vendorName));
+        {/* DOCUMENT PAGES — kept outside App.jsx so each workflow has one clear home */}
+        {tab==="invoices"&&(
+          <InvoicesPage
+            vendors={vendors} invoices={invoices} vendorFilter={recordsVendorFilter} setVendorFilter={setRecordsVendorFilter}
+            vendorColors={vendorColors} formatDate={formatDate} formatMoney={formatMoney}
+            attentionCount={flaggedInvoiceLines.length+invoiceDerivedItems.length}
+            onImport={vendorId=>{setSelectedVendorId(vendorId);setImportMode("invoice");setShowPaste(true);}}
+            onExport={()=>downloadTextFile(`price-variance-report-${new Date().toISOString().split("T")[0]}.csv`,buildVarianceReportCSV(invoices,vendors),"text/csv")}
+            onViewOriginal={viewStoredFile} onEdit={setEditingInvoice} onDelete={deleteInvoice}
+            expandedId={expandedInvoiceId} setExpandedId={setExpandedInvoiceId}
+          />
+        )}
 
-          const visibleInvoiceGroups=recordsVendorFilter?vendorInvoiceGroups.filter(g=>g.vendorId===recordsVendorFilter):vendorInvoiceGroups;
-          const filteredVendorName=recordsVendorFilter?(vendors.find(v=>v.id===recordsVendorFilter)?.name||"Unknown vendor"):null;
-
-          return (
-          <div>
-            <div style={{fontSize:11,fontWeight:700,color:"rgba(255,255,255,0.65)",letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:8}}>
-              {recordsVendorFilter?`Showing ${filteredVendorName} — tap to change`:"Select a vendor, or view all below"}
-            </div>
-            <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:18}}>
-              {vendors.map(v=>{
-                const vc=vendorColors.get(v.id)||PALETTE[0];
-                const isSelected=recordsVendorFilter===v.id;
-                return (
-                  <button key={v.id} onClick={()=>setRecordsVendorFilter(isSelected?null:v.id)}
-                    style={{fontSize:12,fontWeight:700,padding:"6px 14px",borderRadius:20,cursor:"pointer",
-                      background:isSelected?vc.accent:vc.bg,color:isSelected?"white":vc.accent,
-                      border:isSelected?`2px solid ${vc.accent}`:"2px solid transparent"}}>
-                    {v.name}
-                  </button>
-                );
-              })}
-              {recordsVendorFilter&&(
-                <button onClick={()=>setRecordsVendorFilter(null)}
-                  style={{fontSize:12,fontWeight:700,padding:"6px 14px",borderRadius:20,cursor:"pointer",background:"none",color:"rgba(255,255,255,0.6)",border:"2px solid rgba(255,255,255,0.3)"}}>
-                  ✕ Clear
-                </button>
-              )}
-            </div>
-
-            {(flaggedInvoiceLines.length>0||invoiceDerivedItems.length>0)&&(
-              <div style={{background:"#FFF3E0",color:"#8A5A00",borderRadius:8,padding:"9px 12px",fontSize:12,marginBottom:14}}>
-                {flaggedInvoiceLines.length+invoiceDerivedItems.length} invoice line{flaggedInvoiceLines.length+invoiceDerivedItems.length===1?"":"s"} need attention. Open the applicable invoice file to review its details.
-              </div>
-            )}
-
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,margin:"0 0 12px"}}>
-              <h3 style={{margin:0,fontSize:16,color:"white"}}>Invoice History</h3>
-              <div style={{display:"flex",gap:8}}>
-                <button onClick={()=>downloadTextFile(`price-variance-report-${new Date().toISOString().split("T")[0]}.csv`,buildVarianceReportCSV(invoices,vendors),"text/csv")}
-                  style={{...btn("#2E7D32","white",{fontSize:11,padding:"7px 12px"})}}>📄 Export Variance Report</button>
-                <button onClick={()=>{setSelectedVendorId(recordsVendorFilter);setImportMode("invoice");setShowPaste(true);}}
-                  style={{...btn("white","#003584",{fontSize:11,padding:"7px 12px"})}}>🧾 Import Invoice</button>
-              </div>
-            </div>
-            {visibleInvoiceGroups.length===0?(
-              <div style={{background:"white",borderRadius:10,padding:32,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.08)"}}>
-                <div style={{fontSize:32,marginBottom:8}}>🧾</div>
-                <p style={{color:"#888",margin:"0 0 4px"}}>{recordsVendorFilter?`No invoices recorded for ${filteredVendorName} yet`:"No invoices recorded yet"}</p>
-                <button onClick={()=>{setSelectedVendorId(recordsVendorFilter);setImportMode("invoice");setShowPaste(true);}} style={{...btn("#003584","white",{fontSize:12,padding:"8px 16px",marginTop:8})}}>🧾 Import Invoice</button>
-              </div>
-            ):visibleInvoiceGroups.map(vendorGroup=>{
-              const vc=vendorColors.get(vendorGroup.vendorId)||PALETTE[0];
-              return (
-                <div key={vendorGroup.vendorId} style={{marginBottom:16}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                    <div style={{fontWeight:800,fontSize:13,color:vc.accent,paddingLeft:2}}>{vendorGroup.vendorName}</div>
-                    <button onClick={()=>{setSelectedVendorId(vendorGroup.vendorId);setImportMode("invoice");setShowPaste(true);}}
-                      style={{...btn("white",vc.accent,{fontSize:10,padding:"4px 9px",border:`1px solid ${vc.accent}`})}}>🧾 Import</button>
-                  </div>
-                  {vendorGroup.invoices.map(inv=>{
-              const isOpen=expandedInvoiceId===inv.id;
-              const hasVariance=inv._flagged.length>0;
-              return (
-              <div key={inv.id} style={{background:"white",borderRadius:8,marginBottom:8,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",overflow:"hidden"}}>
-                <div style={{padding:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <div style={{cursor:inv._lines.length?"pointer":"default",userSelect:"none"}}
-                    title={inv._lines.length?"Double-click to open invoice details":undefined}
-                    onDoubleClick={()=>{if(inv._lines.length)setExpandedInvoiceId(isOpen?null:inv.id);}}>
-                    <div style={{fontWeight:700,fontSize:13}}>📄 {inv.file_name||`Invoice${inv.invoice_number?` #${inv.invoice_number}`:""}`}</div>
-                    <div style={{fontSize:11,color:"#888",marginTop:2}}>{formatDate(inv.invoice_date)||formatDate(inv.created_at)}{inv.invoice_number?` · Invoice #${inv.invoice_number}`:""}</div>
-                    {inv._lines.length>0&&<div style={{fontSize:10,color:"#AAA",marginTop:2}}>Double-click to open</div>}
-                    {hasVariance&&(
-                      <div style={{fontSize:11,fontWeight:700,color:inv._totalVariance>0?"#E65100":"#0A8A4B",marginTop:2}}>
-                        ⚠️ Paid {formatMoney(Math.abs(inv._totalVariance))} {inv._totalVariance>0?"more":"less"} than quoted
-                      </div>
-                    )}
-                  </div>
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <div style={{fontWeight:800,fontSize:16}}>{formatMoney(inv.total_amount)}</div>
-                    {inv._lines.length>0&&<span style={{color:"#BBB",fontSize:12}}>{isOpen?"▲":"▼"}</span>}
-                    <button onClick={()=>setEditingInvoice(inv)} style={{background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:14,padding:0}} title="Edit">✎</button>
-                    <button onClick={()=>deleteInvoice(inv)} style={{background:"none",border:"none",cursor:"pointer",color:"#E65100",fontSize:16,padding:0}} title="Delete">×</button>
-                  </div>
-                </div>
-                {isOpen&&inv._lines.length>0&&(
-                  <div style={{borderTop:"1px solid #F0F0F0",padding:"10px 14px",background:"#FAFAFA"}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                      <div style={{fontSize:10,color:"#BBB",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase"}}>Price verification</div>
-                      {inv.file_path&&<button onClick={()=>viewStoredFile(inv.file_path)} style={{...btn("#003584","white",{fontSize:11,padding:"5px 10px"})}}>Open original file</button>}
-                    </div>
-                    {inv._lines.map(line=>(
-                      <div key={line.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,padding:"5px 0",borderBottom:"1px solid #F0F0F0"}}>
-                        <div>
-                          {line.description}
-                          {!line.vendor_item_id?(
-                            <span title="No vendor item on file matched this line at all - nothing to compare its price against" style={{marginLeft:6,fontSize:10,fontWeight:700,color:"#C62828",background:"#FFEBEE",padding:"1px 5px",borderRadius:4}}>⚠ no match</span>
-                          ):line.match_method==="fuzzy"?(
-                            <span title="Matched by wording similarity, not an exact code or description - worth double-checking" style={{marginLeft:6,fontSize:10,fontWeight:700,color:"#B26A00",background:"#FFF3E0",padding:"1px 5px",borderRadius:4}}>🔍 {line.match_confidence}% match</span>
-                          ):null}
-                        </div>
-                        <div style={{textAlign:"right"}}>
-                          <div style={{fontWeight:700}}>{formatMoney(line.unit_price)}</div>
-                          {line.price_variance!=null&&Math.abs(line.price_variance)>0.009?(
-                            <div style={{fontSize:10,color:line.price_variance>0?"#E65100":"#0A8A4B"}}>
-                              quoted {formatMoney(line.unit_price-line.price_variance)} ({line.price_variance>0?"+":""}{formatMoney(line.price_variance)})
-                            </div>
-                          ):line.price_variance!=null?(
-                            <div style={{fontSize:10,color:"#0A8A4B"}}>matches quote ✓</div>
-                          ):(
-                            <div style={{fontSize:10,color:"#CCC"}}>no quote on file</div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-          );
-        })()}
-
-        {/* PRICE SHEETS TAB */}
-        {tab==="priceSheets"&&(()=>{
-          const vendorItemMap=new Map(vendorItems.map(vi=>[vi.id,vi]));
-          const entriesByDocument=new Map();
-          const legacyDocuments=new Map();
-          (priceHistory||[]).forEach(ph=>{
-            const vi=vendorItemMap.get(ph.vendor_item_id);
-            if(!vi) return;
-            const entry={...ph,description:ph.source_description||vi.description};
-            if(ph.source_document_id){
-              if(!entriesByDocument.has(ph.source_document_id)) entriesByDocument.set(ph.source_document_id,[]);
-              entriesByDocument.get(ph.source_document_id).push(entry);
-            }else{
-              const key=`legacy__${vi.vendor_id}__${ph.effective_date}__${ph.source_file_name||""}`;
-              if(!legacyDocuments.has(key)) legacyDocuments.set(key,{
-                id:key,vendorId:vi.vendor_id,date:ph.effective_date,fileName:ph.source_file_name||"Imported price sheet",
-                filePath:ph.source_file_path||null,status:"complete",entries:[],
-              });
-              legacyDocuments.get(key).entries.push(entry);
-            }
-          });
-          const priceDocuments=importDocuments.filter(d=>d.document_kind==="pricelist").map(d=>({
-            id:d.id,vendorId:d.vendor_id,date:d.created_at,fileName:d.file_name||"Imported price sheet",
-            filePath:d.file_path||null,status:d.status,entries:entriesByDocument.get(d.id)||[],
-          }));
-          const knownDocumentIds=new Set(priceDocuments.map(d=>d.id));
-          for(const [documentId,entries] of entriesByDocument){
-            if(knownDocumentIds.has(documentId)||!entries.length) continue;
-            const first=entries[0];
-            const vi=vendorItemMap.get(first.vendor_item_id);
-            priceDocuments.push({id:documentId,vendorId:vi?.vendor_id,date:first.effective_date,
-              fileName:first.source_file_name||"Imported price sheet",filePath:first.source_file_path||null,
-              status:"complete",entries});
-          }
-          priceDocuments.push(...legacyDocuments.values());
-          const byVendor=new Map();
-          for(const document of priceDocuments){
-            if(!byVendor.has(document.vendorId)) byVendor.set(document.vendorId,[]);
-            byVendor.get(document.vendorId).push(document);
-          }
-          const vendorPriceGroups=[...byVendor.entries()]
-            .map(([vendorId,documents])=>({
-              vendorId,
-              vendorName:vendors.find(v=>v.id===vendorId)?.name||"Unknown vendor",
-              documents:documents.sort((a,b)=>new Date(b.date)-new Date(a.date)),
-            }))
-            .sort((a,b)=>a.vendorName.localeCompare(b.vendorName));
-
-          const visiblePriceGroups=priceSheetVendorFilter?vendorPriceGroups.filter(g=>g.vendorId===priceSheetVendorFilter):vendorPriceGroups;
-          const filteredVendorName=priceSheetVendorFilter?(vendors.find(v=>v.id===priceSheetVendorFilter)?.name||"Unknown vendor"):null;
-
-          return (
-          <div>
-            <div style={{fontSize:11,fontWeight:700,color:"rgba(255,255,255,0.65)",letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:8}}>
-              {priceSheetVendorFilter?`Showing ${filteredVendorName} — tap to change`:"Select a vendor, or view all below"}
-            </div>
-            <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:18}}>
-              {vendors.map(v=>{
-                const vc=vendorColors.get(v.id)||PALETTE[0];
-                const isSelected=priceSheetVendorFilter===v.id;
-                return (
-                  <button key={v.id} onClick={()=>setPriceSheetVendorFilter(isSelected?null:v.id)}
-                    style={{fontSize:12,fontWeight:700,padding:"6px 14px",borderRadius:20,cursor:"pointer",
-                      background:isSelected?vc.accent:vc.bg,color:isSelected?"white":vc.accent,
-                      border:isSelected?`2px solid ${vc.accent}`:"2px solid transparent"}}>
-                    {v.name}
-                  </button>
-                );
-              })}
-              {priceSheetVendorFilter&&(
-                <button onClick={()=>setPriceSheetVendorFilter(null)}
-                  style={{fontSize:12,fontWeight:700,padding:"6px 14px",borderRadius:20,cursor:"pointer",background:"none",color:"rgba(255,255,255,0.6)",border:"2px solid rgba(255,255,255,0.3)"}}>
-                  ✕ Clear
-                </button>
-              )}
-            </div>
-
-            {(priceUnavailableItems.length>0||expiredItems.length>0)&&(
-              <div style={{background:"#FFF3E0",color:"#8A5A00",borderRadius:8,padding:"9px 12px",fontSize:12,marginBottom:14}}>
-                {priceUnavailableItems.length+expiredItems.length} price{priceUnavailableItems.length+expiredItems.length===1?"":"s"} need attention. They remain excluded from current Order Guide purchasing until a valid price sheet replaces them.
-              </div>
-            )}
-
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"0 0 12px"}}>
-              <h3 style={{margin:0,fontSize:16,color:"white"}}>Price Sheet History</h3>
-              {org.role!=="employee"&&(
-                <button onClick={()=>{setSelectedVendorId(priceSheetVendorFilter);setImportMode("pricelist");setShowPaste(true);}}
-                  style={{...btn("white","#003584",{fontSize:11,padding:"7px 12px"})}}>📋 Import Price Sheet</button>
-              )}
-            </div>
-            {visiblePriceGroups.length===0?(
-              <div style={{background:"white",borderRadius:10,padding:32,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.08)"}}>
-                <div style={{fontSize:32,marginBottom:8}}>📋</div>
-                <p style={{color:"#888",margin:"0 0 4px"}}>{priceSheetVendorFilter?`No price sheets imported for ${filteredVendorName} yet`:"No price sheets imported yet"}</p>
-                {org.role!=="employee"&&(
-                  <button onClick={()=>{setSelectedVendorId(priceSheetVendorFilter);setImportMode("pricelist");setShowPaste(true);}} style={{...btn("#003584","white",{fontSize:12,padding:"8px 16px",marginTop:8})}}>📋 Import Price Sheet</button>
-                )}
-              </div>
-            ):visiblePriceGroups.map(vendorGroup=>{
-              const vc=vendorColors.get(vendorGroup.vendorId)||PALETTE[0];
-              return (
-                <div key={vendorGroup.vendorId} style={{marginBottom:16}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                    <div style={{fontWeight:800,fontSize:13,color:vc.accent,paddingLeft:2}}>{vendorGroup.vendorName}</div>
-                    {org.role!=="employee"&&(
-                      <div style={{display:"flex",gap:6}}>
-                        <button onClick={()=>expireVendorQuotes(vendorGroup.vendorId)}
-                          style={{...btn("#E65100","white",{fontSize:10,padding:"4px 9px"})}}>Remove Current Prices from Order Guide</button>
-                        <button onClick={()=>{setSelectedVendorId(vendorGroup.vendorId);setImportMode("pricelist");setShowPaste(true);}}
-                          style={{...btn(vc.accent,"white",{fontSize:10,padding:"4px 9px"})}}>📋 Import</button>
-                      </div>
-                    )}
-                  </div>
-                  {vendorGroup.documents.map(document=>{
-                    const documentKey=String(document.id);
-                    const isOpen=expandedPricePeriod===documentKey;
-                    return (
-                      <div key={documentKey} style={{background:"white",borderRadius:8,marginBottom:8,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",overflow:"hidden"}}>
-                        <button onDoubleClick={()=>setExpandedPricePeriod(isOpen?null:documentKey)}
-                          title="Double-click to open price-sheet details"
-                          style={{width:"100%",background:"none",border:"none",cursor:"pointer",padding:14,display:"flex",justifyContent:"space-between",alignItems:"center",userSelect:"none"}}>
-                          <div style={{textAlign:"left"}}>
-                            <div style={{fontWeight:700,fontSize:13}}>📄 {document.fileName}</div>
-                            <div style={{fontSize:11,color:"#888"}}>{formatDate(document.date)} · {document.entries.length} item{document.entries.length===1?"":"s"} · {document.status}</div>
-                            <div style={{fontSize:10,color:"#AAA",marginTop:2}}>Double-click to open</div>
-                          </div>
-                          <span style={{color:"#CCC"}}>{isOpen?"▲":"▼"}</span>
-                        </button>
-                        {isOpen&&(
-                          <div style={{borderTop:"1px solid #F0F0F0",padding:"10px 14px",background:"#FAFAFA"}}>
-                            {document.filePath&&<button onClick={()=>viewStoredFile(document.filePath)} style={{...btn("#003584","white",{fontSize:11,padding:"6px 10px",marginBottom:8})}}>Open original file</button>}
-                            {document.entries.map(entry=>(
-                              <div key={entry.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"5px 0",borderBottom:"1px solid #F0F0F0"}}>
-                                <div>{entry.description}</div>
-                                <div style={{textAlign:"right"}}><div style={{fontWeight:700}}>{formatMoney(entry.price)}</div>
-                                  {entry.quote_valid_until&&<div style={{fontSize:10,color:"#999"}}>Vendor valid through {formatDate(entry.quote_valid_until)}</div>}
-                                  {entry.source_file_name&&<div style={{fontSize:10,color:"#999"}}>{entry.source_file_name}</div>}
-                                  {entry.source_document_id&&<button onClick={()=>viewSourceDocument(entry.source_document_id)} style={{background:"none",border:"none",fontSize:10,color:"#003584",cursor:"pointer"}}>Original source ↗</button>}
-                                  {!entry.source_document_id&&entry.source_file_path&&<button onClick={()=>viewStoredFile(entry.source_file_path)} style={{background:"none",border:"none",fontSize:10,color:"#003584",cursor:"pointer"}}>Original ↗</button>}
-                                  {(()=>{
-                                    const currentItem=vendorItemMap.get(entry.vendor_item_id);
-                                    const isCurrent=currentItem&&quoteStatus(currentItem,org?.settings||{})==="current"&&Number(currentItem.price)===Number(entry.price);
-                                    return isCurrent&&org.role!=="employee"?(
-                                      <button onClick={()=>expireOneQuote(currentItem)}
-                                        style={{display:"block",margin:"4px 0 0 auto",background:"none",border:"none",fontSize:10,fontWeight:700,color:"#E65100",cursor:"pointer"}}>Remove from Order Guide</button>
-                                    ):null;
-                                  })()}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-            {priceHistoryHasMore&&<button onClick={loadOlderPriceHistory} disabled={loadingOlderPrices}
-              style={{...btn("white","#003584",{marginTop:10})}}>{loadingOlderPrices?"Loading earlier price sheets...":"Load earlier price sheet history"}</button>}
-          </div>
-          );
-        })()}
+        {tab==="priceSheets"&&(
+          <PriceSheetsPage
+            vendors={vendors} vendorItems={vendorItems} priceHistory={priceHistory} importDocuments={importDocuments}
+            vendorFilter={priceSheetVendorFilter} setVendorFilter={setPriceSheetVendorFilter} vendorColors={vendorColors}
+            formatDate={formatDate} formatMoney={formatMoney} orgSettings={org.settings} role={org.role}
+            onImport={vendorId=>{setSelectedVendorId(vendorId);setImportMode("pricelist");setShowPaste(true);}}
+            onExpireVendor={expireVendorQuotes} onExpireOne={expireOneQuote}
+            onViewOriginal={viewStoredFile} onViewSource={viewSourceDocument}
+            expandedId={expandedPricePeriod} setExpandedId={setExpandedPricePeriod}
+            unavailableCount={priceUnavailableItems.length} expiredCount={expiredItems.length}
+            hasMore={priceHistoryHasMore} loadingMore={loadingOlderPrices} onLoadMore={loadOlderPriceHistory}
+          />
+        )}
 
         {/* VENDOR DETAIL TAB */}
         {tab==="vendorDetail"&&vendorDetailId&&(()=>{
@@ -4616,10 +4327,10 @@ export default function App() {
           <>
             {org.role!=="employee"&&unmappedCount>0&&(
               <div style={{background:"#FFF3E0",borderRadius:10,padding:16,marginBottom:14,textAlign:"center"}}>
-                <div style={{fontWeight:700,color:"#E65100",marginBottom:4}}>{unmappedCount} imported item{unmappedCount===1?"":"s"} not showing up for ordering</div>
-                <p style={{color:"#8A5A00",fontSize:12,margin:"0 0 10px"}}>These were imported before catalog linking existed, so they're invisible on the Order Guide page. One-time fix, safe to run anytime.</p>
+                <div style={{fontWeight:800,color:"#E65100",marginBottom:4}}>Finish bringing {unmappedCount} imported vendor item{unmappedCount===1?"":"s"} into Item Catalog</div>
+                <p style={{color:"#8A5A00",fontSize:12,margin:"0 0 10px"}}>KERDOS will link equivalent vendor descriptions to one client-owned item and create a new client item only when no safe match exists. Your Full List remains one alphabetical catalog—not a copy of every price-sheet row.</p>
                 <button onClick={backfillMappings} disabled={backfilling} style={{...btn("#E65100")}}>
-                  {backfilling?"Linking...":`Link ${unmappedCount} item${unmappedCount===1?"":"s"} to your catalog`}
+                  {backfilling?"Building catalog...":`Add imported items to Item Catalog`}
                 </button>
               </div>
             )}

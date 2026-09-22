@@ -16,6 +16,8 @@ This is the canonical modular KERDOS application. It preserves the blue Order Gu
 
 **Document workflow:** Price sheets are imported only from the Price Sheets tab and invoices only from the Invoices tab. Completed imports immediately join the applicable vendor history as closed file rows; double-click a row to open its extracted details. Client price expiration defaults to manual and becomes automatic only after the organization explicitly selects automatic mode and a period.
 
+The Invoice History and Price Sheet History interfaces live in `src/pages/DocumentPages.jsx`, rather than inline in `App.jsx`. Price Sheets is a source-file/history page, not a second product catalog. Item Catalog remains the one alphabetical client-owned catalog; its reconciliation action links older vendor rows to an existing client item when safe and creates a new client item only when no safe match exists.
+
 **Important:** Email/Text Order opens an external compose window; the user must still send it. Saving a KERDOS purchase order records an internal order, not transmission to a vendor.
 
 **Remaining limitations:** No system can guarantee understanding every unstructured vendor message. Unresolved pack, missing price/date, mixed document, or unmatched identity is intentionally kept out of automatic ordering. Price history uses the time a quote was imported or manually confirmed unless a vendor-valid-through date was explicitly recognized. Invoice verification compares historical quotes at the invoice date, which may differ from the purchase-order date. The original PDF is preserved when storage succeeds.
