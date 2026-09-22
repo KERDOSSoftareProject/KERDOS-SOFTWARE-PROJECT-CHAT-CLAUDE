@@ -3833,12 +3833,16 @@ export default function App() {
           <div className="order-layout">
             <style>{`
               .order-layout { display:flex; gap:18px; align-items:flex-start; max-width:1320px; margin:0 auto; }
-              .order-aside { width:300px; flex-shrink:0; }
+              .order-aside { width:330px; flex-shrink:0; }
               .order-aside-inner { position:sticky; top:90px; }
+              .order-price-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:6px; }
+              .order-price-card { min-width:0; border-radius:8px; padding:6px 8px; background:white; text-align:left; }
+              .order-column-head { font-size:9px; font-weight:800; color:#718096; letter-spacing:.06em; text-transform:uppercase; }
               @media (max-width:720px) {
                 .order-layout { flex-direction:column; }
                 .order-aside { width:100%; }
                 .order-aside-inner { position:static; }
+                .order-price-grid { grid-template-columns:1fr; }
               }
             `}</style>
             <main style={{flex:1,minWidth:0}}>
@@ -3905,7 +3909,11 @@ export default function App() {
                 <div key={group.category} style={{marginBottom:8}}>
                   <div style={{fontSize:11,fontWeight:800,color:"rgba(255,255,255,0.75)",letterSpacing:"0.08em",textTransform:"uppercase",margin:"14px 0 6px"}}>{group.category}</div>
                   <div style={{background:"white",borderRadius:8,overflow:"hidden"}}>
-                    <div style={{display:"grid",gridTemplateColumns:"minmax(220px,1fr) 88px 104px 160px",columnGap:10,rowGap:2,alignItems:"center",padding:"8px 12px"}}>
+                    <div style={{display:"grid",gridTemplateColumns:"minmax(220px,1fr) 88px 104px 286px",columnGap:10,rowGap:2,alignItems:"center",padding:"8px 12px"}}>
+                      <div className="order-column-head" style={{padding:"2px 2px 7px"}}>Item</div>
+                      <div className="order-column-head" style={{padding:"2px 6px 7px"}}>Unit</div>
+                      <div className="order-column-head" style={{padding:"2px 6px 7px",textAlign:"center"}}>Qty</div>
+                      <div className="order-column-head" style={{padding:"2px 6px 7px"}}>Price comparison</div>
                       {group.items.flatMap(item=>{
                         const caseKey=`${item.catalogItemId}_case`;
                         const eachKey=`${item.catalogItemId}_each`;
@@ -3932,6 +3940,8 @@ export default function App() {
                         const activeRankIndex=rankedOptions.findIndex(opt=>opt.vendorItemId===(assignment?.vendorItemId||cheapest?.vendorItemId));
                         const nextRankedOption=rankedOptions[activeRankIndex>=0?activeRankIndex+1:1]||null;
                         const nextPriceDifference=nextRankedOption&&activePrice!=null?nextRankedOption.unitPrice-activePrice:null;
+                        const isBestPrice=activePrice!=null&&cheapestUnitPrice!=null&&activePrice<=cheapestUnitPrice+0.001;
+                        const primaryPriceLabel=isCustomPrice?"Negotiated price":isBestPrice?"Best price":"Selected price";
                         const bestPerUnit=unitOptions.filter(o=>orderable(o)&&o.perUnit).sort((a,b)=>a.perUnit.price-b.perUnit.price)[0]||null;
                         const menuOpen=openPriceMenu===activeKey;
                         const activeBlocked=assignment?assignment.unorderable:!!(cheapest&&!orderable(cheapest));
@@ -3980,24 +3990,33 @@ export default function App() {
                               title={activeBlocked?activeBlockReason:undefined}
                               style={{width:26,height:26,borderRadius:7,border:"none",background:activeBlocked?"#DDD":"#2E7D32",cursor:activeBlocked?"not-allowed":"pointer",fontSize:15,fontWeight:800,color:"white",flexShrink:0}}>+</button>
                           </div>,
-                          <div key={item.catalogItemId+"_price"} style={{textAlign:"right",padding:"6px",borderTop:"1px solid #F2F2F2",borderLeft:"1px solid #EEE",background:vc.bg}}>
-                            <button onClick={()=>{
+                          <div key={item.catalogItemId+"_price"} style={{padding:"6px",borderTop:"1px solid #F2F2F2",borderLeft:"1px solid #EEE",background:"#FAFBFC"}}>
+                            <div className="order-price-grid">
+                            <button className="order-price-card" onClick={()=>{
                                 setOpenPriceMenu(menuOpen?null:activeKey);
                                 setCustomPriceInput(activePrice!=null?String(activePrice):"");
                               }}
-                              style={{background:"white",border:`1px solid ${activeBlocked?"#FFCC80":vc.light}`,borderRadius:8,cursor:unitOptions.length?"pointer":"default",padding:"5px 8px",textAlign:"right",width:"100%"}}>
+                              style={{border:`1px solid ${activeBlocked?"#FFCC80":isBestPrice?"#81C784":vc.light}`,cursor:unitOptions.length?"pointer":"default",boxShadow:isBestPrice?"0 1px 3px rgba(46,125,50,.12)":"none"}}>
                               {activeBlocked?(
                                 <div style={{fontWeight:700,fontSize:11,color:"#E65100"}}>⚠ {activeBlockReason}{activeOption?` (last ${formatMoney(activeOption.casePrice)})`:""}</div>
                               ):(
-                                <div style={{fontWeight:800,fontSize:13,color:vc.accent}}>{formatMoney(activePrice)}{isCustomPrice&&<span title="Custom price" style={{marginLeft:2,fontSize:9}}>✎</span>}</div>
+                                <>
+                                  <div style={{fontSize:8,fontWeight:900,letterSpacing:".06em",textTransform:"uppercase",color:isBestPrice?"#2E7D32":"#667085",marginBottom:2}}>{primaryPriceLabel}</div>
+                                  <div style={{fontWeight:900,fontSize:15,color:isBestPrice?"#2E7D32":vc.accent}}>{formatMoney(activePrice)}{isCustomPrice&&<span title="Custom price" style={{marginLeft:2,fontSize:9}}>✎</span>}</div>
+                                </>
                               )}
-                              <div style={{fontSize:10,fontWeight:700,color:activeBlocked?"#E65100":vc.accent}}>{activeBlocked?"":activeVendorName} {unitOptions.length>1&&(menuOpen?"▲":"▾")}</div>
-                              {!activeBlocked&&nextRankedOption&&(
-                                <div style={{fontSize:9,color:"#666",marginTop:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
-                                  Next: {nextRankedOption.vendorName} {nextPriceDifference==null?"":nextPriceDifference>=0?`(+${formatMoney(nextPriceDifference)})`:`(${formatMoney(nextPriceDifference)})`}
-                                </div>
-                              )}
+                              <div style={{fontSize:10,fontWeight:800,color:activeBlocked?"#E65100":vc.accent,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{activeBlocked?"":activeVendorName} {unitOptions.length>1&&(menuOpen?"▲":"▾")}</div>
+                              {!activeBlocked&&nextRankedOption&&nextPriceDifference!=null&&nextPriceDifference>=0&&<div style={{fontSize:8,color:"#2E7D32",marginTop:2,fontWeight:700}}>Save {formatMoney(nextPriceDifference)} vs next</div>}
                             </button>
+                            {nextRankedOption?(
+                              <div className="order-price-card" style={{border:"1px solid #E3E7ED",color:"#667085"}}>
+                                <div style={{fontSize:8,fontWeight:900,letterSpacing:".06em",textTransform:"uppercase",color:"#98A2B3",marginBottom:2}}>Next price</div>
+                                <div style={{fontWeight:800,fontSize:14,color:"#344054"}}>{formatMoney(nextRankedOption.unitPrice)}</div>
+                                <div style={{fontSize:9,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{nextRankedOption.vendorName}</div>
+                                {nextPriceDifference!=null&&<div style={{fontSize:8,color:"#98A2B3",marginTop:2}}>{nextPriceDifference>=0?"+":""}{formatMoney(nextPriceDifference)}</div>}
+                              </div>
+                            ):<div className="order-price-card" style={{border:"1px dashed #E3E7ED",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#B0B7C3"}}>No alternate quote</div>}
+                            </div>
                           </div>,
                         ];
 
