@@ -1,0 +1,17 @@
+# KERDOS — launch and integration notes
+
+This is the canonical modular KERDOS application. It preserves the blue Order Guide interface while keeping backend providers, sessions, document handling, procurement rules, and offline storage in separate modules. Treat the project as one consistent release; do not mix its source files with older numbered versions.
+
+**Database:** existing KERDOS schema and prior migrations remain necessary. Apply `knowledge/migration_003_vocabulary.sql` (if not already applied), then migrations 004 through 007 in numeric order before deploying this client code. Migration 005 makes each accepted current-price/history pair one transaction; migration 006 makes invitation consumption/team membership one transaction; migration 007 records an invoice, its lines, and invoice-discovered vendor items/mappings atomically. `knowledge/vocabulary_v1.sql` is optional starter vocabulary; follow its SQL instructions. Never run a migration against live client data without first taking a database backup and reviewing it.
+
+**Provider boundary:** KERDOS owns the contract in `src/backend/contract.js`; provider implementations live under `src/backend/`. Runtime configuration may be supplied through `globalThis.__KERDOS_CONFIG__`, or build configuration may use the variables shown in `.env.example`. GitHub is not a runtime dependency. `data.js` and `backend.commands.table` are an explicitly temporary bridge for screens whose mutations have not yet moved to named KERDOS services; new code must not use that bridge.
+
+**GitHub Pages preview:** `.github/workflows/deploy-pages.yml` is an optional deployment adapter. Add repository secrets `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Set repository variable `VITE_BASE_PATH` to the repository name for a project URL (for example `KERDOS`) or `/` for a custom domain. Enable GitHub Pages with **GitHub Actions** as its source. Supabase authentication must allow the resulting preview URL. GitHub is not used by the running KERDOS application after the static files load.
+
+**Test:** `npm install && npm test && npm run build`. Tests exercise matching, parsing, sessions, the backend boundary, offline fallback, and deployment assets. They do not replace a staging smoke test with the actual database/storage permissions.
+
+**Capabilities:** local parsing for plain-text, CSV, XLSX, PDF, email `.eml`, and HTML documents; ambiguous fields stay in review. OCR assets are bundled locally for image-only documents. Complex MIME attachments may need to be supplied separately. A message with intertwined invoice and new-price sections requires splitting at review: no guessed cross-document writes. Order baskets survive refreshes on the same device, and the last synchronized workspace can be viewed during a connection outage.
+
+**Important:** Email/Text Order opens an external compose window; the user must still send it. Saving a KERDOS purchase order records an internal order, not transmission to a vendor.
+
+**Remaining limitations:** No system can guarantee understanding every unstructured vendor message. Unresolved pack, missing price/date, mixed document, or unmatched identity is intentionally kept out of automatic ordering. Price history uses the time a quote was imported or manually confirmed unless a vendor-valid-through date was explicitly recognized. Invoice verification compares historical quotes at the invoice date, which may differ from the purchase-order date. The original PDF is preserved when storage succeeds.
