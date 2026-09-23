@@ -42,7 +42,7 @@ export function createCatalogService(backend){
     async splitMapping({organizationId,mappingId,description,catalogItems,categories}){
       const category=classifyCategory(description,categories)||await this.ensureHoldingCategory(organizationId,categories);
       const created=await this.createItem({organizationId,name:description,categoryId:category?.id||null,catalogItems,categories});
-      await run(table("item_mappings").update({catalog_item_id:created.id,comparison_track:"exact",confidence_score:100}).eq("id",mappingId),"Could not point the vendor item at it");
+      await run(table("item_mappings").update({catalog_item_id:created.id,comparison_track:"exact",confidence_score:100,match_method:"manual"}).eq("id",mappingId),"Could not point the vendor item at it");
       return created;
     },
     confirmMapping(mappingId){
@@ -50,14 +50,6 @@ export function createCatalogService(backend){
     },
     remapToExisting(mappingId,catalogItemId){
       return run(table("item_mappings").update({catalog_item_id:catalogItemId,comparison_track:"exact",confidence_score:100,match_method:"manual"}).eq("id",mappingId),"Could not remap the item");
-    },
-    async mergeItems(sourceCatalogItemId,targetCatalogItemId){
-      if(sourceCatalogItemId===targetCatalogItemId)return;
-      const mappings=await run(table("item_mappings").select("id").eq("catalog_item_id",sourceCatalogItemId),"Could not read the item's vendor links");
-      for(const mapping of mappings||[]){
-        await run(table("item_mappings").update({catalog_item_id:targetCatalogItemId,comparison_track:"exact",confidence_score:100}).eq("id",mapping.id),"Could not move a vendor link");
-      }
-      return run(table("catalog_items").delete().eq("id",sourceCatalogItemId),"Could not remove the merged item");
     },
     renameItem(catalogItemId,name){
       return run(table("catalog_items").update({name:name.slice(0,120)}).eq("id",catalogItemId),"Could not rename the item");

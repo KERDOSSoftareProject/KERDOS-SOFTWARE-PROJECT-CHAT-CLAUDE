@@ -208,9 +208,7 @@ function normalizedPrice(price, pack) {
 // 1 sheet, and 1 each are different purchasing configurations. Unknown
 // units intentionally compare only with the same normalized custom unit.
 function packsEquivalent(a, b) {
-  const x=parsePackSize(a), y=parsePackSize(b);
-  if(!x?.parsed || !y?.parsed) return false;
-  return x.dimension===y.dimension && x.baseUnit===y.baseUnit && x.baseTotal===y.baseTotal;
+  return comparePurchasingPack(a,b).status==="same";
 }
 
 // Brand equality is case/space-insensitive; an empty brand never matches

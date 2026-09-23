@@ -45,6 +45,7 @@ t("4/1 GAL each price", eachPrice(74.89,"4/1 GAL")?.price, 18.72);
 t("50 LB normalized unit", normalizedPrice(25,"50 LB")?.unit, "G");
 t("category block", JSON.stringify(nextCategoryRange([{range_end:19999}])), '{"range_start":20000,"range_end":29999}');
 t("same normalized pack",packsEquivalent("4/1 GAL","4 x 1 gallon"),true);
+t("same total but different case configuration is not interchangeable",packsEquivalent("4/1 GAL","2/2 GAL"),false);
 t("same number, different dimensions",packsEquivalent("1 G","1 ML"),false);
 t("same custom unit",packsEquivalent("24 SHEET","24 sheet"),true);
 t("different custom units",packsEquivalent("24 SHEET","24 TILE"),false);

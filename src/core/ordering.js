@@ -15,6 +15,14 @@ export function blockReason(option){
   return null;
 }
 
+// An agreed price belongs to one vendor and one purchasing unit. It
+// participates in the ranking like a current quote; vendor choice is a
+// separate explicit override.
+export function priceForOffer(option,negotiation,unit="case"){
+  const quoted=unit==="each"?option.eachPrice:option.casePrice;
+  return negotiation?.vendorId===option.vendorId&&Number.isFinite(negotiation.price)&&negotiation.price>0?negotiation.price:quoted;
+}
+
 export function solveOrder(cartItems,vendors){
   if(!cartItems.length)return [];
   let assignments=cartItems.map(item=>{

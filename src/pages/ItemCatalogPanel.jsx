@@ -13,6 +13,7 @@ const catalogService=createCatalogService(backend);
 const categoryService=createCategoryService(backend);
 
 const REVIEW_FILTER="__needs_review__";
+const MULTI_VENDOR_FILTER="__multi_vendor__";
 
 // Small labeled block used by the review sections on Item Catalog, Price
 // Sheets, and Invoices - each tab only ever shows the review data that's
@@ -22,7 +23,7 @@ const REVIEW_FILTER="__needs_review__";
 function Section({title,count,emptyText,children}){
   return (
     <div style={{marginBottom:20}}>
-      <div style={{fontWeight:800,fontSize:13,color:"#003584",marginBottom:8}}>{title} {count>0&&<span style={{color:"#E65100"}}>({count})</span>}</div>
+      <div style={{fontWeight:800,fontSize:13,color:"white",marginBottom:8}}>{title} {count>0&&<span style={{color:"#FFB366"}}>({count})</span>}</div>
       {count===0?(
         <div style={{fontSize:12,color:"#AAA",background:"white",borderRadius:8,padding:"10px 12px"}}>{emptyText}</div>
       ):children}
@@ -30,7 +31,7 @@ function Section({title,count,emptyText,children}){
   );
 }
 
-export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,mappings,vendorItems,categories,onOpenVendor,onUpdated}) {
+export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,mappings,vendorItems,categories,onUpdated}) {
   const canManage=role==="owner"||role==="manager";
   const [search,setSearch]=useState("");
   const [showReview,setShowReview]=useState(false);
@@ -70,6 +71,18 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
   const vMap=useMemo(()=>new Map(vendors.map(v=>[v.id,v])),[vendors]);
   const viMap=useMemo(()=>new Map(vendorItems.map(vi=>[vi.id,vi])),[vendorItems]);
   const ciMap=useMemo(()=>new Map(catalogItems.map(ci=>[ci.id,ci])),[catalogItems]);
+  const linkedByCatalog=useMemo(()=>{
+    const result=new Map();
+    for(const mapping of mappings){const vendorItem=viMap.get(mapping.vendor_item_id);if(!vendorItem)continue;const list=result.get(mapping.catalog_item_id)||[];list.push(vendorItem);result.set(mapping.catalog_item_id,list);}
+    return result;
+  },[mappings,viMap]);
+  function candidateSummary(catalogItemId,sourcePack){
+    const linked=linkedByCatalog.get(catalogItemId)||[];
+    const packs=[...new Set(linked.map(vi=>vi.pack_size).filter(Boolean))];
+    const vendorsCount=new Set(linked.map(vi=>vi.vendor_id)).size;
+    const compared=packs.length===1?comparePurchasingPack(sourcePack,packs[0]):null;
+    return {packs,vendorsCount,warning:packs.length>1?"Mixed existing packs — inspect first":compared?.status!=="same"?"Pack needs verification":null};
+  }
 
   // Categories are ordered alphabetically - same as Order Guide, so both screens'
   // category chips read the same way. Internal KERDOS item identifiers
@@ -86,6 +99,11 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
   const needsReviewItems=useMemo(()=>
     new Set(productList.filter(item=>item.options.some(o=>["similar","review"].includes(o.matchTrack))).map(item=>item.catalogItemId)),
   [productList]);
+  const multiVendorItems=useMemo(()=>productList.filter(item=>new Set(item.options.map(o=>o.vendorId)).size>=2),[productList]);
+  const comparableItems=useMemo(()=>multiVendorItems.filter(item=>{
+    const eligible=item.options.filter(orderable);
+    return eligible.some((a,i)=>eligible.slice(i+1).some(b=>a.vendorId!==b.vendorId&&comparePurchasingPack(a.packSize,b.packSize).status==="same"));
+  }),[multiVendorItems]);
 
   // Full List is one alphabetical client catalog. Selecting a product type
   // narrows that same alphabetized list without changing item identity or
@@ -93,11 +111,12 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
   const groupedItems=useMemo(()=>{
     const items=productList.filter(item=>{
       if(categoryFilter===REVIEW_FILTER){ if(!needsReviewItems.has(item.catalogItemId)) return false; }
+      else if(categoryFilter===MULTI_VENDOR_FILTER){if(new Set(item.options.map(o=>o.vendorId)).size<2)return false;}
       else if(categoryFilter&&item.category!==categoryFilter) return false;
       return itemMatchesSearch(item,search);
     });
     const alphabetized=[...items].sort((a,b)=>compareItems(a,b,"alpha"));
-    const label=categoryFilter===REVIEW_FILTER?"Needs Review":categoryFilter||"Full List";
+    const label=categoryFilter===REVIEW_FILTER?"Needs Review":categoryFilter===MULTI_VENDOR_FILTER?"Multiple Vendors":categoryFilter||"Full List";
     return alphabetized.length?[{category:label,items:alphabetized}]:[];
   },[productList,search,categoryFilter,needsReviewItems]);
 
@@ -122,16 +141,27 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
     catch(err){ setError(err.message||String(err)); return false; }
   }
   async function handleConfirm(mappingId){
+    const mapping=mappings.find(m=>m.id===mappingId);
+    const vendor=viMap.get(mapping?.vendor_item_id);
+    const target=ciMap.get(mapping?.catalog_item_id);
+    if(!window.confirm(`Confirm this association?\n\nVendor product: ${vendor?.description||"Unknown"}\nPack: ${vendor?.pack_size||"Not provided"}\nCatalog item: ${target?.name||"Unknown"}\n\nThis approval makes the vendor price eligible for ordering and keeps this link for future imports of the same vendor product.`))return;
     setBusyMappingId(mappingId);
     await act(()=>catalogService.confirmMapping(mappingId));
     setBusyMappingId(null);
   }
   async function handleRemapExisting(mappingId,newCatalogItemId){
+    const mapping=mappings.find(m=>m.id===mappingId);
+    const vendor=viMap.get(mapping?.vendor_item_id);
+    const current=ciMap.get(mapping?.catalog_item_id);
+    const target=ciMap.get(newCatalogItemId);
+    const summary=candidateSummary(newCatalogItemId,vendor?.pack_size);
+    if(!target||!window.confirm(`Move this vendor product?\n\n${vendor?.description||"Unknown vendor product"}\nIts pack: ${vendor?.pack_size||"Not provided"}\n\nFrom: ${current?.name||"Unknown"}\nTo: #${target.master_item_number} ${target.name}\nExisting packs: ${summary.packs.join(", ")||"Not listed"}\n${summary.warning?`Attention: ${summary.warning}. Approve only if you have checked the actual products.\n`:""}\nOnly this vendor product moves. The other vendor products stay where they are. This selection is saved for future imports.`))return;
     setBusyMappingId(mappingId);
     if(await act(()=>catalogService.remapToExisting(mappingId,newCatalogItemId))){ setRemapOpenFor(null); setRemapSearch(""); }
     setBusyMappingId(null);
   }
   async function handleRemapNew(mappingId,description){
+    if(!window.confirm(`Create a separate catalog item for "${description}"?\n\nOnly this vendor product will move to the new item. Existing vendor products remain in their current catalog items.`))return;
     setBusyMappingId(mappingId);
     if(await act(()=>catalogService.splitMapping({organizationId:orgId,mappingId,description,catalogItems,categories}))){ setRemapOpenFor(null); setRemapSearch(""); }
     setBusyMappingId(null);
@@ -291,6 +321,15 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
         {canManage&&totalCount>0&&<button onClick={()=>setShowReview(true)} style={{...btn(showReview?"#E65100":"#FFF3E0",showReview?"white":"#B26A00",{fontSize:12,padding:"9px 14px",fontWeight:800})}}>Needs review ({totalCount})</button>}
       </div>
 
+      <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:14}}>
+        <button onClick={()=>{setShowReview(false);setCategoryFilter(MULTI_VENDOR_FILTER);}} style={{background:"white",border:"1px solid #C5DBF4",borderRadius:9,padding:"11px 14px",cursor:"pointer",textAlign:"left",minWidth:220}}>
+          <b style={{display:"block",fontSize:20,color:"#0D4385"}}>{multiVendorItems.length}</b><span style={{fontSize:12,color:"#405A76"}}>Products linked to 2+ vendors</span>
+        </button>
+        <div style={{background:"#EBF8F1",border:"1px solid #B9E3CB",borderRadius:9,padding:"11px 14px",minWidth:220}}>
+          <b style={{display:"block",fontSize:20,color:"#23764C"}}>{comparableItems.length}</b><span style={{fontSize:12,color:"#405A76"}}>With matching packs and current quotes</span>
+        </div>
+      </div>
+
       {canManage&&showReview&&totalCount>0&&(
         <div style={{marginBottom:24,paddingBottom:4}}>
           <Section title="Vendor products to check" count={lowConfidenceMatches.length} emptyText="All vendor products are linked to the right catalog items.">
@@ -321,6 +360,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                         <button key={ci.id} disabled={busyMappingId===m.mappingId} onClick={()=>handleRemapExisting(m.mappingId,ci.id)}
                           style={{display:"block",width:"100%",textAlign:"left",background:"white",border:"1px solid #EEE",borderRadius:5,padding:"6px 8px",marginBottom:4,fontSize:12,cursor:"pointer"}}>
                           <span style={{fontFamily:"monospace",color:"#003584",fontWeight:800}}>#{ci.master_item_number}</span> · {ci.name}
+                          <span style={{display:"block",paddingLeft:3,fontSize:10,color:candidateSummary(ci.id,m.packSize).warning?"#B26A00":"#39764F"}}>Pack: {candidateSummary(ci.id,m.packSize).packs.join(", ")||"Unknown"} · {candidateSummary(ci.id,m.packSize).vendorsCount} vendor(s){candidateSummary(ci.id,m.packSize).warning?` · ${candidateSummary(ci.id,m.packSize).warning}`:""}</span>
                         </button>
                       ))}
                     </div>
@@ -355,6 +395,9 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
       <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:18}}>
         <button onClick={()=>setCategoryFilter("")} style={chipStyle(!categoryFilter)}>
           Full List
+        </button>
+        <button onClick={()=>setCategoryFilter(categoryFilter===MULTI_VENDOR_FILTER?"":MULTI_VENDOR_FILTER)} style={chipStyle(categoryFilter===MULTI_VENDOR_FILTER)}>
+          Multiple Vendors ({multiVendorItems.length})
         </button>
         {needsReviewItems.size>0&&(
           <button onClick={()=>setCategoryFilter(categoryFilter===REVIEW_FILTER?"":REVIEW_FILTER)}
@@ -457,7 +500,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                     <span style={{color:"#2870B8",fontSize:14,fontWeight:900}}>{expanded?"▾":"▸"}</span>
                     <div style={{minWidth:0}}>
                       <div style={{fontWeight:800,fontSize:13,color:"#152D4B"}}>{item.name}</div>
-                      <div style={{fontSize:10,color:"#75859A",marginTop:3}}>{item.category} · {item.options.length} vendor product{item.options.length===1?"":"s"}</div>
+                      <div style={{fontSize:10,color:"#75859A",marginTop:3}}>{item.category} · {new Set(item.options.map(o=>o.vendorId)).size} vendor{new Set(item.options.map(o=>o.vendorId)).size===1?"":"s"} linked</div>
                     </div>
                     <div style={{minWidth:0}}>
                       <div style={{fontWeight:700,fontSize:12,color:"#23466D"}}>{first?.vendorName||"No vendor yet"}</div>
@@ -478,13 +521,16 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                       <button onClick={()=>setShowItemNumberFor(showItemNumberFor===item.catalogItemId?null:item.catalogItemId)} style={{border:"1px solid #CBD9E9",borderRadius:6,background:"white",color:"#173C70",padding:"6px 9px",fontWeight:700,cursor:"pointer",fontSize:11}}>{showItemNumberFor===item.catalogItemId?`KERDOS #${item.masterItemNumber} ▴`:"KERDOS number ▾"}</button>
                     </div>
                     <div style={{fontSize:11,fontWeight:800,color:"#597089",textTransform:"uppercase",letterSpacing:".05em",marginBottom:7}}>Vendor products · choose an association to correct it</div>
+                    {new Set(item.options.map(o=>o.vendorId)).size>=2&&<div style={{background:comparableItems.some(p=>p.catalogItemId===item.catalogItemId)?"#E6F5ED":"#FFF3E0",color:comparableItems.some(p=>p.catalogItemId===item.catalogItemId)?"#23764C":"#9C5A00",padding:"8px 10px",borderRadius:6,fontSize:11,fontWeight:700,marginBottom:8}}>
+                      {comparableItems.some(p=>p.catalogItemId===item.catalogItemId)?"At least two vendors have current, matching-pack offers for this product.":"Multiple vendors are linked, but their current offers or packs are not yet verified as comparable."}
+                    </div>}
                     <div style={{display:"grid",gridTemplateColumns:"140px minmax(180px,1fr) 95px 95px 100px 170px",gap:10,padding:"8px 10px",fontSize:10,fontWeight:800,color:"#49617C",background:"#DFEAF7",borderRadius:"6px 6px 0 0"}}><span>Vendor</span><span>Description</span><span>Pack</span><span>Price</span><span>Per unit</span><span>Association</span></div>
                     {item.options.map(o=><div key={o.vendorItemId} style={{display:"grid",gridTemplateColumns:"140px minmax(180px,1fr) 95px 95px 100px 170px",gap:10,padding:"10px",alignItems:"center",background:"white",borderBottom:"1px solid #E8EDF4",fontSize:11}}>
                       <b>{o.vendorName}</b><span>{o.description}{o.brand?` · ${o.brand}`:""}</span><b>{o.packSize||"Unknown"}</b><b>{formatMoney(o.casePrice)}</b><b>{o.perUnit?`${formatMoney(o.perUnit.price)}/${o.perUnit.unit}`:"—"}</b>
                       <button disabled={!canManage} onClick={()=>{setRemapOpenFor(o.mappingId);setRemapSearch("");}} style={{...btn("#E8F1FB","#003584",{fontSize:10,padding:"6px"})}}>Change association</button>
                       {remapOpenFor===o.mappingId&&<div style={{gridColumn:"1 / -1",background:"#F4F8FE",padding:9,borderRadius:6}}>
                         <input autoFocus style={{...inp,fontSize:12}} placeholder="Search by KERDOS number or item name" value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} />
-                        <div style={{maxHeight:160,overflowY:"auto",marginTop:5}}>{catalogItems.filter(ci=>ci.id!==item.catalogItemId&&(!remapSearch.trim()||ci.name.toLowerCase().includes(remapSearch.trim().toLowerCase())||String(ci.master_item_number).includes(remapSearch.trim()))).slice(0,10).map(ci=><button key={ci.id} disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapExisting(o.mappingId,ci.id)} style={{display:"block",width:"100%",textAlign:"left",background:"white",border:"1px solid #E4EBF3",borderRadius:4,padding:"7px 8px",marginBottom:3,cursor:"pointer"}}><b style={{color:"#003584"}}>#{ci.master_item_number}</b> · {ci.name}</button>)}</div>
+                        <div style={{maxHeight:160,overflowY:"auto",marginTop:5}}>{catalogItems.filter(ci=>ci.id!==item.catalogItemId&&(!remapSearch.trim()||ci.name.toLowerCase().includes(remapSearch.trim().toLowerCase())||String(ci.master_item_number).includes(remapSearch.trim()))).slice(0,10).map(ci=><button key={ci.id} disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapExisting(o.mappingId,ci.id)} style={{display:"block",width:"100%",textAlign:"left",background:"white",border:"1px solid #E4EBF3",borderRadius:4,padding:"7px 8px",marginBottom:3,cursor:"pointer"}}><b style={{color:"#003584"}}>#{ci.master_item_number}</b> · {ci.name}<span style={{display:"block",fontSize:10,color:candidateSummary(ci.id,o.packSize).warning?"#B26A00":"#39764F"}}>Pack: {candidateSummary(ci.id,o.packSize).packs.join(", ")||"Unknown"} · {candidateSummary(ci.id,o.packSize).vendorsCount} vendor(s){candidateSummary(ci.id,o.packSize).warning?` · ${candidateSummary(ci.id,o.packSize).warning}`:""}</span></button>)}</div>
                         <div style={{display:"flex",gap:8,marginTop:6}}><button disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapNew(o.mappingId,o.description)} style={{...btn("#E5EEF8","#003584",{fontSize:11})}}>Create separate product</button><button onClick={()=>{setRemapOpenFor(null);setRemapSearch("");}} style={{...btn("#EEE","#555",{fontSize:11})}}>Cancel</button></div>
                       </div>}
                       {!orderable(o)&&<span style={{gridColumn:"1 / -1",fontSize:10,color:"#B26A00"}}>⚠ {blockReason(o)}</span>}

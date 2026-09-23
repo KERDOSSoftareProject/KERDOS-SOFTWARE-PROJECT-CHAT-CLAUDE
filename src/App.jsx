@@ -10,7 +10,7 @@ import { createOperationsService } from "./services/operations.js";
 import { createImportService } from "./services/imports.js";
 import { loadSnapshot, saveSnapshot } from "./offline-store.js";
 import { configureVocabulary, eachPrice, pricePerUnit, parsePackSize, brandsMatch, quoteStatus } from "./procurement.js";
-import { blockReason, orderable, solveOrder } from "./core/ordering.js";
+import { blockReason, orderable, priceForOffer, solveOrder } from "./core/ordering.js";
 import { compareItems, itemMatchesSearch } from "./core/catalog-browse.js";
 import { configureLocale, formatDate, formatMoney } from "./localization.js";
 import { buildVarianceReportCSV, downloadTextFile } from "./reporting.js";
@@ -100,10 +100,12 @@ export default function App() {
   const [editingInvoice,setEditingInvoice]=useState(null);
   const [unitSelection,setUnitSelection]=useState({});
   const [vendorOverride,setVendorOverride]=useState({});
-  const [priceOverride,setPriceOverride]=useState({});
+  const [negotiatedPrices,setNegotiatedPrices]=useState({}); // unit key -> {vendorId,price}
   const [splitOrders,setSplitOrders]=useState({}); // {item/unit key: {vendorId, quantity}}
   const [openPriceMenu,setOpenPriceMenu]=useState(null);
   const [customPriceDrafts,setCustomPriceDrafts]=useState({});
+  const [negotiatedVendorDrafts,setNegotiatedVendorDrafts]=useState({});
+  const [negotiationErrors,setNegotiationErrors]=useState({});
   const [expandedOrderTabOrder,setExpandedOrderTabOrder]=useState(null);
   const [expandedInvoiceId,setExpandedInvoiceId]=useState(null);
   const [expandedPricePeriod,setExpandedPricePeriod]=useState(null);
@@ -242,7 +244,7 @@ export default function App() {
 
   async function switchOrganization(organizationId){
     if(!organizationId||organizationId===org?.id)return;
-    setQuantities({});setVendorOverride({});setPriceOverride({});setUnitSelection({});
+    setQuantities({});setVendorOverride({});setNegotiatedPrices({});setUnitSelection({});
     await loadData(organizationId);
   }
 
@@ -426,8 +428,12 @@ export default function App() {
     try{ saved=JSON.parse(localStorage.getItem(basketKey)||"null"); }catch{}
     setQuantities(saved?.quantities||{});
     setUnitSelection(saved?.unitSelection||{});
-    setVendorOverride(saved?.vendorOverride||{});
-    setPriceOverride(saved?.priceOverride||{});
+    const legacyPrices=saved?.priceOverride||{};
+    const legacyVendors=saved?.vendorOverride||{};
+    setNegotiatedPrices(saved?.negotiatedPrices||Object.fromEntries(Object.entries(legacyPrices)
+      .filter(([key,value])=>legacyVendors[key]&&Number.isFinite(Number(value)))
+      .map(([key,value])=>[key,{vendorId:legacyVendors[key],price:Number(value)}])));
+    setVendorOverride(saved?.negotiatedPrices?legacyVendors:Object.fromEntries(Object.entries(legacyVendors).filter(([key])=>!(key in legacyPrices))));
     setSplitOrders(saved?.splitOrders||{});
     setRestoredBasketKey(basketKey);
   },[basketKey]);
@@ -435,14 +441,14 @@ export default function App() {
   useEffect(()=>{
     if(!basketKey||restoredBasketKey!==basketKey) return;
     try{
-      localStorage.setItem(basketKey,JSON.stringify({quantities,unitSelection,vendorOverride,priceOverride,splitOrders}));
+      localStorage.setItem(basketKey,JSON.stringify({quantities,unitSelection,vendorOverride,negotiatedPrices,splitOrders}));
     }catch{}
-  },[basketKey,restoredBasketKey,quantities,unitSelection,vendorOverride,priceOverride,splitOrders]);
+  },[basketKey,restoredBasketKey,quantities,unitSelection,vendorOverride,negotiatedPrices,splitOrders]);
 
   function clearBasket(){
     setQuantities({});
     setVendorOverride({});
-    setPriceOverride({});
+    setNegotiatedPrices({});
     setSplitOrders({});
   }
 
@@ -463,7 +469,6 @@ export default function App() {
         return;
       }
       setVendorOverride(previous=>({...previous,[dragged.key]:vendorId}));
-      setPriceOverride(previous=>{const next={...previous};delete next[dragged.key];return next;});
     }
     setQty(dragged.key,(quantities[dragged.key]||0)+1);
   }
@@ -478,31 +483,33 @@ export default function App() {
       const eachQty=quantities[eachKey]||0;
       if(caseQty>0){
         const customVendorId=vendorOverride[caseKey]||null;
-        const customPrice=priceOverride[caseKey]!=null?priceOverride[caseKey]:null;
+        const negotiation=negotiatedPrices[caseKey];
+        const preferredVendorId=customVendorId||prod.options.filter(orderable).sort((a,b)=>priceForOffer(a,negotiation)-priceForOffer(b,negotiation))[0]?.vendorId;
         const split=splitOrders[caseKey];
-        const splitQty=split&&split.vendorId!==(customVendorId||prod.options.filter(orderable).sort((a,b)=>a.casePrice-b.casePrice)[0]?.vendorId)&&prod.options.some(o=>o.vendorId===split.vendorId&&orderable(o))?Math.min(caseQty-1,Math.max(0,Math.floor(Number(split.quantity)||0))):0;
+        const splitQty=split&&split.vendorId!==preferredVendorId&&prod.options.some(o=>o.vendorId===split.vendorId&&orderable(o))?Math.min(caseQty-1,Math.max(0,Math.floor(Number(split.quantity)||0))):0;
         items.push({...prod,quantity:caseQty-splitQty,orderUnit:"case",
-          options:prod.options.map(o=>({...o,price:customPrice!=null&&o.vendorId===customVendorId?customPrice:o.casePrice,orderUnit:"case"})),
-          forcedVendorId:splitQty>0?(customVendorId||prod.options.filter(orderable).sort((a,b)=>a.casePrice-b.casePrice)[0]?.vendorId):customPrice!=null?null:customVendorId,
+          options:prod.options.map(o=>({...o,price:priceForOffer(o,negotiation),orderUnit:"case"})),
+          forcedVendorId:splitQty>0?preferredVendorId:customVendorId,
           forcedPrice:null});
         if(splitQty>0)items.push({...prod,catalogItemId:`${prod.catalogItemId}_split_case`,quantity:splitQty,orderUnit:"case",
           options:prod.options.map(o=>({...o,price:o.casePrice,orderUnit:"case"})),forcedVendorId:split.vendorId,forcedPrice:null});
       }
       if(eachQty>0&&prod.options.some(o=>o.eachPrice)){
         const customVendorId=vendorOverride[eachKey]||null;
-        const customPrice=priceOverride[eachKey]!=null?priceOverride[eachKey]:null;
+        const negotiation=negotiatedPrices[eachKey];
+        const preferredVendorId=customVendorId||prod.options.filter(o=>o.eachPrice&&orderable(o)).sort((a,b)=>priceForOffer(a,negotiation,"each")-priceForOffer(b,negotiation,"each"))[0]?.vendorId;
         const split=splitOrders[eachKey];
-        const splitQty=split&&split.vendorId!==(customVendorId||prod.options.filter(o=>o.eachPrice&&orderable(o)).sort((a,b)=>a.eachPrice-b.eachPrice)[0]?.vendorId)&&prod.options.some(o=>o.vendorId===split.vendorId&&o.eachPrice&&orderable(o))?Math.min(eachQty-1,Math.max(0,Math.floor(Number(split.quantity)||0))):0;
+        const splitQty=split&&split.vendorId!==preferredVendorId&&prod.options.some(o=>o.vendorId===split.vendorId&&o.eachPrice&&orderable(o))?Math.min(eachQty-1,Math.max(0,Math.floor(Number(split.quantity)||0))):0;
         items.push({...prod,catalogItemId:`${prod.catalogItemId}_each`,quantity:eachQty-splitQty,orderUnit:"each",
-          options:prod.options.filter(o=>o.eachPrice).map(o=>({...o,price:customPrice!=null&&o.vendorId===customVendorId?customPrice:o.eachPrice,packSize:o.eachSize,orderUnit:"each"})),
-          forcedVendorId:splitQty>0?(customVendorId||prod.options.filter(o=>o.eachPrice&&orderable(o)).sort((a,b)=>a.eachPrice-b.eachPrice)[0]?.vendorId):customPrice!=null?null:customVendorId,
+          options:prod.options.filter(o=>o.eachPrice).map(o=>({...o,price:priceForOffer(o,negotiation,"each"),packSize:o.eachSize,orderUnit:"each"})),
+          forcedVendorId:splitQty>0?preferredVendorId:customVendorId,
           forcedPrice:null});
         if(splitQty>0)items.push({...prod,catalogItemId:`${prod.catalogItemId}_split_each`,quantity:splitQty,orderUnit:"each",
           options:prod.options.filter(o=>o.eachPrice).map(o=>({...o,price:o.eachPrice,packSize:o.eachSize,orderUnit:"each"})),forcedVendorId:split.vendorId,forcedPrice:null});
       }
     }
     return items;
-  },[productList,quantities,vendorOverride,priceOverride,splitOrders]);
+  },[productList,quantities,vendorOverride,negotiatedPrices,splitOrders]);
 
   const assignments=useMemo(()=>solveOrder(cartItems,vendors),[cartItems,vendors]);
   const assignMap=useMemo(()=>new Map(assignments.map(a=>[a.catalogItemId,a])),[assignments]);
@@ -849,13 +856,14 @@ export default function App() {
                         const activePackSize=selectedUnit==="case"?cheapest?.packSize:cheapest?.eachSize;
                         const cartItemIdForActive=selectedUnit==="case"?item.catalogItemId:item.catalogItemId+"_each";
                         const assignment=assignMap.get(cartItemIdForActive);
-                        const customPriceValue=priceOverride[activeKey];
-                        const isCustomPrice=customPriceValue!=null;
-                        const customPriceVendorId=vendorOverride[activeKey]||null;
+                        const negotiation=negotiatedPrices[activeKey];
+                        const isCustomPrice=!!negotiation;
+                        const customPriceVendorId=negotiation?.vendorId||null;
+                        const customPriceValue=negotiation?.price;
                         const unitOptions=(selectedUnit==="case"
-                          ?item.options.map(o=>({...o,unitPrice:isCustomPrice&&o.vendorId===customPriceVendorId?customPriceValue:o.casePrice}))
-                          :item.options.filter(o=>o.eachPrice).map(o=>({...o,unitPrice:isCustomPrice&&o.vendorId===customPriceVendorId?customPriceValue:o.eachPrice})))
-                          .sort((a,b)=>a.unitPrice-b.unitPrice);
+                          ?item.options.map(o=>({...o,unitPrice:priceForOffer(o,negotiation)}))
+                          :item.options.filter(o=>o.eachPrice).map(o=>({...o,unitPrice:priceForOffer(o,negotiation,"each")})))
+                          .sort((a,b)=>Number(!orderable(a))-Number(!orderable(b))||a.unitPrice-b.unitPrice);
                         const cheapestUnitPrice=unitOptions.find(orderable)?.unitPrice;
                         const rankedOptions=unitOptions.filter(orderable);
                         const displayOption=assignment
@@ -866,6 +874,7 @@ export default function App() {
                         const activeVendorId=assignment?.assignedVendorId||displayOption?.vendorId;
                         const vc=vendorColors.get(activeVendorId)||PALETTE[0];
                         const customPriceIsWinner=isCustomPrice&&activeVendorId===customPriceVendorId;
+                        const negotiationVendorId=negotiatedVendorDrafts[activeKey]||customPriceVendorId||activeVendorId||rankedOptions[0]?.vendorId||"";
                         const activeRankIndex=rankedOptions.findIndex(opt=>opt.vendorItemId===displayOption?.vendorItemId);
                         const nextRankedOption=rankedOptions[activeRankIndex>=0?activeRankIndex+1:1]||null;
                         const nextPriceDifference=nextRankedOption&&activePrice!=null?nextRankedOption.unitPrice-activePrice:null;
@@ -919,7 +928,6 @@ export default function App() {
                             <div className="order-price-grid">
                               <button className="order-price-card" onClick={()=>{
                                 setOpenPriceMenu(menuOpen?null:activeKey);
-                                setCustomPriceDrafts(prev=>({...prev,[activeKey]:activePrice!=null?String(activePrice):""}));
                               }} aria-expanded={menuOpen} title="Power ranked vendor prices"
                                 style={{border:`1px solid ${activeBlocked?"#FFCC80":isBestPrice?"#81C784":vc.light}`,cursor:"pointer",boxShadow:isBestPrice?"0 1px 3px rgba(46,125,50,.12)":"none"}}>
                                 {activeBlocked?(
@@ -930,29 +938,38 @@ export default function App() {
                                     <div style={{fontWeight:900,fontSize:15,color:isBestPrice?"#2E7D32":vc.accent}}>{formatMoney(activePrice)}{customPriceIsWinner&&<span title="Negotiated price" style={{marginLeft:2,fontSize:9}}>✎</span>}</div>
                                   </>
                                 )}
-                                <div style={{fontSize:10,fontWeight:800,color:activeBlocked?"#E65100":vc.accent,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{activeBlocked?"":activeVendorName} {unitOptions.length>1&&(menuOpen?"▲":"▾")}</div>
+                                <div style={{fontSize:10,fontWeight:800,color:activeBlocked?"#E65100":vc.accent,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{activeBlocked?"":activeVendorName} · Compare vendors {menuOpen?"▲":"▾"}</div>
                                 {!activeBlocked&&nextRankedOption&&nextPriceDifference!=null&&nextPriceDifference>=0&&<div style={{fontSize:8,color:"#2E7D32",marginTop:2,fontWeight:700}}>Save {formatMoney(nextPriceDifference)} vs next</div>}
                               </button>
-                              <div className="order-price-card" title="Price agreed with this vendor" style={{border:`1px solid ${isCustomPrice?"#81C784":"#E3E7ED"}`,background:isCustomPrice?"#E8F5E9":"white"}}>
+                              <div className="order-price-card" title="Price agreed with the vendor you select" style={{border:`1px solid ${isCustomPrice?"#81C784":"#E3E7ED"}`,background:isCustomPrice?"#E8F5E9":"white"}}>
                                 <div style={{fontSize:8,fontWeight:900,textTransform:"uppercase",letterSpacing:".06em",color:"#667085",marginBottom:4}}>Negotiated price</div>
+                                <select aria-label={`Negotiated vendor for ${item.name}`} value={negotiationVendorId} onChange={e=>{setNegotiatedVendorDrafts(prev=>({...prev,[activeKey]:e.target.value}));setCustomPriceDrafts(prev=>({...prev,[activeKey]:""}));setNegotiationErrors(prev=>{const next={...prev};delete next[activeKey];return next;});}}
+                                  style={{width:"100%",fontSize:10,border:"1px solid #CBD5E1",borderRadius:5,padding:"3px",marginBottom:4,background:"white"}}>
+                                  {!rankedOptions.length&&<option value="">No eligible vendor</option>}
+                                  {rankedOptions.map(opt=><option key={opt.vendorItemId} value={opt.vendorId}>{opt.vendorName}</option>)}
+                                </select>
                                 <div style={{display:"flex",gap:4,alignItems:"center"}}>
                                   <input type="number" min="0" step="0.01" aria-label={`Negotiated price for ${item.name}`}
-                                    value={customPriceDrafts[activeKey]??(isCustomPrice?String(customPriceValue):"")}
-                                    onChange={e=>setCustomPriceDrafts(prev=>({...prev,[activeKey]:e.target.value}))}
+                                    value={customPriceDrafts[activeKey]??(negotiationVendorId===customPriceVendorId?String(customPriceValue??""):"")}
+                                    onChange={e=>{setCustomPriceDrafts(prev=>({...prev,[activeKey]:e.target.value}));setNegotiationErrors(prev=>{const next={...prev};delete next[activeKey];return next;});}}
                                     onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.nextElementSibling?.click();}}
                                     placeholder="0.00" style={{width:"100%",minWidth:0,border:"1px solid #CBD5E1",borderRadius:5,padding:"4px",fontSize:11}} />
                                   <button onClick={()=>{
                                     const raw=customPriceDrafts[activeKey];const value=Number(raw);
-                                    if(raw==null||raw===""||!Number.isFinite(value)||value<0||!activeVendorId)return;
-                                    setPriceOverride(prev=>({...prev,[activeKey]:value}));
-                                    setVendorOverride(prev=>({...prev,[activeKey]:activeVendorId}));
+                                    if(raw==null||raw===""||!Number.isFinite(value)||value<=0||!negotiationVendorId||!rankedOptions.some(opt=>opt.vendorId===negotiationVendorId)){
+                                      setNegotiationErrors(prev=>({...prev,[activeKey]:"Choose an available vendor and enter a price above $0."}));return;
+                                    }
+                                    setNegotiatedPrices(prev=>({...prev,[activeKey]:{vendorId:negotiationVendorId,price:value}}));
+                                    setVendorOverride(prev=>{const next={...prev};delete next[activeKey];return next;});
                                   }} style={{...btn("#003584","white",{padding:"5px 7px",fontSize:10})}}>Apply</button>
                                 </div>
+                                {negotiationErrors[activeKey]&&<div role="alert" style={{color:"#B42318",fontSize:10,marginTop:4}}>{negotiationErrors[activeKey]}</div>}
+                                {isCustomPrice&&<div style={{fontSize:9,color:"#24744B",marginTop:3,fontWeight:700}}>For {unitOptions.find(o=>o.vendorId===customPriceVendorId)?.vendorName||"selected vendor"}</div>}
                                 {isCustomPrice&&<button onClick={()=>{
-                                  setVendorOverride(prev=>{const next={...prev};delete next[activeKey];return next;});
-                                  setPriceOverride(prev=>{const next={...prev};delete next[activeKey];return next;});
+                                  setNegotiatedPrices(prev=>{const next={...prev};delete next[activeKey];return next;});
+                                  setNegotiatedVendorDrafts(prev=>{const next={...prev};delete next[activeKey];return next;});
                                   setCustomPriceDrafts(prev=>{const next={...prev};delete next[activeKey];return next;});
-                                }} style={{border:0,background:"none",padding:"3px 0 0",fontSize:9,color:"#2563EB",cursor:"pointer"}}>↺ Automatic price</button>}
+                                }} style={{border:0,background:"none",padding:"3px 0 0",fontSize:9,color:"#2563EB",cursor:"pointer"}}>↺ Remove negotiated price</button>}
                               </div>
                             </div>
                           </div>,
@@ -961,7 +978,8 @@ export default function App() {
                         if(menuOpen){
                           cells.push(
                             <div key={item.catalogItemId+"_menu"} style={{gridColumn:"4",background:"white",border:"1px solid #CBD5E1",borderRadius:8,padding:4,margin:"0 6px 6px",boxShadow:"0 8px 20px rgba(15,23,42,.12)"}}>
-                              <div style={{fontSize:10,color:"#98A2B3",fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",padding:"6px 10px"}}>Power ranked — select a vendor</div>
+                              <div style={{fontSize:10,color:"#56718F",fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",padding:"6px 10px"}}>Power ranked · select replacement vendor</div>
+                              <button onClick={()=>{setVendorOverride(prev=>{const next={...prev};delete next[activeKey];return next;});setOpenPriceMenu(null);}} style={{width:"100%",textAlign:"left",background:"#F2F7FF",border:"1px solid #C6D7EE",borderRadius:5,padding:"7px 10px",marginBottom:5,fontSize:11,fontWeight:700,cursor:"pointer",color:"#003584"}}>✓ Automatically use the lowest eligible price</button>
                               {unitOptions.map((opt,rank)=>{
                                 const isSelected=displayOption?.vendorItemId===opt.vendorItemId;
                                 const blocked=!orderable(opt);
@@ -969,7 +987,6 @@ export default function App() {
                                   <button key={opt.vendorItemId} onClick={()=>{
                                       if(blocked) return;
                                       setVendorOverride(prev=>({...prev,[activeKey]:opt.vendorId}));
-                                      setPriceOverride(prev=>{const n={...prev};delete n[activeKey];return n;});
                                       setOpenPriceMenu(null);
                                     }}
                                     disabled={blocked}
@@ -1273,7 +1290,7 @@ export default function App() {
             )}
             <ItemCatalogPanel orgId={org.id} role={org.role} productList={productList} vendors={vendors} catalogItems={catalogItems} mappings={mappings}
               vendorItems={vendorItems} categories={categories}
-              onOpenVendor={(vendorId)=>{setVendorDetailId(vendorId);setTab("vendorDetail");}} onUpdated={loadData} />
+              onUpdated={loadData} />
           </>
         )}
 

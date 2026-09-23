@@ -1,4 +1,5 @@
-import {useState} from "react";
+import {useEffect,useRef,useState} from "react";
+import {createPortal} from "react-dom";
 import {quoteStatus} from "../procurement.js";
 
 const navy="#073B83",ink="#17243A",muted="#6D7A8B",line="#E4EAF1",surface="#F5F8FC";
@@ -28,8 +29,23 @@ function PageHeader({eyebrow,title,description,actionLabel,onAction,secondaryLab
 
 function MoreMenu({children,label="Vendor actions"}){
   const [open,setOpen]=useState(false);
-  return <div style={{position:"relative"}}><button aria-label={label} title={label} onClick={()=>setOpen(!open)} style={{...button("white",navy),border:`1px solid ${line}`,padding:"7px 11px",fontSize:17,lineHeight:1}}>•••</button>
-    {open&&<div onMouseLeave={()=>setOpen(false)} style={{position:"absolute",right:0,top:36,zIndex:5,minWidth:220,background:"white",border:`1px solid ${line}`,borderRadius:10,boxShadow:"0 12px 30px rgba(16,35,61,.18)",padding:6}}>{children}</div>}
+  const trigger=useRef(null),panel=useRef(null);
+  const [position,setPosition]=useState({top:0,left:0});
+  useEffect(()=>{
+    if(!open)return;
+    const dismiss=event=>{if(!trigger.current?.contains(event.target)&&!panel.current?.contains(event.target))setOpen(false);};
+    const escape=event=>{if(event.key==="Escape")setOpen(false);};
+    const scroll=()=>setOpen(false);
+    document.addEventListener("pointerdown",dismiss);document.addEventListener("keydown",escape);
+    window.addEventListener("scroll",scroll,true);window.addEventListener("resize",scroll);
+    return ()=>{document.removeEventListener("pointerdown",dismiss);document.removeEventListener("keydown",escape);window.removeEventListener("scroll",scroll,true);window.removeEventListener("resize",scroll);};
+  },[open]);
+  function toggle(){
+    if(!open){const rect=trigger.current.getBoundingClientRect();setPosition({left:Math.max(8,Math.min(rect.right-240,window.innerWidth-248)),top:rect.bottom+126>window.innerHeight?Math.max(8,rect.top-126):rect.bottom+5});}
+    setOpen(!open);
+  }
+  return <div><button ref={trigger} aria-label={label} aria-expanded={open} title={label} onClick={toggle} style={{...button("white",navy),border:`1px solid ${line}`,padding:"7px 11px",fontSize:17,lineHeight:1}}>•••</button>
+    {open&&createPortal(<div ref={panel} role="menu" onClick={()=>setOpen(false)} style={{position:"fixed",left:position.left,top:position.top,zIndex:1000,width:"min(240px, calc(100vw - 16px))",maxHeight:"min(220px, 60vh)",overflowY:"auto",background:"white",border:`1px solid ${line}`,borderRadius:10,boxShadow:"0 12px 30px rgba(16,35,61,.25)",padding:6}}>{children}</div>,document.body)}
   </div>;
 }
 
