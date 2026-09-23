@@ -59,5 +59,9 @@ for(const key of ["VITE_KERDOS_BACKEND","VITE_SUPABASE_URL","VITE_SUPABASE_ANON_
   assert.match(envExample,new RegExp(`^${key}=`,`m`),`.env.example lacks ${key}`);
 assert.ok(fs.existsSync(path.join(root,"vite.config.js")),"Vite deployment configuration missing");
 assert.ok(fs.existsSync(path.join(root,".github/workflows/deploy-pages.yml")),"GitHub Pages adapter missing");
+const workflow=fs.readFileSync(path.join(root,".github/workflows/deploy-pages.yml"),"utf8");
+assert.ok(workflow.includes("VITE_BASE_PATH: ${{ github.event.repository.name }}"),"Pages build does not receive the exact repository base path");
+assert.ok(!workflow.includes("vars.VITE_BASE_PATH"),"A repository variable can still override the Pages asset path");
+assert.ok(workflow.includes("verify-pages-build.mjs"),"Pages asset-path verification is not wired into deployment");
 
 console.log("KERDOS deployment assets and migration wiring passed");
