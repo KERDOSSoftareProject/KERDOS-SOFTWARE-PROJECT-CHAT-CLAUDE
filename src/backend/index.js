@@ -16,7 +16,7 @@ function unconfigured(reason){
     pricing:{applyQuote:fail},
     invoices:{record:fail},
     team:{acceptInvite:fail},
-    commands:{table:()=>{throw new Error(reason);}},
+    records:{query:()=>{throw new Error(reason);}},
   };
 }
 
@@ -28,7 +28,11 @@ const factories={
 };
 
 const hasSupabaseConfig=!!(runtime.backendUrl||env.VITE_SUPABASE_URL)&&!!(runtime.backendPublicKey||env.VITE_SUPABASE_ANON_KEY);
-const selected=!factories[provider]
+// A deployment may supply a complete provider implementation before the app loads.
+// The default remains Supabase until a different adapter is explicitly selected.
+const selected=runtime.backendAdapter
+  ?runtime.backendAdapter
+  :!factories[provider]
   ?unconfigured(`Unsupported KERDOS backend provider: ${provider}`)
   :provider==="supabase"&&!hasSupabaseConfig
     ?unconfigured("KERDOS backend is not configured for this deployment")

@@ -15,7 +15,7 @@ function query(table){
   };
   return chain;
 }
-const service=createCategoryService({commands:{table:query}});
+const service=createCategoryService({records:{query}});
 assert.equal(holdingPen([{id:"h",is_holding_pen:true}]).id,"h");
 const contextual=classifyCategory("Boneless Chicken Breast 40 lb",[{id:"meat",name:"Proteins",keywords:[]},{id:"dry",name:"Dry Goods",keywords:[]}],[
   {category_id:"meat",name:"Chicken Breast Boneless 40 LB"},
@@ -29,6 +29,13 @@ assert.equal(ambiguous,null,"competing contextual examples must require review")
 const starter=await service.loadStarterPack({organizationId:"o1",industry:"Restaurant",categories:[]});
 assert.deepEqual(starter,{added:1,addedVocabulary:1,found:true});
 assert.equal(calls.find(call=>call.table==="catalog_categories"&&call.insert).insert[0].organization_id,"o1");
+// Run the same service with construction data; the engine has no industry branch.
+fixtures.industry_templates=[{category_name:"Lumber",keywords:["plywood","stud"],sort_order:1}];
+fixtures.industry_vocabulary=[{kind:"unit",term:"bdft",canonical:"BF"},{kind:"synonym",term:"plywd",canonical:"plywood"}];
+const construction=await service.loadStarterPack({organizationId:"builder",industry:"Construction",categories:[]});
+assert.deepEqual(construction,{added:1,addedVocabulary:2,found:true});
+assert.equal(calls.filter(call=>call.table==="catalog_categories"&&call.insert).at(-1).insert[0].organization_id,"builder");
+assert.equal(classifyCategory("Plywood 4x8",[{id:"lumber",name:"Lumber",keywords:["plywood"]}])?.id,"lumber");
 const next=await service.assignItem({catalogItemId:"i2",categoryId:"c1",catalogItems:[{id:"i1",category_id:"c1",master_item_number:1000}],categories:[{id:"c1",range_start:1000}]});
 assert.equal(next,1001);
 assert.deepEqual(calls.at(-1).update,{category_id:"c1",master_item_number:1001});

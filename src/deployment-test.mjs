@@ -13,7 +13,6 @@ for(const file of requiredMigrations) assert.ok(fs.statSync(path.join(root,"know
 
 const adapter=fs.readFileSync(path.join(root,"src/backend/supabase.js"),"utf8");
 const app=fs.readFileSync(path.join(root,"src/App.jsx"),"utf8");
-const documentPages=fs.readFileSync(path.join(root,"src/pages/DocumentPages.jsx"),"utf8");
 const pageSources=fs.readdirSync(path.join(root,"src/pages")).filter(file=>file.endsWith(".jsx"))
   .map(file=>fs.readFileSync(path.join(root,"src/pages",file),"utf8")).join("\n");
 const migrationSql=requiredMigrations.map(file=>fs.readFileSync(path.join(root,"knowledge",file),"utf8")).join("\n");

@@ -43,9 +43,3 @@ export function itemMatchesSearch(item, query){
   if(String(item.masterItemNumber||"")===q) return true;
   return item.options.some(o=>String(o.description||"").toLowerCase().includes(q)||String(o.vendorItemCode||"").toLowerCase()===q);
 }
-
-// Small labeled block used by the review sections on Item Catalog, Price
-// Sheets, and Invoices - each tab only ever shows the review data that's
-// actually ITS OWN (mapping issues on Item Catalog, price-sheet health on
-// Price Sheets, invoice-line issues on Invoices), so this is shared
-// purely for the consistent look, not because any data crosses tabs.

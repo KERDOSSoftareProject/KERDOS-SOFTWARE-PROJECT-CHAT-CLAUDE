@@ -228,8 +228,8 @@ export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,pric
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <div style={{fontWeight:800,fontSize:15}}>{formatMoney(inv.total_amount)}</div>
             {inv.file_path&&<button onClick={()=>onViewOriginal(inv.file_path)} style={{...btn("#003584","white",{fontSize:11,padding:"5px 10px"})}}>View</button>}
-            <button onClick={()=>onEditInvoice(inv)} style={{background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:14,padding:0}} title="Edit">✎</button>
-            <button onClick={()=>onDeleteInvoice(inv)} style={{background:"none",border:"none",cursor:"pointer",color:"#E65100",fontSize:16,padding:0}} title="Delete">×</button>
+            {canManage&&<button onClick={()=>onEditInvoice(inv)} style={{background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:14,padding:0}} title="Edit">✎</button>}
+            {canManage&&<button onClick={()=>onDeleteInvoice(inv)} style={{background:"none",border:"none",cursor:"pointer",color:"#E65100",fontSize:16,padding:0}} title="Delete">×</button>}
           </div>
         </div>
       ))}

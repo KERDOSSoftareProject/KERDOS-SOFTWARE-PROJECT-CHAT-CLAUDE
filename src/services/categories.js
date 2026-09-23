@@ -13,7 +13,7 @@ export function holdingPen(categories){
 }
 
 export function createCategoryService(backend){
-  const table=backend.commands.table;
+  const table=backend.records.query;
   return {
     async loadStarterPack({organizationId,industry,categories}){
       const name=String(industry||"").trim();

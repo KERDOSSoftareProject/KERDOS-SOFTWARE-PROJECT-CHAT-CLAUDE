@@ -6,7 +6,7 @@ async function run(promise,operation){
 }
 
 export function createVendorService(backend){
-  const table=backend.commands.table;
+  const table=backend.records.query;
   return {
     add({organizationId,name,email,minimumDollar,minimumUnits}){
       return run(table("vendors").insert({organization_id:organizationId,name:name.trim(),email:email.trim()||null,delivery_minimum_dollar:minimumDollar?parseFloat(minimumDollar):null,delivery_minimum_units:minimumUnits?parseInt(minimumUnits,10):null,is_active:true}),"Could not add the vendor");

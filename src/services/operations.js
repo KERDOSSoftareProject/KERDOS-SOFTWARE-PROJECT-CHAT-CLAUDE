@@ -3,7 +3,7 @@
 async function run(promise,operation){const {data,error}=await promise;if(error)throw new Error(`${operation}: ${error.message}`);return data;}
 
 export function createOperationsService(backend){
-  const table=backend.commands.table;
+  const table=backend.records.query;
   return {
     updateInvoice(invoiceId,patch){return run(table("invoices").update(patch).eq("id",invoiceId),"Could not update the invoice");},
     async deleteInvoice(invoiceId){
@@ -15,7 +15,7 @@ export function createOperationsService(backend){
     },
     async submitOrder({organizationId,userId,basket}){
       const order=await run(table("purchase_orders").insert({organization_id:organizationId,vendor_id:basket.vendorId,created_by:userId,status:"submitted",total_amount:basket.dollar}).select().single(),`Could not submit the ${basket.vendorName} order`);
-      await run(table("purchase_order_lines").insert(basket.items.map(item=>({purchase_order_id:order.id,catalog_item_id:item.catalogItemId.replace("_each",""),vendor_item_id:item.vendorItemId,quantity:item.quantity,unit_price:item.price,line_total:item.lineTotal}))),`Could not save the ${basket.vendorName} order lines`);
+      await run(table("purchase_order_lines").insert(basket.items.map(item=>({purchase_order_id:order.id,catalog_item_id:item.catalogItemId.replace(/_(?:split_)?(?:case|each)$/, ""),vendor_item_id:item.vendorItemId,quantity:item.quantity,unit_price:item.price,line_total:item.lineTotal}))),`Could not save the ${basket.vendorName} order lines`);
       return order;
     },
   };

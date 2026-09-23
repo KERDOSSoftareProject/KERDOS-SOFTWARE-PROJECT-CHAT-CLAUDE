@@ -9,7 +9,7 @@ async function run(promise,operation){
 }
 
 export function createCatalogService(backend){
-  const table=backend.commands.table;
+  const table=backend.records.query;
   return {
     async matchOrCreate({organizationId,description,catalogItems,categories}){
       const match=bestCatalogMatch(description,catalogItems);

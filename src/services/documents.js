@@ -1,7 +1,7 @@
 // Provider-neutral document operations used by KERDOS screens.
 // Paths are KERDOS conventions; storage mechanics belong to the adapter.
 export function createDocumentService(backend){
-  const table=backend.commands.table;
+  const table=backend.records.query;
   async function run(promise,operation){const {data,error}=await promise;if(error)throw new Error(`${operation}: ${error.message}`);return data;}
   return {
     async uploadOriginal(organizationId,vendorId,file){

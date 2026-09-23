@@ -14,6 +14,11 @@ const categoryService=createCategoryService(backend);
 
 const REVIEW_FILTER="__needs_review__";
 
+// Small labeled block used by the review sections on Item Catalog, Price
+// Sheets, and Invoices - each tab only ever shows the review data that's
+// actually ITS OWN (mapping issues on Item Catalog, price-sheet health on
+// Price Sheets, invoice-line issues on Invoices), so this is shared
+// purely for the consistent look, not because any data crosses tabs.
 function Section({title,count,emptyText,children}){
   return (
     <div style={{marginBottom:20}}>
@@ -25,7 +30,8 @@ function Section({title,count,emptyText,children}){
   );
 }
 
-export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mappings,vendorItems,categories,onOpenVendor,onUpdated}) {
+export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,mappings,vendorItems,categories,onOpenVendor,onUpdated}) {
+  const canManage=role==="owner"||role==="manager";
   const [search,setSearch]=useState("");
   const [categoryFilter,setCategoryFilter]=useState("");
   const [remapOpenFor,setRemapOpenFor]=useState(null);
@@ -113,6 +119,7 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
   // One wrapper for every catalog action: show the failure where the
   // person is looking, and only refresh when the write actually landed.
   async function act(fn){
+    if(!canManage) { setError("Only owners and managers can edit the catalog."); return false; }
     setError("");
     try{ await fn(); onUpdated(); return true; }
     catch(err){ setError(err.message||String(err)); return false; }
@@ -274,7 +281,7 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
         <h3 style={{margin:0,fontSize:16,color:"white"}}>Item Catalog</h3>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           {totalCount>0&&<span style={{background:"#E65100",color:"white",fontSize:12,fontWeight:700,padding:"3px 10px",borderRadius:12}}>{totalCount} to review</span>}
-          <button onClick={()=>setAddingItem(true)} style={{...btn("#003584","white",{fontSize:12,padding:"8px 14px"})}}>+ Add Item</button>
+          {canManage&&<button onClick={()=>setAddingItem(true)} style={{...btn("#003584","white",{fontSize:12,padding:"8px 14px"})}}>+ Add Item</button>}
           <button onClick={()=>downloadTextFile(`catalog-export-${new Date().toISOString().split("T")[0]}.csv`,buildCatalogExportCSV(productList,vendors),"text/csv")}
             disabled={!productList.length} style={{...btn("#2E7D32","white",{fontSize:12,padding:"8px 14px"})}}>
             📄 Export (CSV)
@@ -284,7 +291,7 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
 
       {error&&<div style={{background:"#FFF3E0",color:"#E65100",padding:"10px 12px",borderRadius:8,fontSize:13,marginBottom:14}}>{error}</div>}
 
-      {addingItem&&(
+      {canManage&&addingItem&&(
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
           <div style={{background:"white",borderRadius:12,padding:24,width:"100%",maxWidth:380}}>
             <h3 style={{margin:"0 0 4px",fontSize:16}}>Add a catalog item</h3>
@@ -302,7 +309,7 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
         </div>
       )}
 
-      {totalCount>0&&(
+      {canManage&&totalCount>0&&(
         <div style={{marginBottom:24,paddingBottom:4}}>
           <Section title="Fuzzy-matched items — confirm or remap" count={lowConfidenceMatches.length} emptyText="Nothing flagged — every mapping is an exact or single-vendor match.">
             {lowConfidenceMatches.map(m=>(
@@ -383,7 +390,7 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
         })}
       </div>
 
-      {teach&&(
+      {canManage&&teach&&(
         <div style={{background:"#E8F5E9",border:"2px solid #2E7D32",borderRadius:10,padding:14,marginBottom:12}}>
           <div style={{fontSize:13,fontWeight:700,color:"#1B5E20",marginBottom:4}}>Teach the catalog so this doesn't happen again</div>
           <div style={{fontSize:12,color:"#33691E",marginBottom:8}}>
@@ -412,7 +419,7 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
         </div>
       )}
 
-      {selectedIds.size>0&&(
+      {canManage&&selectedIds.size>0&&(
         <div style={{background:"white",borderRadius:10,padding:12,marginBottom:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",
           display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",position:"sticky",top:8,zIndex:5}}>
           <span style={{fontSize:13,fontWeight:700,color:"#003584"}}>{selectedIds.size} selected</span>
@@ -436,7 +443,7 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
       ):groupedItems.map(group=>(
         <div key={group.category} style={{marginBottom:20}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,paddingLeft:2}}>
-            <input type="checkbox"
+            {canManage&&<input type="checkbox"
               checked={group.items.length>0&&group.items.every(i=>selectedIds.has(i.catalogItemId))}
               onChange={e=>{
                 const all=e.target.checked;
@@ -446,7 +453,7 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
                   return next;
                 });
               }}
-              title={`Select every item shown under ${group.category}`} />
+              title={`Select every item shown under ${group.category}`} />}
             <span style={{fontWeight:800,fontSize:13,color:"rgba(255,255,255,0.85)"}}>{group.category}</span>
             <span style={{fontSize:11,color:"rgba(255,255,255,0.5)"}}>({group.items.length})</span>
           </div>
@@ -455,27 +462,27 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
             const isDragOver=dragOverItemId===item.catalogItemId;
             return (
               <div key={item.catalogItemId}
-                draggable
+                draggable={canManage}
                 onDragStart={()=>setDraggedItemId(item.catalogItemId)}
                 onDragEnd={()=>{setDraggedItemId(null);setDragOverItemId(null);}}
                 onDragOver={(e)=>{e.preventDefault();if(draggedItemId&&draggedItemId!==item.catalogItemId) setDragOverItemId(item.catalogItemId);}}
                 onDragLeave={()=>{if(dragOverItemId===item.catalogItemId) setDragOverItemId(null);}}
-                onDrop={(e)=>{e.preventDefault();handleDrop(item);}}
+                onDrop={(e)=>{e.preventDefault();if(canManage)handleDrop(item);}}
                 title="Drag onto another item to merge them as the same product"
                 style={{background:isDragOver?"#E8F5E9":"white",borderRadius:8,padding:"12px 14px",marginBottom:8,
                   boxShadow:isDragOver?"0 0 0 2px #2E7D32":"0 1px 3px rgba(0,0,0,0.06)",cursor:"grab",
                   opacity:draggedItemId===item.catalogItemId?0.4:1}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                  <input type="checkbox" checked={selectedIds.has(item.catalogItemId)}
+                  {canManage&&<input type="checkbox" checked={selectedIds.has(item.catalogItemId)}
                     onClick={e=>e.stopPropagation()}
                     onChange={e=>setSelectedIds(prev=>{
                       const next=new Set(prev);
                       e.target.checked?next.add(item.catalogItemId):next.delete(item.catalogItemId);
                       return next;
                     })}
-                    style={{marginRight:10,marginTop:3}} />
+                    style={{marginRight:10,marginTop:3}} />}
                   <div style={{flex:1,minWidth:0}}>
-                    {renamingId===item.catalogItemId?(
+                    {canManage&&renamingId===item.catalogItemId?(
                       <div style={{display:"flex",gap:6}} onClick={e=>e.stopPropagation()}>
                         <input autoFocus value={renameValue} onChange={e=>setRenameValue(e.target.value)}
                           onKeyDown={e=>{if(e.key==="Enter") saveRename(item.catalogItemId); if(e.key==="Escape") setRenamingId(null);}}
@@ -486,12 +493,12 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
                     ):(
                       <div style={{fontWeight:700,fontSize:14,display:"flex",alignItems:"center",gap:6}}>
                         {item.name}
-                        <button onClick={()=>{setRenamingId(item.catalogItemId);setRenameValue(item.name);}}
+                        {canManage&&<button onClick={()=>{setRenamingId(item.catalogItemId);setRenameValue(item.name);}}
                           title="Rename - this is your item, name it however makes sense to you"
-                          style={{background:"none",border:"none",cursor:"pointer",color:"#BBB",fontSize:12,padding:0}}>✎</button>
+                          style={{background:"none",border:"none",cursor:"pointer",color:"#BBB",fontSize:12,padding:0}}>✎</button>}
                       </div>
                     )}
-                    {categoryEditId===item.catalogItemId?(
+                    {canManage&&categoryEditId===item.catalogItemId?(
                       <div style={{display:"flex",gap:6,alignItems:"center",marginTop:2}} onClick={e=>e.stopPropagation()}>
                         <span style={{fontSize:11,color:"#AAA"}}>#{item.masterItemNumber} ·</span>
                         <select autoFocus defaultValue="" onChange={e=>handleAssignCategory(item.catalogItemId,e.target.value)}
@@ -504,9 +511,9 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
                     ):(
                       <div style={{fontSize:11,color:"#AAA",marginTop:2,display:"flex",alignItems:"center",gap:4}}>
                         #{item.masterItemNumber} · {item.category}
-                        <button onClick={()=>setCategoryEditId(item.catalogItemId)} disabled={categoryEditBusy}
+                        {canManage&&<button onClick={()=>setCategoryEditId(item.catalogItemId)} disabled={categoryEditBusy}
                           title="Move this item to a different category"
-                          style={{background:"none",border:"none",cursor:"pointer",color:"#BBB",fontSize:11,padding:0}}>✎</button>
+                          style={{background:"none",border:"none",cursor:"pointer",color:"#BBB",fontSize:11,padding:0}}>✎</button>}
                       </div>
                     )}
                   </div>
@@ -522,14 +529,14 @@ export function ItemCatalogPanel({orgId,productList,vendors,catalogItems,mapping
                     ))}
                     {!item.options.length&&<span style={{fontSize:11,color:"#CCC"}}>No vendor price linked yet</span>}
                   </div>
-                  <button onClick={()=>setMapPanelOpenFor(mapPanelOpenFor===item.catalogItemId?null:item.catalogItemId)}
+                  {canManage&&<button onClick={()=>setMapPanelOpenFor(mapPanelOpenFor===item.catalogItemId?null:item.catalogItemId)}
                     title="Map this item's vendor prices - link, unlink, or re-point any of them, any time"
                     style={{background:"none",border:"none",cursor:"pointer",color:"#003584",fontSize:11,fontWeight:700,padding:0,whiteSpace:"nowrap",marginLeft:8}}>
                     🔗 Map {mapPanelOpenFor===item.catalogItemId?"▲":"▾"}
-                  </button>
+                  </button>}
                 </div>
 
-                {mapPanelOpenFor===item.catalogItemId&&(
+                {canManage&&mapPanelOpenFor===item.catalogItemId&&(
                   <div style={{marginTop:8,background:"#F7F9FC",borderRadius:6,padding:8}} onClick={e=>e.stopPropagation()}>
                     {(()=>{
                       // Brands come from this item's own vendor options - a lock can

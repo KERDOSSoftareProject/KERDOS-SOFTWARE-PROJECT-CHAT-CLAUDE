@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { BackendError, providerResult } from "./contract.js";
+import { createRecords } from "./records.js";
 
 const SNAPSHOT_QUERIES = Object.freeze([
   ["vendors", c=>c.from("vendors").select("*").eq("is_active",true).order("name")],
@@ -88,8 +89,23 @@ export function createSupabaseBackend({url,anonKey}) {
         return accepted;
       },
     },
-    // Temporary migration bridge. Each call site moved behind a KERDOS
-    // service shrinks this surface; new feature code must not use it.
-    commands:{table:name=>client.from(name)},
+    records:createRecords(spec=>executeSupabaseRecordQuery(client,spec)),
   };
+}
+
+// Only this adapter interprets KERDOS records as Supabase queries. A different
+// provider implements the same records interface without exposing its SDK.
+export function executeSupabaseRecordQuery(client,spec) {
+  let query=client.from(spec.table);
+  if(spec.action==="select") query=query.select(spec.columns||"*");
+  else if(spec.action==="delete") query=query.delete();
+  else if(["insert","update","upsert"].includes(spec.action)) query=query[spec.action](spec.value);
+  else throw new Error(`Unsupported KERDOS records action: ${spec.action}`);
+  if(spec.action!=="select"&&spec.columns) query=query.select(spec.columns);
+  for(const {operator,column,value} of spec.filters) query=query[operator](column,value);
+  for(const {column,options} of spec.orders) query=query.order(column,options);
+  if(spec.range) query=query.range(spec.range.from,spec.range.to);
+  if(spec.limit!==undefined) query=query.limit(spec.limit);
+  if(spec.cardinality) query=query[spec.cardinality]();
+  return query;
 }

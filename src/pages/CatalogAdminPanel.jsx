@@ -140,9 +140,8 @@ export function CatalogPanel({orgId,orgIndustry,categories,catalogItems,vocabula
     <div>
       {!backendInfo.configured&&(
         <div style={{background:"#FFF8E1",border:"1px solid #FFE082",borderRadius:8,padding:"8px 11px",fontSize:11,color:"#8D6E63",marginBottom:12}}>
-          This build is using the built-in backend credentials. To point a deployment at a
-          different database (staging, or another tenancy), set <b>VITE_SUPABASE_URL</b> and
-          <b> VITE_SUPABASE_ANON_KEY</b> at build time.
+          No backend is configured for this deployment. Configure a KERDOS backend adapter
+          before using this workspace.
         </div>
       )}
 

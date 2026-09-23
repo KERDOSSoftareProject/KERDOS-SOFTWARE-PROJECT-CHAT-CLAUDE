@@ -15,7 +15,7 @@ function query(table){
   };
   return chain;
 }
-const service=createCatalogService({commands:{table:query}});
+const service=createCatalogService({records:{query}});
 await service.confirmMapping("m1");
 assert.deepEqual(calls.at(-1).update,{comparison_track:"exact",confidence_score:100});
 await service.renameItem("c1","Client Product");

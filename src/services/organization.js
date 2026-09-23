@@ -7,7 +7,7 @@ async function run(promise,operation){
 }
 
 export function createOrganizationService(backend){
-  const table=backend.commands.table;
+  const table=backend.records.query;
   return {
     async create({name,industry,userId,vendors=[]}){
       const slug=name.toLowerCase().replace(/[^a-z0-9]/g,"-").replace(/-+/g,"-");

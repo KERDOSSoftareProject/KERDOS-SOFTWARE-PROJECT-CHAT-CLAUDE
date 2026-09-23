@@ -131,20 +131,20 @@ function Setup({user,onComplete}) {
         if(d.step) setStep(d.step);
         if(d.orgName||d.industry) setDraftRestored(true);
       }
-    }catch(e){/* corrupted or unavailable draft - just start fresh */}
+    }catch{/* corrupted or unavailable draft - just start fresh */}
   },[]);
 
   useEffect(()=>{
     try{
       localStorage.setItem(draftKey,JSON.stringify({step,orgName,industry,vendors}));
-    }catch(e){/* storage full/unavailable - draft save is best-effort, never blocks typing */}
+    }catch{/* storage full/unavailable - draft save is best-effort, never blocks typing */}
   },[step,orgName,industry,vendors]);
 
   async function create() {
     setLoading(true); setError("");
     try {
       const org=await organizationService.create({name:orgName,industry,userId:user.id,vendors});
-      try{localStorage.removeItem(draftKey);}catch(e){}
+      try{localStorage.removeItem(draftKey);}catch{}
       onComplete(org);
     } catch(err){setError(err.message);}
     setLoading(false);

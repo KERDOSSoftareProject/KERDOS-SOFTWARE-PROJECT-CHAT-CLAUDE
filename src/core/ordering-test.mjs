@@ -10,4 +10,9 @@ const forced=solveOrder([{catalogItemId:"item",quantity:1,orderUnit:"case",force
 assert.equal(forced.assignedVendorId,"b");assert.equal(forced.locked,true);
 const blocked=solveOrder([{catalogItemId:"item",quantity:1,orderUnit:"case",options:[option("a",10,{expired:true})]}],[])[0];
 assert.equal(blocked.unorderable,true);
+const split=solveOrder([
+  {catalogItemId:"item",quantity:3,orderUnit:"case",forcedVendorId:"a",options:[option("a",10),option("b",12)]},
+  {catalogItemId:"item_split_case",quantity:2,orderUnit:"case",forcedVendorId:"b",options:[option("a",10),option("b",12)]},
+],[]);
+assert.deepEqual(split.map(line=>[line.assignedVendorId,line.quantity,line.lineTotal]),[["a",3,30],["b",2,24]],"short stock can be allocated across two vendor baskets");
 console.log("KERDOS universal ordering-core tests passed");

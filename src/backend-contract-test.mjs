@@ -9,7 +9,7 @@ const valid={
   pricing:{applyQuote:fn},
   invoices:{record:fn},
   team:{acceptInvite:fn},
-  commands:{table:fn},
+  records:{query:fn},
 };
 let passed=0;
 function ok(condition,label){if(!condition)throw new Error(`FAIL ${label}`);passed++;console.log("PASS",label);}
