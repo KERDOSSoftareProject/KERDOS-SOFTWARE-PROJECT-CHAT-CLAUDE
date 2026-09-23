@@ -14,6 +14,8 @@ for(const file of requiredMigrations) assert.ok(fs.statSync(path.join(root,"know
 const adapter=fs.readFileSync(path.join(root,"src/backend/supabase.js"),"utf8");
 const app=fs.readFileSync(path.join(root,"src/App.jsx"),"utf8");
 const documentPages=fs.readFileSync(path.join(root,"src/pages/DocumentPages.jsx"),"utf8");
+const pageSources=fs.readdirSync(path.join(root,"src/pages")).filter(file=>file.endsWith(".jsx"))
+  .map(file=>fs.readFileSync(path.join(root,"src/pages",file),"utf8")).join("\n");
 const migrationSql=requiredMigrations.map(file=>fs.readFileSync(path.join(root,"knowledge",file),"utf8")).join("\n");
 for(const rpc of [...adapter.matchAll(/client\.rpc\("([^"]+)"/g)].map(match=>match[1]))
   assert.match(migrationSql,new RegExp(`function\\s+${rpc}\\b`,`i`),`adapter RPC ${rpc} has no migration`);
@@ -36,12 +38,12 @@ for(const file of requiredMigrations)
 
 for(const requiredUi of [
   "Price Sheet History","Import Price Sheet","Invoice History","Import Invoice",
-  "Double-click to open","Remove current prices from Order Guide","Remove price from Order Guide",
+  "Click to open","Remove current prices from Order Guide","Remove price from Order Guide",
   "price_refresh_mode===\"automatic\"?\"automatic\":\"manual\"",
-]) assert.ok((app+documentPages).includes(requiredUi),`requested import/history behavior missing: ${requiredUi}`);
+]) assert.ok((app+pageSources).includes(requiredUi),`requested import/history behavior missing: ${requiredUi}`);
 assert.match(app,/from "\.\/pages\/DocumentPages\.jsx"/,"document workflows were not extracted from App.jsx");
 assert.ok(!app.includes("{/* INVOICES TAB */}"),"legacy inline invoice page remains in App.jsx");
-assert.ok(app.split("\n").length<4500,"App.jsx grew past the modularity guardrail");
+assert.ok(app.split("\n").length<2500,"App.jsx grew past the modularity guardrail");
 
 const ocrFiles=["worker.min.js","eng.traineddata.gz"];
 for(const file of ocrFiles) assert.ok(fs.statSync(path.join(root,"public/ocr",file)).size>1000,`OCR asset ${file} missing`);

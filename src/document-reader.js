@@ -1,4 +1,4 @@
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.js?url";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 function localOcrPath(name="") {
   const base=String(import.meta.env.BASE_URL||"/").replace(/\/$/,"");

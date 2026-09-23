@@ -112,29 +112,38 @@ configureVocabulary();
 
 function wordsMatch(a,b) { return canonicalWord(a) === canonicalWord(b); }
 
-function classifyCategory(description, categories=[]) {
+// Interpret the whole description. Keywords are vocabulary hints, while
+// approved catalog items are contextual examples whose identity, modifiers,
+// and measurements participate in the decision.
+function classifyCategory(description, categories=[], catalogItems=[]) {
   const descWords = normalizeForMatch(description);
   if (!descWords.length) return null;
   const scored=[];
   for (const category of categories) {
-    let score=0;
+    let vocabularyScore=0;
     let longestPhrase=0;
-    for (const keyword of (Array.isArray(category.keywords) ? category.keywords : [])) {
+    const vocabulary=[category.name,...(Array.isArray(category.keywords)?category.keywords:[])].filter(Boolean);
+    for (const keyword of vocabulary) {
       const kwWords=normalizeForMatch(keyword);
       if (kwWords.length && kwWords.every(k => descWords.some(d => wordsMatch(k,d)))) {
         // Specific phrases outrank generic one-word hits without embedding
         // product-specific exceptions in the engine.
-        score += kwWords.length * kwWords.length;
+        vocabularyScore += kwWords.length * kwWords.length;
         longestPhrase=Math.max(longestPhrase,kwWords.length);
       }
     }
-    if (score>0) scored.push({category,score,longestPhrase});
+    const examples=catalogItems.filter(item=>item.category_id===category.id && item.name);
+    const contextualScore=examples.reduce((best,item)=>Math.max(best,safeProductScore(description,item.name)),0);
+    if (vocabularyScore>0||contextualScore>=MATCH_POLICY.reviewFloor) scored.push({category,vocabularyScore,longestPhrase,contextualScore});
   }
-  scored.sort((a,b)=>b.longestPhrase-a.longestPhrase || b.score-a.score);
+  scored.sort((a,b)=>b.contextualScore-a.contextualScore || b.longestPhrase-a.longestPhrase || b.vocabularyScore-a.vocabularyScore);
   if (!scored.length) return null;
-  // An exact tie is genuinely ambiguous. Do not let array order silently
-  // decide the category; send it to Uncategorized/review instead.
-  if (scored[1] && scored[0].longestPhrase===scored[1].longestPhrase && scored[0].score===scored[1].score) return null;
+  // Close contextual results are ambiguous. Never let list order force them.
+  if (scored[1]) {
+    const a=scored[0], b=scored[1];
+    if (a.contextualScore===b.contextualScore && a.longestPhrase===b.longestPhrase && a.vocabularyScore===b.vocabularyScore) return null;
+    if (a.contextualScore>0 && b.contextualScore>0 && a.contextualScore-b.contextualScore<0.12) return null;
+  }
   return scored[0].category;
 }
 

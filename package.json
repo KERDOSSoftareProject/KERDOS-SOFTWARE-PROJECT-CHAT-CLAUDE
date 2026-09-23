@@ -8,16 +8,16 @@
     "build": "vite build",
     "database:build": "node scripts/build-database-update.mjs",
     "preview": "vite preview",
-    "test": "node src/regression.mjs && node src/ingestion-test.mjs && node src/session-test.mjs && node src/backend-contract-test.mjs && node src/offline-store-test.mjs && node src/deployment-test.mjs"
+    "test": "node src/regression.mjs && node src/ingestion-test.mjs && node src/core/ordering-test.mjs && node src/services/catalog-test.mjs && node src/services/categories-test.mjs && node src/services/organization-test.mjs && node src/services/service-boundaries-test.mjs && node src/session-test.mjs && node src/backend-contract-test.mjs && node src/offline-store-test.mjs && node src/deployment-test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
     "@tesseract.js-data/eng": "^1.0.0",
-    "pdfjs-dist": "3.11.174",
+    "pdfjs-dist": "6.3.289",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "tesseract.js": "^7.0.0",
-    "xlsx": "0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
