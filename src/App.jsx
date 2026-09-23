@@ -270,7 +270,7 @@ export default function App() {
     let linked=0, failed=0, firstError=null;
     for(const vi of unmapped){
       try{
-        const match=await catalogService.matchOrCreate({organizationId:org.id,description:vi.description,catalogItems:workingCatalogItems,categories:workingCategories});
+        const match=await catalogService.matchOrCreate({organizationId:org.id,description:vi.description,packSize:vi.pack_size,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems,mappings});
         if(!match) continue;
         await importService.createMapping({
           organization_id:org.id, catalog_item_id:match.catalogItemId, vendor_item_id:vi.id,
@@ -886,6 +886,7 @@ export default function App() {
                             style={{minWidth:0,padding:"8px 8px 8px 2px",borderTop:"1px solid #F2F2F2",cursor:activeBlocked?"default":"grab",opacity:dragItem?.key===activeKey?0.5:1}}>
                             <div style={{fontWeight:600,fontSize:12.5,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                               {item.name}
+                              {hasEach&&<span title="Available by case or by each" style={{marginLeft:5,fontSize:9,background:"#E0F2F1",color:"#00695C",padding:"2px 5px",borderRadius:4,fontWeight:800}}>CASE + EACH</span>}
                               {item.lockedBrand&&<span title={`Locked to ${item.lockedBrand} - other brands are never ordered for this item`} style={{marginLeft:4,fontSize:9,background:"#E3F2FD",color:"#1565C0",padding:"1px 4px",borderRadius:4,fontWeight:700}}>🔒 {item.lockedBrand}</span>}
                               {["similar","review"].includes(activeMatchTrack)&&(
                                 <span title="Auto-matched to this product below full confidence - worth double-checking it's really the same item"
@@ -899,9 +900,9 @@ export default function App() {
                               {!activeBlocked&&activeOption?.perUnit&&<span style={{marginLeft:6,color:"#666",fontWeight:600}}>{formatMoney(activeOption.perUnit.price)}/{activeOption.perUnit.unit}</span>}
                             </div>
                           </div>,
-                          <div key={item.catalogItemId+"_unit"} style={{padding:"8px 6px",borderTop:"1px solid #F2F2F2",borderLeft:"1px solid #EEE",background:"#FAFBFC"}}>
+                          <div key={item.catalogItemId+"_unit"} style={{padding:"8px 6px",borderTop:"1px solid #F2F2F2",borderLeft:"1px solid #EEE",background:hasEach?"#E0F2F1":"#FAFBFC"}}>
                             <select aria-label={`Order unit for ${item.name}`} value={selectedUnit} onChange={e=>setUnitSelection(prev=>({...prev,[item.catalogItemId]:e.target.value}))}
-                              style={{width:"100%",fontSize:11,padding:"4px 2px",borderRadius:6,border:"1px solid #DDD",background:"white",color:"#444"}}>
+                              style={{width:"100%",fontSize:11,padding:"4px 2px",borderRadius:6,border:hasEach?"2px solid #008577":"1px solid #DDD",background:"white",color:hasEach?"#00695C":"#444",fontWeight:hasEach?800:400}}>
                               <option value="case">Case</option>
                               <option value="each" disabled={!hasEach}>Each {!hasEach?"(unavailable)":""}</option>
                             </select>
@@ -1310,7 +1311,7 @@ export default function App() {
         )}
       </div>
 
-      {showPaste&&org.role!=="employee"&&<PasteModal vendors={vendors} orgId={org.id} orgSettings={org.settings} catalogItems={catalogItems} categories={categories} onClose={()=>setShowPaste(false)} onDone={loadData} initialVendorId={selectedVendorId} initialMode={importMode} />}
+      {showPaste&&org.role!=="employee"&&<PasteModal vendors={vendors} orgId={org.id} orgSettings={org.settings} catalogItems={catalogItems} categories={categories} vendorItems={vendorItems} mappings={mappings} onClose={()=>setShowPaste(false)} onDone={loadData} initialVendorId={selectedVendorId} initialMode={importMode} />}
       {showAddVendor&&<AddVendorModal orgId={org.id} onClose={()=>setShowAddVendor(false)} onDone={loadData} />}
       {editingInvoice&&org.role!=="employee"&&<InvoiceEditModal invoice={editingInvoice} vendors={vendors} onClose={()=>setEditingInvoice(null)} onDone={loadData} />}
     </div>

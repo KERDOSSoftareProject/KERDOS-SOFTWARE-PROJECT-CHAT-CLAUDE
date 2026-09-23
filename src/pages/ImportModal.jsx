@@ -2,7 +2,7 @@ import {useEffect,useState} from "react";
 import {backend} from "../backend/index.js";
 import {fileToText} from "../document-reader.js";
 import {findDate,findInvoiceNumber,parseDocument} from "../ingestion.js";
-import {bestInvoiceMatch,compareProductIdentity,MATCH_POLICY,packsEquivalent} from "../procurement.js";
+import {bestInvoiceMatch,compareProductIdentity,comparePurchasingPack,MATCH_POLICY,packsEquivalent} from "../procurement.js";
 import {createCatalogService} from "../services/catalog.js";
 import {createDocumentService} from "../services/documents.js";
 import {createImportService} from "../services/imports.js";
@@ -14,7 +14,7 @@ const documents=createDocumentService(backend);
 const importService=createImportService(backend);
 const r2=value=>Math.round(value*100)/100;
 
-export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,onClose,onDone,initialVendorId,initialMode}) {
+export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vendorItems=[],mappings=[],onClose,onDone,initialVendorId,initialMode}) {
   const [vendorId,setVendorId]=useState(initialVendorId||vendors[0]?.id||"");
   const mode=initialMode||"pricelist";
   const [pastedText,setPastedText]=useState("");
@@ -88,11 +88,14 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,on
     setSaveReview("");setLoading(true);
     const vendor=vendors.find(v=>v.id===vendorId);
     let updated=0,created=0,invoiceTotal=0,invoicesCreated=0,mapped=0;
+    const identified=[];
     let saveError=null;
 
     if(mode==="pricelist"){
       const workingCatalogItems=[...catalogItems];
       const workingCategories=[...categories];
+      const workingVendorItems=[...vendorItems];
+      const workingMappings=[...mappings];
       const importBatchTime=new Date().toISOString();
 
       let failedRows=0;
@@ -153,7 +156,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,on
         if(vendorItemId){
           const existingMapping=await importService.mapping(orgId,vendorItemId);
           if(!existingMapping){
-            const match=await catalogService.matchOrCreate({organizationId:orgId,description:row.description,catalogItems:workingCatalogItems,categories:workingCategories});
+            const match=await catalogService.matchOrCreate({organizationId:orgId,description:row.description,packSize:row.packSize||ex?.pack_size,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems:workingVendorItems,mappings:workingMappings});
             if(match){
               await importService.createMapping({
                 organization_id:orgId, catalog_item_id:match.catalogItemId, vendor_item_id:vendorItemId,
@@ -161,6 +164,9 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,on
                 match_method:"rule_based", comparison_track:match.track,
               });
               mapped++;
+              workingVendorItems.push({id:vendorItemId,description:row.description,pack_size:row.packSize||ex?.pack_size||null});
+              workingMappings.push({catalog_item_id:match.catalogItemId,vendor_item_id:vendorItemId});
+              identified.push({description:row.description,packSize:row.packSize||ex?.pack_size||null,price:row.price,track:match.track,confidence:match.score==null?null:Math.round(match.score*100),reason:match.reason||null});
             }
           }
         }
@@ -195,6 +201,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,on
 
       for(const group of parsedGroups){
         if(!group.rows.length) continue;
+        const invoiceIdentified=[];
         const groupTotal=group.rows.reduce((s,row)=>s+(row.amount!=null?row.amount:row.price),0);
         const invoiceNo=findInvoiceNumber(group.text);
         let duplicate;
@@ -236,16 +243,17 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,on
           let matched=null, confidence=null, method=null,codeConflict=false,pendingCatalog=null;
           if(row.code){
             matched=viList.find(vi=>vi.vendor_item_code===row.code)||null;
-            if(matched&&compareProductIdentity(row.description,matched.description).status==="same"){
+            if(matched&&compareProductIdentity(row.description,matched.description).status==="same"&&comparePurchasingPack(row.packSize,matched.pack_size).status==="same"){
               confidence=100; method="code";
             }else if(matched){matched=null;codeConflict=true;method="identity_conflict";}
           }
           if(!matched&&!codeConflict&&row.description){
             matched=viList.find(vi=>vi.description===row.description)||null;
-            if(matched){ confidence=100; method="exact_description"; }
+            if(matched&&comparePurchasingPack(row.packSize,matched.pack_size).status==="same"){ confidence=100; method="exact_description"; }
+            else matched=null;
           }
           if(!matched&&!codeConflict&&row.description&&viList.length){
-            const fuzzy=bestInvoiceMatch(row.description,viList,MATCH_POLICY.autoLink);
+            const fuzzy=bestInvoiceMatch(row.description,viList.filter(vi=>comparePurchasingPack(row.packSize,vi.pack_size).status==="same"),MATCH_POLICY.autoLink);
             if(fuzzy){ matched=fuzzy.vendorItem; confidence=Math.round(fuzzy.score*100); method="fuzzy"; }
           }
           // Nothing matched at all - rather than leave this line
@@ -261,8 +269,9 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,on
           // silently misleading.
           if(!matched&&!codeConflict&&row.description){
             try{
-              pendingCatalog=await catalogService.matchOrCreate({organizationId:orgId,description:row.description,catalogItems:workingCatalogItems,categories:workingCategories});
+              pendingCatalog=await catalogService.matchOrCreate({organizationId:orgId,description:row.description,packSize:row.packSize,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems,mappings});
               method="created_from_invoice"; confidence=null;
+              invoiceIdentified.push({description:row.description,packSize:row.packSize||null,price:row.price,track:pendingCatalog.track,confidence:pendingCatalog.score==null?null:Math.round(pendingCatalog.score*100),reason:pendingCatalog.reason||null,invoice:true});
             }catch(err){
               method="unmatched";
               saveError=(saveError?saveError+" ":"")+`"${row.description}": ${err.message||String(err)}`;
@@ -301,6 +310,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,on
           },linesToInsert);
           invoicesCreated++;
           invoiceTotal+=groupTotal;
+          identified.push(...invoiceIdentified);
         }catch(error){
           if(filePath){try{await documents.remove([filePath]);}catch{}}
           saveError=(saveError?saveError+" ":"")+`"${group.name}" couldn't be recorded: ${error.message||String(error)}`;
@@ -308,7 +318,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,on
       }
     }
 
-    setResult({mode,vendor:vendor?.name,updated,created,mapped,invoiceTotal:r2(invoiceTotal),invoicesCreated,count:allRows.length,error:saveError});
+    setResult({mode,vendor:vendor?.name,updated,created,mapped,invoiceTotal:r2(invoiceTotal),invoicesCreated,count:allRows.length,error:saveError,identified});
     await onDone();
     setStep(3);setLoading(false);
   }
@@ -442,6 +452,14 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,on
             {result.mode==="pricelist"
               ?<p style={{color:"#666",fontSize:14}}>{result.updated} items updated · {result.created} new items added · {result.mapped} linked to your catalog for ordering</p>
               :<p style={{color:"#666",fontSize:14}}>{result.invoicesCreated} invoice{result.invoicesCreated===1?"":"s"} recorded · {result.count} line{result.count===1?"":"s"} · {formatMoney(result.invoiceTotal)} total</p>}
+            {result.identified?.length>0&&<div style={{textAlign:"left",background:"#F7F9FC",borderRadius:8,padding:12,maxHeight:230,overflowY:"auto"}}>
+              <div style={{fontWeight:700,fontSize:13,marginBottom:7}}>{result.identified.length} newly identified vendor product{result.identified.length===1?"":"s"}</div>
+              {result.identified.map((item,i)=><div key={i} style={{background:"white",border:"1px solid #E1E7F0",borderRadius:6,padding:8,marginBottom:5,fontSize:12}}>
+                <b>{item.description}</b><div>Pack: {item.packSize||"Not provided"} · {formatMoney(item.price)}{item.invoice?" paid on invoice (historical)":" quoted"}</div>
+                <div style={{color:item.track==="exact"?"#2E7D32":"#B26A00"}}>{item.track==="new"?"New catalog product":item.track==="review"?"Needs product review":"Verified match"}{item.confidence!=null?` · Description ${item.confidence}% similar`:""}{item.reason?` · ${item.reason}`:""}</div>
+              </div>)}
+              <div style={{fontSize:11,color:"#666"}}>Review uncertain products in Item Catalog before their prices are used for ordering.</div>
+            </div>}
             {result.error&&<div style={{background:"#FFF3E0",color:"#E65100",padding:"10px 12px",borderRadius:8,fontSize:13,marginTop:12,textAlign:"left"}}>{result.error}</div>}
             <button onClick={onClose} style={{...btn("#003584"),marginTop:16}}>Done</button>
           </div>

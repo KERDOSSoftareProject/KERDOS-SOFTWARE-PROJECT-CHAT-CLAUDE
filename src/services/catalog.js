@@ -1,7 +1,7 @@
 // Catalog writes expressed in KERDOS business language. The service depends
 // only on the provider's generic table capability; UI code never names or
 // imports a database vendor.
-import {bestCatalogMatch,classifyCategory,nextCategoryRange} from "../procurement.js";
+import {bestPurchasingMatch,classifyCategory,nextCategoryRange} from "../procurement.js";
 async function run(promise,operation){
   const {data,error}=await promise;
   if(error)throw new Error(`${operation}: ${error.message}`);
@@ -11,13 +11,19 @@ async function run(promise,operation){
 export function createCatalogService(backend){
   const table=backend.records.query;
   return {
-    async matchOrCreate({organizationId,description,catalogItems,categories}){
-      const match=bestCatalogMatch(description,catalogItems);
+    async matchOrCreate({organizationId,description,packSize,catalogItems,categories,vendorItems=[],mappings=[]}){
+      const byId=new Map(vendorItems.map(vi=>[vi.id,vi]));
+      const candidates=catalogItems.map(ci=>{
+        const linked=mappings.map(m=>m.catalog_item_id===ci.id?byId.get(m.vendor_item_id):null).filter(Boolean);
+        const knownPacks=[...new Set(linked.map(vi=>vi.pack_size).filter(Boolean))];
+        return {...ci,pack_size:knownPacks.length===1?knownPacks[0]:null};
+      });
+      const match=bestPurchasingMatch(description,packSize,candidates);
       if(match?.track==="exact")return {catalogItemId:match.catalogItem.id,track:"exact",score:match.score};
       const category=classifyCategory(description,categories,catalogItems)||await this.ensureHoldingCategory(organizationId,categories);
       const created=await this.createItem({organizationId,name:description,categoryId:category?.id||null,catalogItems,categories});
       catalogItems.push(created);
-      return {catalogItemId:created.id,track:match?"review":"new",score:match?.score??null};
+      return {catalogItemId:created.id,track:match?"review":"new",score:match?.score??null,reason:match?.reason||"No verified equivalent found"};
     },
     async ensureHoldingCategory(organizationId,categories){
       const existing=categories.find(category=>category.is_holding_pen)||null;
@@ -40,10 +46,10 @@ export function createCatalogService(backend){
       return created;
     },
     confirmMapping(mappingId){
-      return run(table("item_mappings").update({comparison_track:"exact",confidence_score:100}).eq("id",mappingId),"Could not confirm the match");
+      return run(table("item_mappings").update({comparison_track:"exact",confidence_score:100,match_method:"manual"}).eq("id",mappingId),"Could not confirm the match");
     },
     remapToExisting(mappingId,catalogItemId){
-      return run(table("item_mappings").update({catalog_item_id:catalogItemId,comparison_track:"exact",confidence_score:100}).eq("id",mappingId),"Could not remap the item");
+      return run(table("item_mappings").update({catalog_item_id:catalogItemId,comparison_track:"exact",confidence_score:100,match_method:"manual"}).eq("id",mappingId),"Could not remap the item");
     },
     async mergeItems(sourceCatalogItemId,targetCatalogItemId){
       if(sourceCatalogItemId===targetCatalogItemId)return;

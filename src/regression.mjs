@@ -1,5 +1,5 @@
 import { classifyCategory, safeProductScore, normalizedPrice, eachPrice, measurement, nextCategoryRange, parsePackSize, packsEquivalent,
-  pricePerUnit, unitsForDimension, brandsMatch, bestCatalogMatch, configureVocabulary, compareProductIdentity, quoteStatus, MATCH_POLICY } from "./procurement.js";
+  pricePerUnit, unitsForDimension, brandsMatch, bestCatalogMatch, bestPurchasingMatch, comparePurchasingPack, configureVocabulary, compareProductIdentity, quoteStatus, MATCH_POLICY } from "./procurement.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -102,6 +102,11 @@ for(const [a,b,e] of [
 ]) t(`${a} vs ${b}`, compareProductIdentity(a,b).status,e);
 t("uncertain boneless not auto linked",bestCatalogMatch("Boneless chicken breast",[{name:"Chicken breast"}])?.track,"similar");
 t("same identity wins over fuzzy candidate",bestCatalogMatch("Chicken breast 40lb",[{name:"Chicken breast"},{name:"Chicken breast 40 lb"}])?.catalogItem?.name,"Chicken breast 40 lb");
+t("slice counts remain distinct",compareProductIdentity("American cheese 120 slices","American cheese 160 slices").status,"review");
+t("equal total with different case configuration needs review",comparePurchasingPack("4/1 GAL","2/2 GAL").status,"review");
+t("different count packs cannot automatically compete",bestPurchasingMatch("American cheese","160 CT",[{name:"American cheese",pack_size:"120 CT"}])?.track,"similar");
+t("identical product and pack can auto link",bestPurchasingMatch("American cheese","120 CT",[{name:"American cheese",pack_size:"120 CT"}])?.track,"exact");
+t("missing pack is never an exact product match",bestPurchasingMatch("American cheese",null,[{name:"American cheese",pack_size:"120 CT"}])?.track,"similar");
 t("invoice price cannot become live quote",quoteStatus({price_source:"invoice",price:40}),"invoice_only");
 t("manual quote remains current",quoteStatus({price_source:"price_list",price:40,last_updated:"2020-01-01"},{price_refresh_mode:"manual"},new Date("2026-09-21")),"current");
 t("legacy day count cannot silently enable expiration",quoteStatus({price_source:"price_list",price:40,last_updated:"2020-01-01"},{price_refresh_days:7},new Date("2026-09-21")),"current");

@@ -276,6 +276,12 @@ function productCoreWords(value) {
 function productIdentity(description) {
   const text=String(description||"");
   const measurements=extractComparableMeasurements(text);
+  // A count with an unfamiliar industry term is still a defining detail:
+  // 120 slices and 160 slices must not collapse to "sliced cheese".
+  const unknownCounts=[...text.toLowerCase().matchAll(/\b(\d+(?:\.\d+)?)\s+([a-z]{3,})\b/g)];
+  for(const [,quantity,word] of unknownCounts){
+    if(!UNIT_LOOKUP.has(word) && !PACKAGING_ALIASES.has(word)) measurements.add(`count:${canonicalWord(word)}:${quantity}`);
+  }
   const clean=text.replace(new RegExp(MEASURE_RE.source,"gi")," ").replace(/\b\d+\s*[\/x]\s*\d+\b/gi," ");
   return { core:new Set(productCoreWords(clean)), measurements };
 }
@@ -346,6 +352,36 @@ function bestCatalogMatch(description, catalogItems=[], policy=MATCH_POLICY) {
   return best?{catalogItem:best,score:bestScore,track:bestTrack}:null;
 }
 
+// The catalog's display name is not a complete purchasing specification.
+// Compare an incoming vendor pack to verified packs on the existing item.
+// Missing or conflicting pack data stays review-only; total volume alone
+// cannot prove two different case configurations interchangeable.
+function comparePurchasingPack(incoming,existing){
+  const a=parsePackSize(incoming),b=parsePackSize(existing);
+  if(!a?.parsed||!b?.parsed)return {status:"review",reason:"Pack size missing or unreadable"};
+  if(a.dimension!==b.dimension||a.baseUnit!==b.baseUnit||a.baseTotal!==b.baseTotal)
+    return {status:"different",reason:`Pack size differs: ${incoming} versus ${existing}`};
+  if(a.caseQty!==b.caseQty||Math.abs(a.unitQty*measurement(1,a.unit).baseQuantity-b.unitQty*measurement(1,b.unit).baseQuantity)>0.001)
+    return {status:"review",reason:`Case configuration differs: ${incoming} versus ${existing}`};
+  return {status:"same",reason:"Pack sizes agree"};
+}
+
+function bestPurchasingMatch(description,packSize,catalogItems=[]){
+  const candidates=catalogItems.map(ci=>({...ci,name:ci.name,matching_behavior:ci.matching_behavior}));
+  const ranked=candidates.map(ci=>{
+    const identity=compareProductIdentity(description,ci.name);
+    if(identity.status==="different")return null;
+    const pack=comparePurchasingPack(packSize,ci.pack_size);
+    const score=safeProductScore(description,ci.name);
+    if(score<MATCH_POLICY.reviewFloor)return null;
+    const exact=identity.status==="same"&&pack.status==="same"&&score>=MATCH_POLICY.autoLink;
+    if(ci.matching_behavior==="strict"&&!exact)return null;
+    return {catalogItem:ci,score,track:exact?"exact":"similar",
+      reason:identity.status==="review"?identity.reason:pack.reason};
+  }).filter(Boolean).sort((a,b)=>(b.track==="exact")-(a.track==="exact")||b.score-a.score);
+  return ranked[0]||null;
+}
+
 function bestInvoiceMatch(description,candidates=[],threshold=MATCH_POLICY.autoLink) {
   let best=null,bestScore=0;
   for(const candidate of candidates){
@@ -383,5 +419,5 @@ export {
   MATCH_POLICY, UNIT_DEFINITIONS, configureVocabulary, normalizeUnit, measurement, parsePackSize, packsEquivalent, normalizedPrice, eachPrice,
   unitsForDimension, pricePerUnit, brandsMatch,
   normalizeForMatch, wordsMatch, classifyCategory, nextCategoryRange,
-  safeProductScore, productIdentity, compareProductIdentity, quoteStatus, bestCatalogMatch, bestInvoiceMatch,
+  safeProductScore, productIdentity, compareProductIdentity, comparePurchasingPack, bestPurchasingMatch, quoteStatus, bestCatalogMatch, bestInvoiceMatch,
 };

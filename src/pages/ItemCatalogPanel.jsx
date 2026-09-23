@@ -2,7 +2,7 @@ import {useMemo,useState} from "react";
 import {backend} from "../backend/index.js";
 import {createCatalogService} from "../services/catalog.js";
 import {createCategoryService} from "../services/categories.js";
-import {bestCatalogMatch,unitsForDimension} from "../procurement.js";
+import {bestCatalogMatch,compareProductIdentity,comparePurchasingPack,unitsForDimension} from "../procurement.js";
 import {blockReason,orderable} from "../core/ordering.js";
 import {compareItems,itemMatchesSearch} from "../core/catalog-browse.js";
 import {formatMoney} from "../localization.js";
@@ -112,7 +112,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
     if(!cheapest) return {label:"No price on file",color:"#999",bg:"#F5F5F5"};
     if(!orderable(cheapest)) return {label:blockReason(cheapest),color:"#B26A00",bg:"#FFF3E0"};
     if(["similar","review"].includes(cheapest.matchTrack)) return {label:`Needs review — ${cheapest.matchConfidence}%`,color:"#B26A00",bg:"#FFF3E0"};
-    return {label:"✓ 100% matched",color:"#2E7D32",bg:"#E8F5E9"};
+    return {label:cheapest.matchTrack==="new"?"New vendor product":"✓ Product linked",color:"#2E7D32",bg:"#E8F5E9"};
   }
 
   // One wrapper for every catalog action: show the failure where the
@@ -251,8 +251,12 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
       const v=vi?vMap.get(vi.vendor_id):null;
       const others=catalogItems.filter(c=>c.id!==m.catalog_item_id);
       const suggestion=vi?bestCatalogMatch(vi.description,others):null;
+      const suggestedVendor=mappings.filter(link=>link.catalog_item_id===suggestion?.catalogItem?.id).map(link=>viMap.get(link.vendor_item_id)).find(link=>link?.pack_size);
+      const detail=vi&&ci?compareProductIdentity(vi.description,ci.name):null;
+      const packCheck=vi?comparePurchasingPack(vi.pack_size,suggestedVendor?.pack_size):null;
       return {mappingId:m.id, catalogItemId:m.catalog_item_id, catalogName:ci?.name||"(deleted item)", vendorName:v?.name||"—",
-        vendorDescription:vi?.description||"—", confidence:m.confidence_score, track:m.comparison_track,
+        vendorDescription:vi?.description||"—",packSize:vi?.pack_size||null,brand:vi?.brand||null, confidence:m.confidence_score, track:m.comparison_track,
+        reason:detail?.status==="review"?detail.reason:packCheck?.reason||"Check the full product specifications",
         suggestion:suggestion?{catalogItemId:suggestion.catalogItem.id,name:suggestion.catalogItem.name,score:Math.round(suggestion.score*100)}:null};
     }).sort((a,b)=>(a.confidence??0)-(b.confidence??0)),
   [mappings,viMap,ciMap,vMap,catalogItems]);
@@ -305,7 +309,9 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
               <div key={m.mappingId} style={{background:"white",borderRadius:8,padding:"10px 12px",marginBottom:6,boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
                 <div style={{fontSize:11,color:"#666",marginBottom:3}}>Vendor product · {m.vendorName}</div>
                 <div style={{fontWeight:700,fontSize:13}}>{m.vendorDescription}</div>
+                <div style={{fontSize:11,color:"#555",marginTop:3}}>Pack: <b>{m.packSize||"Not provided"}</b>{m.brand?` · Brand: ${m.brand}`:""}</div>
                 <div style={{fontSize:12,color:"#555",marginTop:5,marginBottom:8}}>Currently under <b>{m.catalogName}</b> <span style={{color:"#B26A00"}}>· Suggested match {m.confidence??"—"}%</span></div>
+                <div style={{fontSize:11,color:"#B26A00",marginBottom:8}}>Check: {m.reason}. Similar wording is not proof of the same product.</div>
                 {m.suggestion&&(
                   <div style={{fontSize:11,color:"#555",marginBottom:8}}>
                     Another possible item: <b>{m.suggestion.name}</b> <span style={{color:"#999"}}>({m.suggestion.score}% suggested match)</span>
@@ -579,7 +585,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                             {["similar","review"].includes(o.matchTrack)?`🔍 ${o.matchConfidence}%`:"✓ exact"}
                           </div>
                         </div>
-                        <div style={{fontSize:11,color:"#999",margin:"2px 0 6px"}}>"{o.description}"{o.brand?` · ${o.brand}`:""} — {formatMoney(o.casePrice)}{!orderable(o)?` · ${blockReason(o)}`:""}{orderable(o)&&o.perUnit?` (${formatMoney(o.perUnit.price)}/${o.perUnit.unit})`:""}</div>
+                        <div style={{fontSize:11,color:"#999",margin:"2px 0 6px"}}>"{o.description}"{o.brand?` · ${o.brand}`:""} · Pack: {o.packSize||"Not provided"} — {formatMoney(o.casePrice)}{!orderable(o)?` · ${blockReason(o)}`:""}{orderable(o)&&o.perUnit?` (${formatMoney(o.perUnit.price)}/${o.perUnit.unit})`:""}</div>
                         {remapOpenFor===o.mappingId?(
                           <div>
                             <input style={{...inp,marginBottom:6,fontSize:12,padding:"7px 9px"}} placeholder="Search for a product..." value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} autoFocus />
