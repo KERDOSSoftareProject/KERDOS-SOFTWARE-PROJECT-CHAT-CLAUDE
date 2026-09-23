@@ -2,8 +2,9 @@ import {useMemo,useState} from "react";
 import {backend} from "../backend/index.js";
 import {createCatalogService} from "../services/catalog.js";
 import {createCategoryService} from "../services/categories.js";
-import {bestCatalogMatch} from "../procurement.js";
+import {bestCatalogMatch,unitsForDimension} from "../procurement.js";
 import {blockReason,orderable} from "../core/ordering.js";
+import {compareItems,itemMatchesSearch} from "../core/catalog-browse.js";
 import {formatMoney} from "../localization.js";
 import {buildCatalogExportCSV,downloadTextFile} from "../reporting.js";
 import {btn,chipStyle,inp} from "../ui/styles.js";
@@ -13,55 +14,6 @@ const categoryService=createCategoryService(backend);
 
 const REVIEW_FILTER="__needs_review__";
 
-// Three ways to order items within a category (or a full/unfiltered list):
-// alphabetical by name, this org's own client item-number sequence, or the
-// vendor's own item code (taken from that item's cheapest/first-listed
-// vendor option, since one client item can carry several vendors' different
-// codes - there's no single "the" vendor code). Items missing whatever key
-// the current mode needs sink to the end rather than disappearing. Shared
-// by Item Catalog (mapping work) and Order Guide (placing orders) - same
-// browsing idea, different job each screen is doing with the result.
-function compareItems(a,b,mode){
-  if(mode==="itemNumber"){
-    const na=a.masterItemNumber,nb=b.masterItemNumber;
-    if(na==null&&nb==null) return a.name.localeCompare(b.name);
-    if(na==null) return 1; if(nb==null) return -1;
-    return na-nb;
-  }
-  if(mode==="vendorCode"){
-    const ca=a.options[0]?.vendorItemCode,cb=b.options[0]?.vendorItemCode;
-    if(!ca&&!cb) return a.name.localeCompare(b.name);
-    if(!ca) return 1; if(!cb) return -1;
-    return String(ca).localeCompare(String(cb),undefined,{numeric:true});
-  }
-  if(mode==="added"){
-    // Chronological = the order items actually entered the catalog, oldest
-    // first - not alphabetical, not the numbering scheme. Falls back to
-    // name order for anything missing a timestamp rather than dropping it.
-    const ta=a.createdAt?new Date(a.createdAt).getTime():null,tb=b.createdAt?new Date(b.createdAt).getTime():null;
-    if(ta==null&&tb==null) return a.name.localeCompare(b.name);
-    if(ta==null) return 1; if(tb==null) return -1;
-    return ta-tb;
-  }
-  return a.name.localeCompare(b.name);
-}
-
-// Search finds an item by the client's own name for it, by any vendor's
-// wording for it, or by any vendor's item code - whichever the person
-// has in front of them.
-function itemMatchesSearch(item, query){
-  const q=String(query||"").trim().toLowerCase();
-  if(!q) return true;
-  if(item.name.toLowerCase().includes(q)) return true;
-  if(String(item.masterItemNumber||"")===q) return true;
-  return item.options.some(o=>String(o.description||"").toLowerCase().includes(q)||String(o.vendorItemCode||"").toLowerCase()===q);
-}
-
-// Small labeled block used by the review sections on Item Catalog, Price
-// Sheets, and Invoices - each tab only ever shows the review data that's
-// actually ITS OWN (mapping issues on Item Catalog, price-sheet health on
-// Price Sheets, invoice-line issues on Invoices), so this is shared
-// purely for the consistent look, not because any data crosses tabs.
 function Section({title,count,emptyText,children}){
   return (
     <div style={{marginBottom:20}}>

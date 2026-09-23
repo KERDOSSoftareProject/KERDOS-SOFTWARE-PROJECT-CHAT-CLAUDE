@@ -11,6 +11,7 @@ import { createImportService } from "./services/imports.js";
 import { loadSnapshot, saveSnapshot } from "./offline-store.js";
 import { configureVocabulary, eachPrice, pricePerUnit, unitsForDimension, parsePackSize, brandsMatch, quoteStatus } from "./procurement.js";
 import { blockReason, orderable, solveOrder } from "./core/ordering.js";
+import { compareItems, itemMatchesSearch } from "./core/catalog-browse.js";
 import { configureLocale, currencyCode, formatDate, formatMoney } from "./localization.js";
 import { buildVarianceReportCSV, downloadTextFile } from "./reporting.js";
 import {InvoicesPage,PriceSheetsPage} from "./pages/DocumentPages.jsx";
@@ -547,15 +548,6 @@ export default function App() {
   },[productList]);
 
   const filtered=useMemo(()=>{
-// Matches an item by client name, vendor wording, vendor code, or master number.
-function itemMatchesSearch(item, query){
-  const q=String(query||"").trim().toLowerCase();
-  if(!q) return true;
-  if(item.name.toLowerCase().includes(q)) return true;
-  if(String(item.masterItemNumber||"")===q) return true;
-  return item.options.some(o=>String(o.description||"").toLowerCase().includes(q)||String(o.vendorItemCode||"").toLowerCase()===q);
-}
-
     // Order Guide is for ORDERING - a client-created item with no vendor
     // price mapped to it yet has nothing to order, so it's excluded here
     // even though it's fully visible in Item Catalog.
@@ -1265,6 +1257,7 @@ function itemMatchesSearch(item, query){
               vendor={v} vc={vc} vendorItems={vendorItems} invoices={invoices} purchaseOrders={purchaseOrders} priceHistory={priceHistory}
               mappings={mappings} catalogItems={catalogItems}
               orgId={org.id} myRole={org.role}
+              onViewOriginal={viewStoredFile}
               onBack={()=>setTab("order")}
               onUpdated={loadData}
               onEditInvoice={setEditingInvoice}
