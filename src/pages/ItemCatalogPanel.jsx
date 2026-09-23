@@ -33,17 +33,14 @@ function Section({title,count,emptyText,children}){
 export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,mappings,vendorItems,categories,onOpenVendor,onUpdated}) {
   const canManage=role==="owner"||role==="manager";
   const [search,setSearch]=useState("");
+  const [showReview,setShowReview]=useState(false);
   const [categoryFilter,setCategoryFilter]=useState("");
   const [remapOpenFor,setRemapOpenFor]=useState(null);
   const [remapSearch,setRemapSearch]=useState("");
   const [busyMappingId,setBusyMappingId]=useState(null);
-  const [draggedItemId,setDraggedItemId]=useState(null);
-  const [dragOverItemId,setDragOverItemId]=useState(null);
-  const [merging,setMerging]=useState(false);
   const [renamingId,setRenamingId]=useState(null);
   const [renameValue,setRenameValue]=useState("");
   const [categoryEditId,setCategoryEditId]=useState(null);
-  const [categoryEditBusy,setCategoryEditBusy]=useState(false);
   // Which catalog item's "map this item's vendors" panel is open. This
   // is separate from remapOpenFor (which mapping's remap-search box is
   // open, below) - a person opens the item's panel first, then may open
@@ -52,6 +49,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
   // price to a different catalog item shouldn't require waiting for the
   // system to flag it first.
   const [mapPanelOpenFor,setMapPanelOpenFor]=useState(null);
+  const [showItemNumberFor,setShowItemNumberFor]=useState(null);
   // Bulk allocation of unclassified items. One-at-a-time reassignment is
   // fine for a stray item, but an import that leaves dozens unmatched
   // needs to be workable in one pass, not dozens of separate dropdowns.
@@ -139,17 +137,6 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
     setBusyMappingId(null);
   }
 
-  function handleDrop(targetItem){
-    const sourceId=draggedItemId;
-    setDraggedItemId(null); setDragOverItemId(null);
-    if(!sourceId||sourceId===targetItem.catalogItemId) return;
-    const sourceItem=productList.find(p=>p.catalogItemId===sourceId);
-    if(!sourceItem) return;
-    if(!window.confirm(`Merge "${sourceItem.name}" into "${targetItem.name}"?\n\nAll of "${sourceItem.name}"'s vendor prices will move under "${targetItem.name}", and "${sourceItem.name}" will be removed as its own item. This can't be undone automatically.`)) return;
-    setMerging(true);
-    act(()=>catalogService.mergeItems(sourceId,targetItem.catalogItemId)).finally(()=>setMerging(false));
-  }
-
   async function saveRename(catalogItemId){
     const trimmed=renameValue.trim();
     setRenamingId(null);
@@ -231,9 +218,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
   async function handleAssignCategory(catalogItemId,newCategoryId){
     setCategoryEditId(null);
     if(!newCategoryId) return;
-    setCategoryEditBusy(true);
     await act(()=>categoryService.assignItem({catalogItemId,categoryId:newCategoryId,catalogItems,categories}));
-    setCategoryEditBusy(false);
   }
 
   async function handleAddItem(){
@@ -272,7 +257,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
         <h3 style={{margin:0,fontSize:16,color:"white"}}>Item Catalog</h3>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          {totalCount>0&&<span style={{background:"#E65100",color:"white",fontSize:12,fontWeight:700,padding:"3px 10px",borderRadius:12}}>{totalCount} to review</span>}
+          {totalCount>0&&<button onClick={()=>{setShowReview(true);setCategoryFilter("");}} style={{...btn(showReview?"#E65100":"#FFF3E0",showReview?"white":"#B26A00",{fontSize:12,padding:"7px 11px"})}}>{totalCount} to review</button>}
           {canManage&&<button onClick={()=>setAddingItem(true)} style={{...btn("#003584","white",{fontSize:12,padding:"8px 14px"})}}>+ Add Item</button>}
           <button onClick={()=>downloadTextFile(`catalog-export-${new Date().toISOString().split("T")[0]}.csv`,buildCatalogExportCSV(productList,vendors),"text/csv")}
             disabled={!productList.length} style={{...btn("#2E7D32","white",{fontSize:12,padding:"8px 14px"})}}>
@@ -301,7 +286,12 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
         </div>
       )}
 
-      {canManage&&totalCount>0&&(
+      <div style={{display:"flex",gap:8,marginBottom:14}}>
+        <button onClick={()=>setShowReview(false)} style={{...btn(showReview?"#E8F1FB":"white",showReview?"#003584":"#003584",{fontSize:12,padding:"9px 14px",fontWeight:800,boxShadow:showReview?"none":"0 2px 8px rgba(0,20,65,.12)"})}}>All products ({productList.length})</button>
+        {canManage&&totalCount>0&&<button onClick={()=>setShowReview(true)} style={{...btn(showReview?"#E65100":"#FFF3E0",showReview?"white":"#B26A00",{fontSize:12,padding:"9px 14px",fontWeight:800})}}>Needs review ({totalCount})</button>}
+      </div>
+
+      {canManage&&showReview&&totalCount>0&&(
         <div style={{marginBottom:24,paddingBottom:4}}>
           <Section title="Vendor products to check" count={lowConfidenceMatches.length} emptyText="All vendor products are linked to the right catalog items.">
             <p style={{fontSize:12,color:"rgba(255,255,255,0.85)",margin:"0 0 10px"}}>Check where each vendor product belongs. Moving a vendor price here changes only that vendor product.</p>
@@ -320,17 +310,17 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                 {remapOpenFor===m.mappingId?(
                   <div style={{background:"#F7F9FC",borderRadius:6,padding:8}}>
                     <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>Choose the catalog item for this vendor product</div>
-                    <input style={{...inp,marginBottom:6,fontSize:12,padding:"7px 9px"}} placeholder="Search for a product..." value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} autoFocus />
+                    <input style={{...inp,marginBottom:6,fontSize:12,padding:"7px 9px"}} placeholder="Enter a KERDOS item number or search by product name..." value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} autoFocus />
                     <div style={{maxHeight:140,overflowY:"auto"}}>
                       {catalogItems.filter(ci=>{
                         if(ci.id===m.catalogItemId) return false;
                         const q=remapSearch.trim().toLowerCase();
                         if(!q) return true;
-                        return ci.name.toLowerCase().includes(q);
+                        return ci.name.toLowerCase().includes(q)||String(ci.master_item_number).includes(q);
                       }).slice(0,8).map(ci=>(
                         <button key={ci.id} disabled={busyMappingId===m.mappingId} onClick={()=>handleRemapExisting(m.mappingId,ci.id)}
                           style={{display:"block",width:"100%",textAlign:"left",background:"white",border:"1px solid #EEE",borderRadius:5,padding:"6px 8px",marginBottom:4,fontSize:12,cursor:"pointer"}}>
-                          {ci.name}
+                          <span style={{fontFamily:"monospace",color:"#003584",fontWeight:800}}>#{ci.master_item_number}</span> · {ci.name}
                         </button>
                       ))}
                     </div>
@@ -356,11 +346,11 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
             ))}
           </Section>
 
-          <div style={{fontSize:10,fontWeight:700,color:"#AAA",letterSpacing:"0.06em",textTransform:"uppercase",margin:"18px 0 10px"}}>Full catalog</div>
         </div>
       )}
 
-      <input style={{...inp,marginBottom:10}} placeholder="Search by name, vendor wording, or item code..." value={search} onChange={e=>setSearch(e.target.value)} />
+      {!showReview&&<>
+      <input style={{...inp,marginBottom:10}} placeholder="Search by item, vendor description, or vendor code..." value={search} onChange={e=>setSearch(e.target.value)} />
 
       <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:18}}>
         <button onClick={()=>setCategoryFilter("")} style={chipStyle(!categoryFilter)}>
@@ -451,87 +441,56 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
             <span style={{fontWeight:800,fontSize:13,color:"rgba(255,255,255,0.85)"}}>{group.category}</span>
             <span style={{fontSize:11,color:"rgba(255,255,255,0.5)"}}>({group.items.length})</span>
           </div>
-          {group.items.map(item=>{
-            const status=statusFor(item);
-            const isDragOver=dragOverItemId===item.catalogItemId;
-            return (
-              <div key={item.catalogItemId}
-                draggable={canManage}
-                onDragStart={()=>setDraggedItemId(item.catalogItemId)}
-                onDragEnd={()=>{setDraggedItemId(null);setDragOverItemId(null);}}
-                onDragOver={(e)=>{e.preventDefault();if(draggedItemId&&draggedItemId!==item.catalogItemId) setDragOverItemId(item.catalogItemId);}}
-                onDragLeave={()=>{if(dragOverItemId===item.catalogItemId) setDragOverItemId(null);}}
-                onDrop={(e)=>{e.preventDefault();if(canManage)handleDrop(item);}}
-                title="Drag onto another item to merge them as the same product"
-                style={{background:isDragOver?"#E8F5E9":"white",borderRadius:8,padding:"12px 14px",marginBottom:8,
-                  boxShadow:isDragOver?"0 0 0 2px #2E7D32":"0 1px 3px rgba(0,0,0,0.06)",cursor:"grab",
-                  opacity:draggedItemId===item.catalogItemId?0.4:1}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                  {canManage&&<input type="checkbox" checked={selectedIds.has(item.catalogItemId)}
-                    onClick={e=>e.stopPropagation()}
-                    onChange={e=>setSelectedIds(prev=>{
-                      const next=new Set(prev);
-                      e.target.checked?next.add(item.catalogItemId):next.delete(item.catalogItemId);
-                      return next;
-                    })}
-                    style={{marginRight:10,marginTop:3}} />}
-                  <div style={{flex:1,minWidth:0}}>
-                    {canManage&&renamingId===item.catalogItemId?(
-                      <div style={{display:"flex",gap:6}} onClick={e=>e.stopPropagation()}>
-                        <input autoFocus value={renameValue} onChange={e=>setRenameValue(e.target.value)}
-                          onKeyDown={e=>{if(e.key==="Enter") saveRename(item.catalogItemId); if(e.key==="Escape") setRenamingId(null);}}
-                          style={{...inp,fontSize:13,padding:"5px 8px",flex:1}} />
-                        <button onClick={()=>saveRename(item.catalogItemId)} style={{...btn("#003584",undefined,{fontSize:11,padding:"5px 10px"})}}>Save</button>
-                        <button onClick={()=>setRenamingId(null)} style={{...btn("#EEE","#555",{fontSize:11,padding:"5px 10px"})}}>✕</button>
-                      </div>
-                    ):(
-                      <div style={{fontWeight:700,fontSize:14,display:"flex",alignItems:"center",gap:6}}>
-                        {item.name}
-                        {canManage&&<button onClick={()=>{setRenamingId(item.catalogItemId);setRenameValue(item.name);}}
-                          title="Rename - this is your item, name it however makes sense to you"
-                          style={{background:"none",border:"none",cursor:"pointer",color:"#BBB",fontSize:12,padding:0}}>✎</button>}
-                      </div>
-                    )}
-                    {canManage&&categoryEditId===item.catalogItemId?(
-                      <div style={{display:"flex",gap:6,alignItems:"center",marginTop:2}} onClick={e=>e.stopPropagation()}>
-                        <span style={{fontSize:11,color:"#AAA"}}>{item.category} ·</span>
-                        <select autoFocus defaultValue="" onChange={e=>handleAssignCategory(item.catalogItemId,e.target.value)}
-                          onBlur={()=>setCategoryEditId(null)}
-                          style={{...inp,fontSize:11,padding:"3px 6px",width:"auto"}}>
-                          <option value="" disabled>Move to...</option>
-                          {categories.filter(c=>c.name!==item.category).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-                        </select>
-                      </div>
-                    ):(
-                      <div style={{fontSize:11,color:"#AAA",marginTop:2,display:"flex",alignItems:"center",gap:4}}>
-                        {item.category}
-                        {canManage&&<button onClick={()=>setCategoryEditId(item.catalogItemId)} disabled={categoryEditBusy}
-                          title="Move this item to a different category"
-                          style={{background:"none",border:"none",cursor:"pointer",color:"#BBB",fontSize:11,padding:0}}>✎</button>}
-                      </div>
-                    )}
+          <div style={{background:"white",borderRadius:10,overflowX:"auto",boxShadow:"0 3px 14px rgba(0,20,65,.12)"}}>
+            <div style={{minWidth:890}}>
+              <div style={{display:"grid",gridTemplateColumns:"28px minmax(210px,1.8fr) minmax(190px,1.5fr) 118px 112px 115px 120px",gap:14,padding:"14px 18px",background:"#E8F0FA",color:"#173C70",fontSize:10,fontWeight:900,letterSpacing:".08em",textTransform:"uppercase"}}>
+                <span></span><span>Item</span><span>Vendor / description</span><span>Pack size</span><span>Case price</span><span>Cost per unit</span><span>Match</span>
+              </div>
+              {group.items.map((item,index)=>{
+                const status=statusFor(item);
+                const first=item.options.find(orderable)||item.options[0]||null;
+                const expanded=mapPanelOpenFor===item.catalogItemId;
+                return <div key={item.catalogItemId} style={{borderTop:"1px solid #E7ECF3",background:expanded?"#F1F7FF":index%2?"#FAFCFF":"white"}}>
+                  <div role="button" tabIndex={0} aria-expanded={expanded} onClick={()=>setMapPanelOpenFor(expanded?null:item.catalogItemId)}
+                    onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();setMapPanelOpenFor(expanded?null:item.catalogItemId);}}}
+                    style={{display:"grid",gridTemplateColumns:"28px minmax(210px,1.8fr) minmax(190px,1.5fr) 118px 112px 115px 120px",gap:14,alignItems:"center",padding:"14px 18px",cursor:"pointer",borderLeft:expanded?"4px solid #397CC3":"4px solid transparent"}}>
+                    <span style={{color:"#2870B8",fontSize:14,fontWeight:900}}>{expanded?"▾":"▸"}</span>
+                    <div style={{minWidth:0}}>
+                      <div style={{fontWeight:800,fontSize:13,color:"#152D4B"}}>{item.name}</div>
+                      <div style={{fontSize:10,color:"#75859A",marginTop:3}}>{item.category} · {item.options.length} vendor product{item.options.length===1?"":"s"}</div>
+                    </div>
+                    <div style={{minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:12,color:"#23466D"}}>{first?.vendorName||"No vendor yet"}</div>
+                      <div title={first?.description} style={{fontSize:10,color:"#60758B",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{first?.description||"Add a vendor product to compare prices"}</div>
+                    </div>
+                    <span style={{fontSize:12,fontWeight:700,color:first?.packSize?"#29445E":"#B26A00"}}>{first?.packSize||"—"}</span>
+                    <span style={{fontSize:14,fontWeight:900,color:"#173C70"}}>{first?.casePrice!=null?formatMoney(first.casePrice):"—"}</span>
+                    <span style={{fontSize:12,fontWeight:800,color:first?.perUnit?"#087965":"#9AA6B2"}}>{first?.perUnit?`${formatMoney(first.perUnit.price)}/${first.perUnit.unit}`:"—"}</span>
+                    <span style={{fontSize:10,fontWeight:800,color:status.color,background:status.bg,padding:"6px 7px",borderRadius:6}}>{status.label}</span>
                   </div>
-                  <span style={{fontSize:10,fontWeight:700,color:status.color,background:status.bg,padding:"3px 8px",borderRadius:5,whiteSpace:"nowrap"}}>{status.label}</span>
-                </div>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:8}}>
-                  <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-                    {item.options.map(o=>(
-                      <span key={o.vendorId} title={orderable(o)?undefined:blockReason(o)} style={{fontSize:11,background:orderable(o)?"#F5F7FA":"#FFF3E0",borderRadius:5,padding:"3px 8px"}}>
-                        {o.vendorName}: <b>{formatMoney(o.casePrice)}{!orderable(o)?" · "+blockReason(o):""}</b>
-                        {orderable(o)&&o.perUnit&&<span style={{color:"#888",marginLeft:4}}>{formatMoney(o.perUnit.price)}/{o.perUnit.unit}</span>}
-                      </span>
-                    ))}
-                    {!item.options.length&&<span style={{fontSize:11,color:"#CCC"}}>No vendor price linked yet</span>}
-                  </div>
-                  {canManage&&<button onClick={()=>setMapPanelOpenFor(mapPanelOpenFor===item.catalogItemId?null:item.catalogItemId)}
-                    title="Map this item's vendor prices - link, unlink, or re-point any of them, any time"
-                    style={{background:"none",border:"none",cursor:"pointer",color:"#003584",fontSize:11,fontWeight:700,padding:0,whiteSpace:"nowrap",marginLeft:8}}>
-                    Vendor products {mapPanelOpenFor===item.catalogItemId?"▲":"▾"}
-                  </button>}
-                </div>
-
-                {canManage&&mapPanelOpenFor===item.catalogItemId&&(
-                  <div style={{marginTop:8,background:"#F7F9FC",borderRadius:6,padding:8}} onClick={e=>e.stopPropagation()}>
+                  {expanded&&<div style={{padding:"2px 18px 18px 50px",borderLeft:"4px solid #397CC3"}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:10}}>
+                      <div style={{display:"flex",alignItems:"center",gap:9}}>
+                        {canManage&&<input type="checkbox" checked={selectedIds.has(item.catalogItemId)} title="Select for category change" onChange={e=>setSelectedIds(prev=>{const next=new Set(prev);e.target.checked?next.add(item.catalogItemId):next.delete(item.catalogItemId);return next;})} />}
+                        {canManage&&renamingId===item.catalogItemId?<><input autoFocus style={{...inp,width:220,fontSize:12}} value={renameValue} onChange={e=>setRenameValue(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveRename(item.catalogItemId);if(e.key==="Escape")setRenamingId(null);}} /><button onClick={()=>saveRename(item.catalogItemId)} style={{...btn("#003584","white",{fontSize:11})}}>Save</button></>:<><strong style={{fontSize:13,color:"#19395F"}}>{item.name}</strong>{canManage&&<button onClick={()=>{setRenamingId(item.catalogItemId);setRenameValue(item.name);}} style={{border:0,background:"none",color:"#2870B8",cursor:"pointer"}}>Rename</button>}</>}
+                        {canManage&&categoryEditId===item.catalogItemId?<select autoFocus defaultValue="" onChange={e=>handleAssignCategory(item.catalogItemId,e.target.value)} style={{...inp,width:165,fontSize:11}}><option value="" disabled>Move category to...</option>{categories.filter(c=>c.name!==item.category).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>:canManage&&<button onClick={()=>setCategoryEditId(item.catalogItemId)} style={{border:0,background:"none",color:"#2870B8",cursor:"pointer"}}>Change category</button>}
+                      </div>
+                      <button onClick={()=>setShowItemNumberFor(showItemNumberFor===item.catalogItemId?null:item.catalogItemId)} style={{border:"1px solid #CBD9E9",borderRadius:6,background:"white",color:"#173C70",padding:"6px 9px",fontWeight:700,cursor:"pointer",fontSize:11}}>{showItemNumberFor===item.catalogItemId?`KERDOS #${item.masterItemNumber} ▴`:"KERDOS number ▾"}</button>
+                    </div>
+                    <div style={{fontSize:11,fontWeight:800,color:"#597089",textTransform:"uppercase",letterSpacing:".05em",marginBottom:7}}>Vendor products · choose an association to correct it</div>
+                    <div style={{display:"grid",gridTemplateColumns:"140px minmax(180px,1fr) 95px 95px 100px 170px",gap:10,padding:"8px 10px",fontSize:10,fontWeight:800,color:"#49617C",background:"#DFEAF7",borderRadius:"6px 6px 0 0"}}><span>Vendor</span><span>Description</span><span>Pack</span><span>Price</span><span>Per unit</span><span>Association</span></div>
+                    {item.options.map(o=><div key={o.vendorItemId} style={{display:"grid",gridTemplateColumns:"140px minmax(180px,1fr) 95px 95px 100px 170px",gap:10,padding:"10px",alignItems:"center",background:"white",borderBottom:"1px solid #E8EDF4",fontSize:11}}>
+                      <b>{o.vendorName}</b><span>{o.description}{o.brand?` · ${o.brand}`:""}</span><b>{o.packSize||"Unknown"}</b><b>{formatMoney(o.casePrice)}</b><b>{o.perUnit?`${formatMoney(o.perUnit.price)}/${o.perUnit.unit}`:"—"}</b>
+                      <button disabled={!canManage} onClick={()=>{setRemapOpenFor(o.mappingId);setRemapSearch("");}} style={{...btn("#E8F1FB","#003584",{fontSize:10,padding:"6px"})}}>Change association</button>
+                      {remapOpenFor===o.mappingId&&<div style={{gridColumn:"1 / -1",background:"#F4F8FE",padding:9,borderRadius:6}}>
+                        <input autoFocus style={{...inp,fontSize:12}} placeholder="Search by KERDOS number or item name" value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} />
+                        <div style={{maxHeight:160,overflowY:"auto",marginTop:5}}>{catalogItems.filter(ci=>ci.id!==item.catalogItemId&&(!remapSearch.trim()||ci.name.toLowerCase().includes(remapSearch.trim().toLowerCase())||String(ci.master_item_number).includes(remapSearch.trim()))).slice(0,10).map(ci=><button key={ci.id} disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapExisting(o.mappingId,ci.id)} style={{display:"block",width:"100%",textAlign:"left",background:"white",border:"1px solid #E4EBF3",borderRadius:4,padding:"7px 8px",marginBottom:3,cursor:"pointer"}}><b style={{color:"#003584"}}>#{ci.master_item_number}</b> · {ci.name}</button>)}</div>
+                        <div style={{display:"flex",gap:8,marginTop:6}}><button disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapNew(o.mappingId,o.description)} style={{...btn("#E5EEF8","#003584",{fontSize:11})}}>Create separate product</button><button onClick={()=>{setRemapOpenFor(null);setRemapSearch("");}} style={{...btn("#EEE","#555",{fontSize:11})}}>Cancel</button></div>
+                      </div>}
+                      {!orderable(o)&&<span style={{gridColumn:"1 / -1",fontSize:10,color:"#B26A00"}}>⚠ {blockReason(o)}</span>}
+                    </div>)}
+                    {!item.options.length&&<div style={{background:"white",padding:14,fontSize:12,color:"#667"}}>No vendor products linked yet.</div>}
+                    <div style={{marginTop:15,fontSize:11,fontWeight:800,color:"#597089",textTransform:"uppercase",letterSpacing:".05em",marginBottom:7}}>Product preferences</div>
                     {(()=>{
                       // Brands come from this item's own vendor options - a lock can
                       // only ever name a brand some vendor actually lists.
@@ -575,57 +534,14 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                           </div>
                         </div>
                       );
-                    })()}
-                    {item.options.length===0&&<div style={{fontSize:11,color:"#AAA",marginBottom:6}}>No vendor is currently linked to this item — it'll pick one up automatically the next time a price sheet mentions it, or wait for a manual link once a vendor item exists to point at.</div>}
-                    {item.options.map(o=>(
-                      <div key={o.vendorItemId} style={{background:"white",borderRadius:6,padding:8,marginBottom:6,border:"1px solid #EEE"}}>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                          <div style={{fontSize:12,fontWeight:600}}>{o.vendorName}</div>
-                          <div style={{fontSize:11,fontWeight:700,color:["similar","review"].includes(o.matchTrack)?"#B26A00":"#2E7D32"}}>
-                            {["similar","review"].includes(o.matchTrack)?`🔍 ${o.matchConfidence}%`:"✓ exact"}
-                          </div>
-                        </div>
-                        <div style={{fontSize:11,color:"#999",margin:"2px 0 6px"}}>"{o.description}"{o.brand?` · ${o.brand}`:""} · Pack: {o.packSize||"Not provided"} — {formatMoney(o.casePrice)}{!orderable(o)?` · ${blockReason(o)}`:""}{orderable(o)&&o.perUnit?` (${formatMoney(o.perUnit.price)}/${o.perUnit.unit})`:""}</div>
-                        {remapOpenFor===o.mappingId?(
-                          <div>
-                            <input style={{...inp,marginBottom:6,fontSize:12,padding:"7px 9px"}} placeholder="Search for a product..." value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} autoFocus />
-                            <div style={{maxHeight:140,overflowY:"auto"}}>
-                              {catalogItems.filter(ci=>{
-                                if(ci.id===item.catalogItemId) return false;
-                                const q=remapSearch.trim().toLowerCase();
-                                if(!q) return true;
-                                return ci.name.toLowerCase().includes(q);
-                              }).slice(0,8).map(ci=>(
-                                <button key={ci.id} disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapExisting(o.mappingId,ci.id)}
-                                  style={{display:"block",width:"100%",textAlign:"left",background:"white",border:"1px solid #EEE",borderRadius:5,padding:"6px 8px",marginBottom:4,fontSize:12,cursor:"pointer"}}>
-                                  {ci.name}
-                                </button>
-                              ))}
-                            </div>
-                            <div style={{display:"flex",gap:6,marginTop:6}}>
-                              <button disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapNew(o.mappingId,o.description)}
-                                style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px",flex:1})}}>Create a new catalog item for this vendor product</button>
-                              <button onClick={()=>{setRemapOpenFor(null);setRemapSearch("");}} style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px"})}}>Cancel</button>
-                            </div>
-                          </div>
-                        ):(
-                          <button disabled={busyMappingId===o.mappingId} onClick={()=>{setRemapOpenFor(o.mappingId);setRemapSearch("");}}
-                            style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px"})}}>Move this vendor product to another item</button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                    })()}                  </div>}
+                </div>;
+              })}
+            </div>
+          </div>
         </div>
       ))}
-      {merging&&(
-        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.3)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center"}}>
-          <div style={{background:"white",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700}}>Merging items...</div>
-        </div>
-      )}
+      </>}
     </div>
   );
 }
