@@ -78,10 +78,8 @@ export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,pric
 
   async function saveItemMapping(vendorItem){
     setMapError("");
-    const num=mapEditValue.trim();
-    if(!num){ setMapEditId(null); return; }
-    const target=(catalogItems||[]).find(ci=>String(ci.master_item_number)===num);
-    if(!target){ setMapError(`No client item numbered ${num} was found.`); return; }
+    const target=(catalogItems||[]).find(ci=>ci.id===mapEditValue);
+    if(!target){ setMapError("Choose a catalog item."); return; }
     setMapBusy(true);
     const {mapping}=mappingFor(vendorItem.id);
     try{
@@ -190,19 +188,20 @@ export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,pric
                   {canManage&&(
                     mapEditId===item.id?(
                       <div style={{display:"flex",gap:6,alignItems:"center",marginTop:6}}>
-                        <span style={{fontSize:11,color:"#888"}}>Client item #:</span>
-                        <input style={{...inp,width:90,padding:"4px 8px",fontSize:12}} autoFocus placeholder="e.g. 1000"
-                          value={mapEditValue} onChange={e=>setMapEditValue(e.target.value)}
-                          onKeyDown={e=>{if(e.key==="Enter") saveItemMapping(item); if(e.key==="Escape") setMapEditId(null);}} />
+                        <span style={{fontSize:11,color:"#888"}}>Catalog item:</span>
+                        <select style={{...inp,maxWidth:260,padding:"4px 8px",fontSize:12}} autoFocus value={mapEditValue} onChange={e=>setMapEditValue(e.target.value)}>
+                          <option value="">Choose a product...</option>
+                          {[...(catalogItems||[])].sort((a,b)=>a.name.localeCompare(b.name)).map(ci=><option key={ci.id} value={ci.id}>{ci.name}</option>)}
+                        </select>
                         <button disabled={mapBusy} onClick={()=>saveItemMapping(item)} style={{...btn("#003584","white",{fontSize:11,padding:"4px 9px"})}}>Save</button>
                         <button onClick={()=>{setMapEditId(null);setMapError("");}} style={{...btn("#EEE","#555",{fontSize:11,padding:"4px 9px"})}}>✕</button>
                       </div>
                     ):(
                       <div style={{display:"flex",gap:6,alignItems:"center",marginTop:4}}>
                         <span style={{fontSize:11,color:"#AAA"}}>
-                          {catalogItem?<>Mapped to <b style={{color:"#666"}}>#{catalogItem.master_item_number} {catalogItem.name}</b></>:"Not linked to a client item"}
+                          {catalogItem?<>Linked to <b style={{color:"#666"}}>{catalogItem.name}</b></>:"Not linked to a catalog item"}
                         </span>
-                        <button onClick={()=>{setMapEditId(item.id);setMapEditValue(catalogItem?String(catalogItem.master_item_number):"");setMapError("");}}
+                        <button onClick={()=>{setMapEditId(item.id);setMapEditValue(catalogItem?.id||"");setMapError("");}}
                           style={{background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:11,padding:0}}>✎</button>
                       </div>
                     )
@@ -312,4 +311,3 @@ export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,pric
     </div>
   );
 }
-

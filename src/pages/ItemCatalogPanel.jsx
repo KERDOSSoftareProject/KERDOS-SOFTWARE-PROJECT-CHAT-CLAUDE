@@ -74,9 +74,8 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
   const ciMap=useMemo(()=>new Map(catalogItems.map(ci=>[ci.id,ci])),[catalogItems]);
 
   // Categories are ordered alphabetically - same as Order Guide, so both screens'
-  // category chips read the same way. Item numbering itself still uses
-  // the 10000/20000/30000 blocks; that's a numbering scheme, not a
-  // display order.
+  // category chips read the same way. Internal KERDOS item identifiers
+  // are retained in the data but never shown to customers.
   const categoryList=useMemo(()=>{
     const set=new Set(productList.map(p=>p.category));
     return [...set].sort((a,b)=>a.localeCompare(b));
@@ -254,20 +253,9 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
       const suggestion=vi?bestCatalogMatch(vi.description,others):null;
       return {mappingId:m.id, catalogItemId:m.catalog_item_id, catalogName:ci?.name||"(deleted item)", vendorName:v?.name||"—",
         vendorDescription:vi?.description||"—", confidence:m.confidence_score, track:m.comparison_track,
-        suggestion:suggestion?{catalogItemId:suggestion.catalogItem.id,name:suggestion.catalogItem.name,number:suggestion.catalogItem.master_item_number,score:Math.round(suggestion.score*100)}:null};
+        suggestion:suggestion?{catalogItemId:suggestion.catalogItem.id,name:suggestion.catalogItem.name,score:Math.round(suggestion.score*100)}:null};
     }).sort((a,b)=>(a.confidence??0)-(b.confidence??0)),
   [mappings,viMap,ciMap,vMap,catalogItems]);
-
-  async function handleMergeSuggested(mapping){
-    if(!mapping.suggestion) return;
-    if(!window.confirm(`Merge "${mapping.catalogName}" into "#${mapping.suggestion.number} ${mapping.suggestion.name}"?\n\nIts vendor price moves under that item and "${mapping.catalogName}" is removed as its own item.`)) return;
-    setBusyMappingId(mapping.mappingId);
-    try{
-      await act(()=>catalogService.mergeItems(mapping.catalogItemId,mapping.suggestion.catalogItemId));
-    }finally{
-      setBusyMappingId(null);
-    }
-  }
 
   // Item Catalog's review badge is scoped to CATALOG MAPPING issues only
   // (fuzzy vendor-item matches) - invoice-line issues live on Invoices,
@@ -311,51 +299,51 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
 
       {canManage&&totalCount>0&&(
         <div style={{marginBottom:24,paddingBottom:4}}>
-          <Section title="Fuzzy-matched items — confirm or remap" count={lowConfidenceMatches.length} emptyText="Nothing flagged — every mapping is an exact or single-vendor match.">
+          <Section title="Vendor products to check" count={lowConfidenceMatches.length} emptyText="All vendor products are linked to the right catalog items.">
+            <p style={{fontSize:12,color:"rgba(255,255,255,0.85)",margin:"0 0 10px"}}>Check where each vendor product belongs. Moving a vendor price here changes only that vendor product.</p>
             {lowConfidenceMatches.map(m=>(
               <div key={m.mappingId} style={{background:"white",borderRadius:8,padding:"10px 12px",marginBottom:6,boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
-                <div style={{display:"flex",justifyContent:"space-between"}}>
-                  <div style={{fontWeight:600,fontSize:13}}>{m.catalogName}</div>
-                  <div style={{fontSize:11,fontWeight:700,color:"#B26A00"}}>🔍 {m.confidence}% match</div>
-                </div>
-                <div style={{fontSize:11,color:"#999",marginTop:2,marginBottom:m.suggestion?4:8}}>{m.vendorName} — "{m.vendorDescription}"</div>
+                <div style={{fontSize:11,color:"#666",marginBottom:3}}>Vendor product · {m.vendorName}</div>
+                <div style={{fontWeight:700,fontSize:13}}>{m.vendorDescription}</div>
+                <div style={{fontSize:12,color:"#555",marginTop:5,marginBottom:8}}>Currently under <b>{m.catalogName}</b> <span style={{color:"#B26A00"}}>· Suggested match {m.confidence??"—"}%</span></div>
                 {m.suggestion&&(
                   <div style={{fontSize:11,color:"#555",marginBottom:8}}>
-                    Looks like <b>#{m.suggestion.number} {m.suggestion.name}</b> <span style={{color:"#999"}}>({m.suggestion.score}%)</span>
+                    Another possible item: <b>{m.suggestion.name}</b> <span style={{color:"#999"}}>({m.suggestion.score}% suggested match)</span>
                   </div>
                 )}
                 {remapOpenFor===m.mappingId?(
                   <div style={{background:"#F7F9FC",borderRadius:6,padding:8}}>
-                    <input style={{...inp,marginBottom:6,fontSize:12,padding:"7px 9px"}} placeholder="Search by name, or enter item #..." value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} autoFocus />
+                    <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>Choose the catalog item for this vendor product</div>
+                    <input style={{...inp,marginBottom:6,fontSize:12,padding:"7px 9px"}} placeholder="Search for a product..." value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} autoFocus />
                     <div style={{maxHeight:140,overflowY:"auto"}}>
                       {catalogItems.filter(ci=>{
                         if(ci.id===m.catalogItemId) return false;
                         const q=remapSearch.trim().toLowerCase();
                         if(!q) return true;
-                        return ci.name.toLowerCase().includes(q) || String(ci.master_item_number)===remapSearch.trim();
+                        return ci.name.toLowerCase().includes(q);
                       }).slice(0,8).map(ci=>(
                         <button key={ci.id} disabled={busyMappingId===m.mappingId} onClick={()=>handleRemapExisting(m.mappingId,ci.id)}
                           style={{display:"block",width:"100%",textAlign:"left",background:"white",border:"1px solid #EEE",borderRadius:5,padding:"6px 8px",marginBottom:4,fontSize:12,cursor:"pointer"}}>
-                          <span style={{color:"#AAA",fontFamily:"monospace"}}>#{ci.master_item_number}</span> {ci.name}
+                          {ci.name}
                         </button>
                       ))}
                     </div>
                     <div style={{display:"flex",gap:6,marginTop:6}}>
-                      <button disabled={busyMappingId===m.mappingId} onClick={()=>handleRemapNew(m.mappingId,m.vendorDescription)}
-                        style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px",flex:1})}}>None of these — make separate item</button>
+                      {m.track!=="review"&&<button disabled={busyMappingId===m.mappingId} onClick={()=>handleRemapNew(m.mappingId,m.vendorDescription)}
+                        style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px",flex:1})}}>Create a new item for this vendor product</button>}
                       <button onClick={()=>{setRemapOpenFor(null);setRemapSearch("");}} style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px"})}}>Cancel</button>
                     </div>
                   </div>
                 ):(
-                  <div style={{display:"flex",gap:6}}>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                     <button disabled={busyMappingId===m.mappingId} onClick={()=>handleConfirm(m.mappingId)}
-                      style={{...btn("#2E7D32","white",{fontSize:11,padding:"6px 12px"})}}>{busyMappingId===m.mappingId?"...":m.track==="review"?"✓ Keep as its own item":"✓ Confirm match"}</button>
+                      style={{...btn("#2E7D32","white",{fontSize:11,padding:"6px 12px"})}}>{busyMappingId===m.mappingId?"Saving...":m.track==="review"?"Keep under this item":"Yes, this is the right item"}</button>
                     {m.suggestion&&(
-                      <button disabled={busyMappingId===m.mappingId} onClick={()=>handleMergeSuggested(m)}
-                        style={{...btn("#1565C0","white",{fontSize:11,padding:"6px 12px"})}}>⇢ Merge into #{m.suggestion.number}</button>
+                      <button disabled={busyMappingId===m.mappingId} onClick={()=>handleRemapExisting(m.mappingId,m.suggestion.catalogItemId)}
+                        style={{...btn("#1565C0","white",{fontSize:11,padding:"6px 12px"})}}>Move to {m.suggestion.name}</button>
                     )}
-                    <button disabled={busyMappingId===m.mappingId} onClick={()=>setRemapOpenFor(m.mappingId)}
-                      style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 12px"})}}>✎ Remap</button>
+                    <button disabled={busyMappingId===m.mappingId} onClick={()=>{setRemapOpenFor(m.mappingId);setRemapSearch("");}}
+                      style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 12px"})}}>Choose another item{m.track!=="review"?" or create new":""}</button>
                   </div>
                 )}
               </div>
@@ -500,7 +488,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                     )}
                     {canManage&&categoryEditId===item.catalogItemId?(
                       <div style={{display:"flex",gap:6,alignItems:"center",marginTop:2}} onClick={e=>e.stopPropagation()}>
-                        <span style={{fontSize:11,color:"#AAA"}}>#{item.masterItemNumber} ·</span>
+                        <span style={{fontSize:11,color:"#AAA"}}>{item.category} ·</span>
                         <select autoFocus defaultValue="" onChange={e=>handleAssignCategory(item.catalogItemId,e.target.value)}
                           onBlur={()=>setCategoryEditId(null)}
                           style={{...inp,fontSize:11,padding:"3px 6px",width:"auto"}}>
@@ -510,7 +498,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                       </div>
                     ):(
                       <div style={{fontSize:11,color:"#AAA",marginTop:2,display:"flex",alignItems:"center",gap:4}}>
-                        #{item.masterItemNumber} · {item.category}
+                        {item.category}
                         {canManage&&<button onClick={()=>setCategoryEditId(item.catalogItemId)} disabled={categoryEditBusy}
                           title="Move this item to a different category"
                           style={{background:"none",border:"none",cursor:"pointer",color:"#BBB",fontSize:11,padding:0}}>✎</button>}
@@ -532,7 +520,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                   {canManage&&<button onClick={()=>setMapPanelOpenFor(mapPanelOpenFor===item.catalogItemId?null:item.catalogItemId)}
                     title="Map this item's vendor prices - link, unlink, or re-point any of them, any time"
                     style={{background:"none",border:"none",cursor:"pointer",color:"#003584",fontSize:11,fontWeight:700,padding:0,whiteSpace:"nowrap",marginLeft:8}}>
-                    🔗 Map {mapPanelOpenFor===item.catalogItemId?"▲":"▾"}
+                    Vendor products {mapPanelOpenFor===item.catalogItemId?"▲":"▾"}
                   </button>}
                 </div>
 
@@ -594,29 +582,29 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                         <div style={{fontSize:11,color:"#999",margin:"2px 0 6px"}}>"{o.description}"{o.brand?` · ${o.brand}`:""} — {formatMoney(o.casePrice)}{!orderable(o)?` · ${blockReason(o)}`:""}{orderable(o)&&o.perUnit?` (${formatMoney(o.perUnit.price)}/${o.perUnit.unit})`:""}</div>
                         {remapOpenFor===o.mappingId?(
                           <div>
-                            <input style={{...inp,marginBottom:6,fontSize:12,padding:"7px 9px"}} placeholder="Search by name, or enter item #..." value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} autoFocus />
+                            <input style={{...inp,marginBottom:6,fontSize:12,padding:"7px 9px"}} placeholder="Search for a product..." value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} autoFocus />
                             <div style={{maxHeight:140,overflowY:"auto"}}>
                               {catalogItems.filter(ci=>{
                                 if(ci.id===item.catalogItemId) return false;
                                 const q=remapSearch.trim().toLowerCase();
                                 if(!q) return true;
-                                return ci.name.toLowerCase().includes(q) || String(ci.master_item_number)===remapSearch.trim();
+                                return ci.name.toLowerCase().includes(q);
                               }).slice(0,8).map(ci=>(
                                 <button key={ci.id} disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapExisting(o.mappingId,ci.id)}
                                   style={{display:"block",width:"100%",textAlign:"left",background:"white",border:"1px solid #EEE",borderRadius:5,padding:"6px 8px",marginBottom:4,fontSize:12,cursor:"pointer"}}>
-                                  <span style={{color:"#AAA",fontFamily:"monospace"}}>#{ci.master_item_number}</span> {ci.name}
+                                  {ci.name}
                                 </button>
                               ))}
                             </div>
                             <div style={{display:"flex",gap:6,marginTop:6}}>
                               <button disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapNew(o.mappingId,o.description)}
-                                style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px",flex:1})}}>None of these — make separate item</button>
+                                style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px",flex:1})}}>Create a new catalog item for this vendor product</button>
                               <button onClick={()=>{setRemapOpenFor(null);setRemapSearch("");}} style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px"})}}>Cancel</button>
                             </div>
                           </div>
                         ):(
                           <button disabled={busyMappingId===o.mappingId} onClick={()=>{setRemapOpenFor(o.mappingId);setRemapSearch("");}}
-                            style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px"})}}>✎ Point at a different item</button>
+                            style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px"})}}>Move this vendor product to another item</button>
                         )}
                       </div>
                     ))}
@@ -635,4 +623,3 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
     </div>
   );
 }
-
