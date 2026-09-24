@@ -147,6 +147,41 @@ function classifyCategory(description, categories=[], catalogItems=[]) {
   return scored[0].category;
 }
 
+// A new product should land in the most likely category, not in the
+// holding pen, so the client reviews a placement instead of making one.
+// "confident" is classifyCategory's own decision. "guess" is the best of
+// the remaining evidence: a vocabulary hit that lost a tie, a weaker
+// resemblance to items already in a category, or a category name that
+// shares a defining word with the product. Anything weaker is null and
+// the item goes to the holding pen as before.
+function suggestCategory(description, categories=[], catalogItems=[]) {
+  const confident=classifyCategory(description,categories,catalogItems);
+  if (confident) return {category:confident,confidence:"confident",reason:"Vocabulary and existing items point here"};
+  const descWords=normalizeForMatch(description);
+  if (!descWords.length) return null;
+  const scored=[];
+  for (const category of categories) {
+    if (category.is_holding_pen) continue;
+    const vocabulary=[category.name,...(Array.isArray(category.keywords)?category.keywords:[])].filter(Boolean);
+    let vocabularyScore=0;
+    for (const keyword of vocabulary) {
+      const kwWords=normalizeForMatch(keyword);
+      if (!kwWords.length) continue;
+      const hits=kwWords.filter(k=>descWords.some(d=>wordsMatch(k,d))).length;
+      if (hits) vocabularyScore=Math.max(vocabularyScore,hits/kwWords.length);
+    }
+    const examples=catalogItems.filter(item=>item.category_id===category.id && item.name);
+    const contextualScore=examples.reduce((best,item)=>Math.max(best,safeProductScore(description,item.name)),0);
+    const score=Math.max(vocabularyScore,contextualScore);
+    if (score>=0.34) scored.push({category,score,via:vocabularyScore>=contextualScore?"vocabulary":"existing items"});
+  }
+  if (!scored.length) return null;
+  scored.sort((a,b)=>b.score-a.score);
+  const best=scored[0];
+  return {category:best.category,confidence:"guess",score:round(best.score,2),
+    reason:scored[1]&&scored[1].score===best.score?`Best guess between ${best.category.name} and ${scored[1].category.name} (${best.via})`:`Best guess from ${best.via}`};
+}
+
 function nextCategoryRange(categories=[], blockSize=10000) {
   const maxEnd=categories.reduce((max,c)=>Math.max(max,Number(c.range_end)||0),0);
   const start=Math.ceil((maxEnd+1)/blockSize)*blockSize || blockSize;
@@ -171,15 +206,34 @@ function measurement(quantity, unitRaw) {
 
 // Parses common packaging expressions without restricting KERDOS to a fixed industry.
 // Unknown units remain valid and comparable only to the same unknown unit.
+// Catch-weight markers: the case holds roughly this much, and the vendor
+// bills the delivered weight. A catch-weight pack and a fixed-weight
+// pack of the same nominal size are different purchasing configurations.
+const CATCH_WEIGHT_RE=/\b(?:av|avg|ave|average|approx|approximately|catch\s*wt|catch\s*weight|c\/w|cw|rw|random\s*wt|random\s*weight|var(?:iable)?\s*wt|var(?:iable)?\s*weight)\.?$/i;
+
 function parsePackSize(raw) {
   if (!raw || !String(raw).trim()) return null;
   const source=String(raw).trim();
-  const clean=source.toLowerCase().replace(/[×x]/g,"x").replace(/\s+/g," ").trim();
+  // "4/10 LBAV", "4/10 LB AVG", "2/10# AVG": the marker is read and then
+  // set aside so the rest parses as an ordinary pack.
+  let working=source.toLowerCase().replace(/(lb|lbs)(av|avg)\b/g,"$1 $2");
+  const catchWeight=CATCH_WEIGHT_RE.test(working);
+  if(catchWeight) working=working.replace(CATCH_WEIGHT_RE,"").trim();
+  // "#10" after a slash is a can size, not pounds: "6/#10 CN" is six cans
+  // of the #10 size, a count of an unknown-volume unit.
+  const canSize=working.match(/^(\d+)\s*[\/x]\s*#\s*(\d+(?:\.\d+)?)\s*(?:cn|can|cans)?\s*$/);
+  if(canSize){
+    const outerQty=Number(canSize[1]),unit=`#${canSize[2]} CAN`;
+    return {raw:source,parsed:true,caseQty:outerQty,unitQty:1,unit,total:outerQty,dimension:"unknown",baseUnit:unit,baseTotal:outerQty,catchWeight:false,
+      levels:outerQty>1?[{quantity:outerQty,type:"PACKAGE"},{quantity:1,type:unit}]:[{quantity:1,type:unit}],
+      eachStr:`1 ${unit}`,caseStr:outerQty>1?`${outerQty}/1 ${unit}`:`1 ${unit}`};
+  }
+  const clean=working.replace(/[×x]/g,"x").replace(/(\d)\s*[-]\s*(?=\d)/g,"$1/").replace(/#/g," lb ").replace(/\s+/g," ").trim();
   const number="(\\d+(?:\\.\\d+)?)";
   // A known unit (any number of words, longest first) is preferred; an
   // unknown single word is still accepted as a unit of its own.
   const unit=`(${UNIT_ALTERNATION}|[a-z]+)`;
-  let m=clean.match(new RegExp(`^${number}\\s*(?:/|x)\\s*${number}\\s*${unit}\\b`));
+  let m=clean.match(new RegExp(`^${number}\\s*(?:/|x|\\s)\\s*${number}\\s*${unit}\\b`));
   let outerQty=1, innerQty, unitRaw;
   if (m) { outerQty=Number(m[1]); innerQty=Number(m[2]); unitRaw=m[3]; }
   else {
@@ -187,11 +241,17 @@ function parsePackSize(raw) {
     if (!m) return {raw:source,parsed:false,levels:[],total:null,unit:null,dimension:"unknown"};
     innerQty=Number(m[1]); unitRaw=m[2];
   }
+  // A readable prefix is not a complete pack specification. Extra case
+  // components, variable-weight markers or unfamiliar qualifiers require
+  // review, even when the leading quantity and unit look identical.
+  const remainder=clean.slice(m[0].length).replace(/^[\s.,]+|[\s.,]+$/g,"").trim();
+  if(remainder&&!PACKAGING_ALIASES.has(remainder))
+    return {raw:source,parsed:false,levels:[],total:null,unit:null,dimension:"unknown"};
   const measure=measurement(innerQty,unitRaw);
   if (!measure) return null;
   const total=outerQty*innerQty;
   return {
-    raw:source,parsed:true,caseQty:outerQty,unitQty:innerQty,unit:measure.unit,total,
+    raw:source,parsed:true,caseQty:outerQty,unitQty:innerQty,unit:measure.unit,total,catchWeight,
     dimension:measure.dimension,baseUnit:measure.baseUnit,baseTotal:round(outerQty*measure.baseQuantity),
     levels: outerQty>1 ? [{quantity:outerQty,type:"PACKAGE"},{quantity:innerQty,type:measure.unit}] : [{quantity:innerQty,type:measure.unit}],
     eachStr:`${innerQty} ${measure.unit}`,caseStr:outerQty>1?`${outerQty}/${innerQty} ${measure.unit}`:`${innerQty} ${measure.unit}`,
@@ -241,6 +301,141 @@ function pricePerUnit(price, pack, targetUnit) {
     return {price:round(n/(p.baseTotal/def.factor),4),unit:target,dimension:p.dimension};
   }
   return {price:round(n/p.total,4),unit:p.unit,dimension:p.dimension};
+}
+
+// ---- Learning from confirmations -------------------------------------
+// When a client confirms that "CHIX BRST BNLS" is the same product as
+// "CHICKEN BREAST BONELESS", the only safe lesson is spelling: a word on
+// one side that is an abbreviation of a word on the other. Two words are
+// paired only when the short one starts the long one's first letter and
+// its letters appear in the long one in order ("brst" in "breast", "bnls"
+// in "boneless"). "Breast" and "thigh" never pair, so a confirmation can
+// teach wording but never that two products are the same.
+function isAbbreviationOf(short,long){
+  const a=canonicalWord(short),b=canonicalWord(long);
+  if(!a||!b||a===b||a.length>=b.length||a.length<2||b.length<4)return false;
+  if(a[0]!==b[0])return false;
+  let i=0;
+  for(const ch of b){if(ch===a[i])i++;if(i===a.length)break;}
+  return i===a.length;
+}
+function abbreviationPairs(description,references=[]){
+  const own=new Set(productCoreWords(description));
+  const pairs=new Map();
+  for(const reference of references){
+    const theirs=new Set(productCoreWords(reference));
+    const onlyOwn=[...own].filter(w=>!theirs.has(w)),onlyTheirs=[...theirs].filter(w=>!own.has(w));
+    for(const w of onlyOwn){
+      const expansions=onlyTheirs.filter(t=>isAbbreviationOf(w,t));
+      if(expansions.length===1)pairs.set(w,expansions[0]);
+    }
+    for(const t of onlyTheirs){
+      const expansions=onlyOwn.filter(w=>isAbbreviationOf(t,w));
+      if(expansions.length===1)pairs.set(t,expansions[0]);
+    }
+  }
+  return [...pairs].map(([term,canonical])=>({term,canonical}));
+}
+
+// ---- Identifiers -----------------------------------------------------
+// A barcode (GTIN/UPC/EAN) names one trade item regardless of how each
+// vendor words it. When two vendors quote the same GTIN in the same pack,
+// identity is proven without comparing descriptions. The check digit
+// keeps stray numbers (phone numbers, account numbers) from being
+// mistaken for a barcode.
+function normalizeGtin(raw){
+  if(raw==null) return null;
+  const digits=String(raw).replace(/\D/g,"");
+  if(![8,12,13,14].includes(digits.length)) return null;
+  const padded=digits.padStart(14,"0");
+  let sum=0;
+  for(let i=0;i<13;i++) sum+=Number(padded[i])*(i%2===0?3:1);
+  if((10-(sum%10))%10!==Number(padded[13])) return null;
+  return padded;
+}
+
+// Manufacturer part numbers are only meaningful alongside the maker.
+function normalizeManufacturerCode(raw){
+  if(raw==null) return null;
+  const clean=String(raw).trim().toUpperCase().replace(/\s+/g,"");
+  return clean.length>=3&&/[0-9]/.test(clean)?clean:null;
+}
+
+// Vendors often write the pack at the end of the description instead of
+// in its own column ("CHICKEN BREAST 4/10 LB", "OIL CANOLA 35#"). When
+// the pack column is empty, the tail of the description is the pack if
+// KERDOS can read it as one; the description itself is left untouched.
+function packFromDescription(description){
+  const text=String(description||"").trim();
+  if(!text) return null;
+  const tail=text.match(/(?:^|\s)((?:\d+(?:\.\d+)?\s*[\/x×-]\s*)?\d+(?:\.\d+)?\s*(?:#|[a-z]{1,8}(?:\s+[a-z]{1,8})?)\.?)\s*$/i);
+  if(!tail) return null;
+  const candidate=tail[1].replace(/\.$/,"").trim();
+  const parsed=parsePackSize(candidate);
+  if(!parsed?.parsed) return null;
+  // A bare count with an unknown word ("2 CHICKEN") is not a pack.
+  if(parsed.dimension==="unknown"&&!PACKAGING_ALIASES.has(parsed.unit.toLowerCase())&&!/#/.test(candidate)) return null;
+  return candidate;
+}
+
+// ---- Price basis -----------------------------------------------------
+// A vendor's selling unit says which quantity its price is for: the whole
+// pack as listed ("case"), one inner unit ("each"), or one unit of measure
+// such as a pound or a gallon ("measure"). KERDOS ranks vendors on the
+// price of one full pack, so every quote is converted to that basis
+// before it is compared, and a quote that cannot be converted is held
+// for review rather than compared on the wrong footing.
+const CASE_WORDS=new Set(["cs","case","cases","cse","bx","box","boxes","pk","pack","packs","ct","ctn","carton","cartons","pallet","pallets","bag","bags","bdl","bundle","roll","rolls","tray","trays","dz","doz","dozen","flat","flats","sleeve","sleeves","tub","tubs","pail","pails","jug","jugs","drum","drums","cn","can","cans","jar","jars","btl","bottle","bottles","kit","kits"]);
+const EACH_WORDS=new Set(["ea","each","pc","pcs","piece","pieces","un","unit","units","hd","head","heads","bn","bunch","bunches","lp","loaf","loaves"]);
+
+function priceBasisFor(sellingUnit){
+  if(sellingUnit==null||!String(sellingUnit).trim()) return null;
+  const key=String(sellingUnit).trim().toLowerCase().replace(/\./g,"").replace(/\s+/g," ");
+  // Packaging words an organization has taught KERDOS (reams, skids,
+  // drums, whatever its industry ships in) count as the whole pack too.
+  if(CASE_WORDS.has(key)||PACKAGING_ALIASES.has(key)) return {basis:"case",unit:null};
+  if(EACH_WORDS.has(key)) return {basis:"each",unit:null};
+  // Built-in units and units the organization taught KERDOS both count.
+  if(UNIT_LOOKUP.has(key)) return {basis:"measure",unit:normalizeUnit(key)};
+  return null;
+}
+
+// Price of one full pack from a quote on any basis. A quote with no
+// recorded basis is a legacy row, which was always the pack price.
+function casePriceFromQuote(price,basis,unit,pack){
+  const n=Number(price);
+  if(!Number.isFinite(n)||n<=0) return null;
+  if(!basis||basis==="case") return round(n,4);
+  const p=parsePackSize(pack);
+  if(!p?.parsed) return null;
+  if(basis==="each") return round(n*p.caseQty,4);
+  if(basis==="measure"){
+    const code=normalizeUnit(unit),def=UNIT_DEFINITIONS[code];
+    // A unit with no conversion table (one the organization taught) is
+    // convertible only when the pack is stated in that same unit.
+    if(!def) return p.unit===code&&p.total?round(n*p.total,4):null;
+    if(def.dimension!==p.dimension||!p.baseTotal) return null;
+    return round(n*(p.baseTotal/def.factor),4);
+  }
+  return null;
+}
+
+// Express a stored quote on the basis an invoice line is billed in, so
+// the variance compares like with like. null means "cannot compare".
+function quotePriceOnBasis(quote,target){
+  const casePrice=casePriceFromQuote(quote.price,quote.basis,quote.unit,quote.packSize);
+  if(casePrice==null) return null;
+  const basis=target?.basis||"case";
+  if(basis==="case") return casePrice;
+  const p=parsePackSize(quote.packSize);
+  if(!p?.parsed) return null;
+  if(basis==="each") return round(casePrice/p.caseQty,4);
+  if(basis==="measure"){
+    const per=pricePerUnit(casePrice,quote.packSize,target.unit);
+    if(!per||per.unit!==normalizeUnit(target.unit)) return null;
+    return per.price;
+  }
+  return null;
 }
 
 // The units a client may choose to read a price in, for one dimension.
@@ -361,6 +556,8 @@ function comparePurchasingPack(incoming,existing){
     return {status:"different",reason:`Pack size differs: ${incoming} versus ${existing}`};
   if(a.caseQty!==b.caseQty||Math.abs(a.unitQty*measurement(1,a.unit).baseQuantity-b.unitQty*measurement(1,b.unit).baseQuantity)>0.001)
     return {status:"review",reason:`Case configuration differs: ${incoming} versus ${existing}`};
+  if(!!a.catchWeight!==!!b.catchWeight)
+    return {status:"review",reason:`One pack is catch-weight and the other fixed-weight: ${incoming} versus ${existing}`};
   return {status:"same",reason:"Pack sizes agree"};
 }
 
@@ -378,6 +575,15 @@ function bestPurchasingMatch(description,packSize,catalogItems=[]){
       reason:identity.status==="review"?identity.reason:pack.reason};
   }).filter(Boolean).sort((a,b)=>(b.track==="exact")-(a.track==="exact")||b.score-a.score);
   return ranked[0]||null;
+}
+
+// A candidate can be worth showing even when its descriptions contain
+// different unrecognized words. This NEVER links or prices the products:
+// a complete, identical purchasing pack is required even for a suggestion.
+function bestPurchasingSuggestion(description,packSize,catalogItems=[]){
+  return catalogItems.map(ci=>({catalogItem:ci,score:safeProductScore(description,ci.name),pack:comparePurchasingPack(packSize,ci.pack_size)}))
+    .filter(candidate=>candidate.pack.status==="same"&&candidate.score>=0.35)
+    .sort((a,b)=>b.score-a.score)[0]||null;
 }
 
 function bestInvoiceMatch(description,candidates=[],threshold=MATCH_POLICY.autoLink) {
@@ -415,7 +621,7 @@ function quoteStatus(item,settings={},now=new Date()){
 
 export {
   MATCH_POLICY, UNIT_DEFINITIONS, configureVocabulary, normalizeUnit, measurement, parsePackSize, packsEquivalent, normalizedPrice, eachPrice,
-  unitsForDimension, pricePerUnit, brandsMatch,
-  normalizeForMatch, wordsMatch, classifyCategory, nextCategoryRange,
-  safeProductScore, productIdentity, compareProductIdentity, comparePurchasingPack, bestPurchasingMatch, quoteStatus, bestCatalogMatch, bestInvoiceMatch,
+  unitsForDimension, pricePerUnit, brandsMatch, priceBasisFor, casePriceFromQuote, quotePriceOnBasis, normalizeGtin, normalizeManufacturerCode, packFromDescription, isAbbreviationOf, abbreviationPairs,
+  normalizeForMatch, wordsMatch, classifyCategory, suggestCategory, nextCategoryRange,
+  safeProductScore, productIdentity, compareProductIdentity, comparePurchasingPack, bestPurchasingMatch, bestPurchasingSuggestion, quoteStatus, bestCatalogMatch, bestInvoiceMatch,
 };

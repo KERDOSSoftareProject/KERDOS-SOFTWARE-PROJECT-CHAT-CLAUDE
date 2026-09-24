@@ -160,65 +160,72 @@ profiles; purchase_order_lines; purchase_orders; vendor_items
 
 ## 8. What happened today (September 23, 2026)
 
-**Problem:** white window after sign-in on the live site.
+Morning: white window after sign-in, caused by four functions called in
+files that no longer defined them after App.jsx was split. Fixed, deployed
+(green run #41). Lesson: tests and build don't catch undefined names, so
+ESLint `no-undef` now runs inside `npm test`.
 
-**Cause:** when App.jsx was split into `pages/`, four functions were left
-being called in files where they no longer existed. Tests and build both
-pass in that state because nothing checks for undefined names; the
-crash only happens in the browser.
+Afternoon (ChatGPT, local, not deployed): matching tightened to the
+agreed rule set (exact identity + exact pack + brand agreement; engine
+auto-verifies only with a second vendor), Order Guide accepts only
+100%-verified mappings, Item Catalog reworked into Mapped / Not mapped,
+invoice lines become historical charges, error boundary, ESLint,
+portable backend adapter, PDF layout reader.
 
-| Missing name | Where it was called | Effect |
-|---|---|---|
-| itemMatchesSearch | App.jsx Order Guide filter | white screen on load |
-| compareItems | App.jsx Order Guide sort | white screen once any category has 2+ items |
-| unitsForDimension | ItemCatalogPanel.jsx mapping panel | crash opening the panel |
-| viewStoredFile | VendorDetail.jsx invoice View button | crash on click |
+Afternoon (Claude, local, not deployed; see READ_FIRST.md):
+- Price basis completed end to end: migration 009 adds `selling_unit` and
+  `price_basis` to vendor_items and price_history; imports record the
+  basis from the sheet's selling unit; every quote is converted to the
+  price of one full pack before ranking; a per-pound/per-each quote whose
+  pack can't convert is blocked with a reason instead of ranked wrong;
+  invoice variance is computed on the basis the invoice bills in.
+- Bulk confirm for single-vendor listings that already pass verification,
+  so day one after deploy isn't hundreds of one-at-a-time clicks.
+- Engine-first matching improvements (see READ_FIRST.md §3): GTIN /
+  manufacturer-code capture and identifier-proven identity, pack read
+  from the description tail, pack filled from the vendor's own invoice,
+  one "why not 100%" reason code per mapping with a grouped Not mapped
+  view, an auto-verify rate on every import, abbreviation learning from
+  confirmations (spelling only), catch-weight and #10-can pack parsing,
+  a one-click "apply engine-verified matches" re-check, and best-guess
+  category placement with a review flag (new products no longer land in
+  Uncategorized unless they resemble nothing).
 
-**Fix (deployed, green run #41):**
-- New `src/core/catalog-browse.js` exporting `compareItems` and
-  `itemMatchesSearch`; both App.jsx and ItemCatalogPanel.jsx import it.
-- ItemCatalogPanel.jsx imports `unitsForDimension` from procurement.js.
-- App.jsx passes `onViewOriginal={viewStoredFile}` into VendorDetail,
-  which now takes it as a prop.
-- New `src/core/catalog-browse-test.mjs` (10 tests) added to `npm test`.
-- `.env.example` was missing from the repo (hidden dot-file never
-  uploaded), which made the deployment test fail; created directly on
-  GitHub.
+## 9. Deploy order for the pending build
 
-**Verified:** full suite passes (78 regression, 19 ingestion, 10
-catalog-browse, plus service/session/backend/offline/deployment tests);
-TypeScript undefined-name scan reports zero across all source files;
-bundle check resolves all imports. Live click-through by Spiro pending
-at time of writing.
+1. Run `KERDOS_DATABASE_UPDATE_CLEAN.sql` in the Supabase SQL editor
+   (it is idempotent; migration 009 is the only new part). The new RPC
+   parameters default to null, so the currently deployed frontend keeps
+   working after the migration.
+2. Upload the source and let the green run deploy it.
+3. In Item Catalog, press "Confirm N ready single-vendor products".
 
-## 9. Repo cleanup still pending (harmless, low priority)
+Pending cleanup (harmless): delete `src/data.js`, the three `.zip` files
+and `dist/` at the repo root.
 
-- Delete `src/data.js` (obsolete compatibility bridge, nothing imports it).
-- Delete the three `.zip` files and the committed `dist/` folder at repo
-  root (CI builds its own dist; the committed one is stale).
+## 10. Open items
 
-## 10. Open items and suggested next steps
-
-1. **Add an undefined-name check to CI** so this bug class can never ship
-   again (ESLint `no-undef`, or `tsc --checkJs --noEmit`). One dev
-   dependency plus one workflow line. Highest value, smallest change.
-2. **Add a React error boundary** so any future crash shows an error
-   message instead of a blank white page.
-3. Optional: headless-browser smoke test that signs in and loads the
-   Order Guide, Item Catalog, and a vendor page.
-4. **RLS / roles (needs Spiro's decision, not more code):** exact
-   Employee-tier permissions were never fully specified beyond "no Import,
-   no vendor pricing". Known DB-level issues: `user_has_role()` only
-   recognizes 'owner' and 'member'; organizations SELECT and invite_codes
-   SELECT/UPDATE policies are qual=true. Deliberately deferred.
-5. Open design question: should invoice-only vendors (no price sheet ever
-   imported) populate the catalog? Partially answered by the auto-create
-   behavior in section 7; not fully decided.
-6. Future phase: vendor API integration (live pricing via distributor
-   logins). Noted, not started.
-7. Output layer: CSV export exists (catalog export, price variance
-   report). PDF/print-formatted versions are a reasonable next step if
-   Spiro wants them.
+1. Per-vendor-format coverage: selling unit, UPC/GTIN and manufacturer
+   columns are read by header name; formats that put them elsewhere (or
+   in PDF layouts) record nothing. Extend per format with a test row each
+   from the real files; the Not mapped reason counts show which gap is
+   biggest.
+2. Learning covers abbreviation-shaped pairs only. Irregular ones
+   ("chix"→"chicken", "xl"→"extra large") still need one Admin vocabulary
+   entry per organization; a per-industry starter list would cover most.
+3. Sole-source rule carve-out (Spiro's decision): an engine-created
+   catalog item with a vendor code and readable pack cannot be pointed
+   at the wrong item; auto-verifying that narrow case would remove most
+   remaining manual confirmations. Not implemented; bulk confirm is the
+   workaround.
+4. Shared vendor knowledge across clients at scale (codes → identity,
+   never prices).
+5. RLS / roles: see ACCESS_POLICY_REVIEW.md. Needs Spiro's decision and a
+   staging database, not more frontend code.
+6. Headless-browser smoke test (sign in, load Order Guide, Item Catalog,
+   a vendor page). The undefined-name check covers the crash class we
+   hit; this would cover runtime data errors.
+7. Future phase: vendor API integration. Noted, not started.
 
 ## 11. Rules for any assistant working on this
 

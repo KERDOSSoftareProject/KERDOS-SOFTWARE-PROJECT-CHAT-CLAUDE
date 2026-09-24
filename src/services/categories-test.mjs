@@ -38,7 +38,7 @@ assert.equal(calls.filter(call=>call.table==="catalog_categories"&&call.insert).
 assert.equal(classifyCategory("Plywood 4x8",[{id:"lumber",name:"Lumber",keywords:["plywood"]}])?.id,"lumber");
 const next=await service.assignItem({catalogItemId:"i2",categoryId:"c1",catalogItems:[{id:"i1",category_id:"c1",master_item_number:1000}],categories:[{id:"c1",range_start:1000}]});
 assert.equal(next,1001);
-assert.deepEqual(calls.at(-1).update,{category_id:"c1",master_item_number:1001});
+assert.deepEqual(calls.at(-1).update,{category_id:"c1",master_item_number:1001,category_review:false,category_reason:null});
 const moved=await service.reclassifyUncategorized({catalogItems:[{id:"i3",name:"Paper Towels",category_id:"h"}],categories:[{id:"h",is_holding_pen:true},{id:"c1",keywords:["paper"],range_start:1000}]});
 assert.equal(moved.moved,1);
 assert.equal(moved.checked,1);

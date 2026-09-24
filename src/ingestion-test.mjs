@@ -1,4 +1,6 @@
 import {parseDocument,findDate,findInvoiceNumber,findQuoteValidity} from './ingestion.js';
+import {pdfTextLines} from './core/pdf-layout.js';
+import assert from 'node:assert/strict';
 let passed=0,failed=0;
 function t(label,got,expected){if(JSON.stringify(got)===JSON.stringify(expected)){passed++;console.log('PASS',label)}else{failed++;console.error('FAIL',label,got,'expected',expected)}}
 const email=`From: orders@vendor.com\nSubject: New prices September 21\n\nChicken breast 40 lb $82.50\nChicken base 1 lb $14.00\nChicken thighs 40 lb $54.00`;
@@ -27,4 +29,31 @@ const unpriced=parseDocument('From: supplier@example.com\nSubject: Price list\nC
 t('unlabeled integer cannot be assumed price',unpriced.rows.length,0);
 const expensive=parseDocument('From: supplier@example.com\nSubject: New prices\nIndustrial assembly 1000.00');
 t('four digit unformatted price retained',expensive.rows[0]?.price,1000);
+const vendorSheet=parseDocument('Item\tBrand\tSize\tDescription\tQuote Price\n43700\tCOMPNS\t1/500 FT\tALUM FOIL ROLL 18 IN\t44.30\n47432\tRNGELN\t1/15 LB\tBACON LAYOUT 18-22 FROZEN\t3.83');
+t('vendor item column is a code',vendorSheet.rows[0]?.code,'43700');
+t('vendor description stays a description',vendorSheet.rows[0]?.description,'ALUM FOIL ROLL 18 IN');
+t('vendor brand is kept separately',vendorSheet.rows[1]?.brand,'RNGELN');
+t('vendor pack is kept separately',vendorSheet.rows[1]?.packSize,'1/15 LB');
+const twoColumnQuote=parseDocument('Price List\nProduct    Price    Product    Price\nAPPLE GALA 40 LB    34.00    LIME 150CT    47.50');
+t('adjacent quote prices require row review',twoColumnQuote.rows.some(row=>row.issues.some(issue=>issue.includes('Two different prices'))),true);
+const unusualInvoice=parseDocument('INVOICE #12345\nMATERIAL    DESCRIPTION    QTY    UNIT PRICE    LINE TOTAL\nX2700    TERRY TOWEL WHITE    125    0.099    12.38');
+t('uncertain invoice arithmetic requires review',unusualInvoice.rows.some(row=>row.issues.length>0),true);
+const serviceInvoice=parseDocument('INVOICE #12345\nMATERIAL    DESCRIPTION    FREQ EXCH QTY    UNIT PRICE    LINE TOTAL TAX\nX2700    TERRY TOWEL WHITE    01    F    125    0.099    12.38 Y\nX3032    LINEN BAG    01    F    2    0.000    0.00 N\nSUBTOTAL 12.38');
+const goodsInvoice=parseDocument('INVOICE 1769909\nItem/Xref ORD DLV UOM Description Pack Size Weight Unit Price Extended\n4806002-1-6-6-6 4.00 4.00 LB CHIX BRST BNLS BLACK LABEL 4/10# CB 1-40# 160.00 $1.79 $286.40\n5100250-1-6-6-6 6.00 6.00 CS WATER POLAND SPRING CT 40-16.9OZ $12.79 $76.74\nTOTAL 363.14');
+assert.equal(goodsInvoice.mode,'goods-invoice');
+assert.equal(goodsInvoice.rows[0].qty,160);
+assert.equal(goodsInvoice.rows[0].packSize,'1-40#');
+assert.equal(goodsInvoice.rows[0].priceBasis,'measure');
+assert.equal(goodsInvoice.rows[1].qty,6);
+assert.equal(goodsInvoice.rows[1].packSize,'40-16.9OZ');
+assert.equal(goodsInvoice.rows.filter(row=>row.issues.length).length,0);
+const measuredInvoice=parseDocument('INVOICE #12345\nItem No Ordered Delivered Unit Description Pack Size Billed Quantity Unit Price Line Total\nBOLT-004 2.00 2.00 KG FASTENER ALLOY 1/20KG 40.00 $3.25 $130.00\nTOTAL $130.00');
+assert.equal(measuredInvoice.mode,'goods-invoice');
+assert.equal(measuredInvoice.rows[0].qty,40);
+assert.equal(measuredInvoice.rows[0].priceBasis,'measure');
+const pdfWords=(x,y,str)=>({transform:[1,0,0,1,x,y],str});
+assert.deepEqual(pdfTextLines([pdfWords(60,100,'Product'),pdfWords(260,100,'Price'),pdfWords(365,100,'Product'),pdfWords(560,100,'Price'),pdfWords(60,90,'APPLE 40 LB'),pdfWords(260,90,'34.00'),pdfWords(365,90,'LIME 50 CT'),pdfWords(560,90,'47.50')]),['Product Price','APPLE 40 LB 34.00','Product Price','LIME 50 CT 47.50']);
+t('service rate preserves three decimals',serviceInvoice.rows[0]?.price,0.099);
+t('service invoice keeps free lines',serviceInvoice.rows[1]?.amount,0);
+t('service invoice ignores subtotal',serviceInvoice.rows.length,2);
 console.log(`${passed} passed, ${failed} failed`);process.exit(failed?1:0);

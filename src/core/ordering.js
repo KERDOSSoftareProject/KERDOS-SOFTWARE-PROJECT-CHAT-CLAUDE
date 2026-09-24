@@ -3,14 +3,19 @@
 const money=value=>Math.round(Number(value)*100)/100;
 
 export function orderable(option){
-  return !option.expired&&!option.brandMismatch&&!option.priceUnavailable&&!option.invoiceOnly&&!option.unverified;
+  return option.matchTrack==="exact"&&option.matchConfidence===100&&!!option.packSize&&
+    !option.expired&&!option.brandMismatch&&!option.priceUnavailable&&!option.invoiceOnly&&!option.unverified&&
+    !option.basisUnconvertible;
 }
 
 export function blockReason(option){
   if(option.expired)return "Quote expired — refresh needed";
   if(option.priceUnavailable)return "No current quoted price";
   if(option.invoiceOnly)return "Invoice charge only — quotation required";
-  if(option.unverified)return "Product mapping needs review";
+  // A price quoted per pound, per gallon or per each can only join the
+  // ranking once the pack tells KERDOS how many of that unit a case holds.
+  if(option.basisUnconvertible)return `Quoted per ${option.quoteUnit||option.quoteBasis||"unit"} — pack can't convert it to a case price; correct the pack in Item Catalog`;
+  if(option.unverified||option.matchTrack!=="exact"||option.matchConfidence!==100||!option.packSize)return "Product not mapped at 100% — review in Item Catalog";
   if(option.brandMismatch)return option.brand?`${option.brand} — not the locked brand`:"Brand not listed";
   return null;
 }

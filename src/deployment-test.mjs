@@ -7,7 +7,7 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"..");
 const requiredMigrations=[
   "migration_003_vocabulary.sql","migration_004_context_and_price_lifecycle.sql",
   "migration_005_atomic_price_import.sql","migration_006_atomic_invites.sql",
-  "migration_007_atomic_invoices.sql",
+  "migration_007_atomic_invoices.sql","migration_009_price_basis.sql",
 ];
 for(const file of requiredMigrations) assert.ok(fs.statSync(path.join(root,"knowledge",file)).size>100,`${file} missing or empty`);
 
@@ -18,6 +18,10 @@ const pageSources=fs.readdirSync(path.join(root,"src/pages")).filter(file=>file.
 const migrationSql=requiredMigrations.map(file=>fs.readFileSync(path.join(root,"knowledge",file),"utf8")).join("\n");
 for(const rpc of [...adapter.matchAll(/client\.rpc\("([^"]+)"/g)].map(match=>match[1]))
   assert.match(migrationSql,new RegExp(`function\\s+${rpc}\\b`,`i`),`adapter RPC ${rpc} has no migration`);
+
+// Every adapter parameter of the quote RPC must exist in the migrated function signature.
+for(const param of [...adapter.matchAll(/\bp_[a-z_]+(?=:)/g)].map(m=>m[0]))
+  assert.match(migrationSql,new RegExp(`\\b${param}\\b`),`adapter passes ${param} but no migration declares it`);
 
 assert.match(migrationSql,/security\s+definer[\s\S]*set\s+search_path\s*=\s*pg_catalog[\s\S]*update\s+public\.invite_codes/i,
   "invite acceptance must bypass member-only RLS with a restricted search path");

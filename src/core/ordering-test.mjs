@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import {blockReason,orderable,priceForOffer,solveOrder} from "./ordering.js";
-const option=(vendorId,price,extra={})=>({vendorId,vendorName:vendorId,vendorItemId:`${vendorId}-item`,price,packSize:"1 CT",...extra});
+const option=(vendorId,price,extra={})=>({vendorId,vendorName:vendorId,vendorItemId:`${vendorId}-item`,price,packSize:"1 CT",matchTrack:"exact",matchConfidence:100,...extra});
 assert.equal(orderable(option("a",10)),true);
+assert.equal(orderable(option("a",10,{matchTrack:"new"})),false);
+assert.equal(orderable(option("a",10,{matchConfidence:99})),false);
+assert.equal(orderable(option("a",10,{packSize:null})),false);
 assert.equal(orderable(option("a",10,{expired:true})),false);
+assert.equal(orderable(option("a",10,{basisUnconvertible:true,quoteBasis:"measure",quoteUnit:"LB"})),false);
+assert.match(blockReason(option("a",10,{basisUnconvertible:true,quoteBasis:"measure",quoteUnit:"LB"})),/per LB/);
 assert.equal(blockReason(option("a",10,{priceUnavailable:true})),"No current quoted price");
 const cheapest=solveOrder([{catalogItemId:"item",quantity:2,orderUnit:"case",options:[option("a",10),option("b",12)]}],[])[0];
 assert.equal(cheapest.assignedVendorId,"a");assert.equal(cheapest.lineTotal,20);

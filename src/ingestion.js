@@ -1,4 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
+import {measurement,normalizeGtin,normalizeManufacturerCode,packFromDescription} from "./procurement.js";
 // KERDOS INGESTION MODULE
 // ════════════════════════════════════════════════════════════════════
 //
@@ -33,8 +34,12 @@
 // ── Column roles we understand ─────────────────────────────────────
 // Every column in a document gets matched to one of these, or "unknown".
 const COLUMN_ROLES = {
-  description: ["description", "desc", "product", "name", "item"],
-  code:        ["item no", "item#", "sku", "code", "cust item no", "item number"],
+  description: ["description", "desc", "product", "name"],
+  code:        ["item no", "item#", "item", "sku", "code", "cust item no", "item number"],
+  brand:       ["brand", "manufacturer", "make"],
+  gtin:        ["upc", "gtin", "ean", "barcode", "bar code", "upc code", "upc/ean"],
+  mfrCode:     ["mfr #", "mfg #", "mfr no", "mfg no", "mfr item", "mfg item", "manufacturer item", "manufacturer no", "manufacturer #", "manufacturer part", "mfr part", "part no", "part number", "model"],
+  sellingUnit: ["type", "selling unit", "order unit"],
   qty:         ["qty", "quantity", "count"],
   packSize:    ["unit", "size", "pack", "uom", "pack size"],
   price:       ["price", "unit price", "cost", "unit cost", "rate"],
@@ -282,6 +287,7 @@ function profileColumns(grid, dataStartIndex) {
   const usableRows = dataRows.filter(r => r.cells.length === columnCount);
   if (!usableRows.length) return {};
 
+  const activeRowCount=usableRows.filter(r=>r.cells.some(cell=>cell.trim())).length;
   const columnStats = [];
   for (let col = 0; col < columnCount; col++) {
     const values = usableRows.map(r => r.cells[col]).filter(v => v !== "");
@@ -289,13 +295,14 @@ function profileColumns(grid, dataStartIndex) {
     const numericValues = values.map(parseMoney).filter(v => v !== null);
     columnStats.push({
       col,
+      coverage:values.length/activeRowCount,
       numericRatio: numericValues.length / values.length,
       avgLength: values.reduce((s, v) => s + v.length, 0) / values.length,
     });
   }
 
   const map = {};
-  const numericCols = columnStats.filter(c => c.numericRatio > 0.6);
+  const numericCols = columnStats.filter(c => c.numericRatio > 0.6 && c.coverage >= 0.4);
   if (numericCols.length >= 2) {
     map.price = numericCols[numericCols.length - 2].col;
     map.amount = numericCols[numericCols.length - 1].col;
@@ -308,6 +315,15 @@ function profileColumns(grid, dataStartIndex) {
     const widest = textCols.reduce((a, b) => (b.avgLength > a.avgLength ? b : a));
     map.description = widest.col;
   }
+
+  // An unlabeled workbook often places the product in the first column and
+  // the purchasing size beside it. Infer size from repeated measurements,
+  // never from a single row or a product-specific word.
+  const sizeLike=value=>/\b\d+(?:\.\d+)?\s*(?:LB|LBS|OZ|GAL|GALLON|QT|PT|CT|COUNT|DOZ|EA|FT|IN|ML|KG|G)\b/i.test(value);
+  const sizeColumns=columnStats.filter(c=>c.col!==map.description&&c.col!==map.price&&c.col!==map.amount)
+    .map(c=>{const populated=usableRows.filter(r=>r.cells[c.col]?.trim());return {col:c.col,ratio:populated.length>=10?populated.filter(r=>sizeLike(r.cells[c.col])).length/populated.length:0};})
+    .sort((a,b)=>b.ratio-a.ratio);
+  if(sizeColumns[0]?.ratio>=0.5)map.packSize=sizeColumns[0].col;
 
   return map;
 }
@@ -376,17 +392,36 @@ function extractRow(cells, columnMap) {
   if (description.length < 2) return null;
 
   const code = (get("code") || "").trim() || null;
-  const packSize = (get("packSize") || "").trim() || null;
+  const brand = (get("brand") || "").trim() || null;
+  const sellingUnit = (get("sellingUnit") || "").trim() || null;
+  const gtin = normalizeGtin(get("gtin"));
+  const manufacturerCode = normalizeManufacturerCode(get("mfrCode"));
+  // The pack column wins; when it is empty, a pack written at the end of
+  // the description is used and its origin recorded for review.
+  const columnPack = (get("packSize") || "").trim() || null;
+  const descriptionPack = columnPack ? null : packFromDescription(description);
+  const packSize = columnPack || descriptionPack;
+  const packSource = columnPack ? "column" : descriptionPack ? "description" : null;
   const qty = parseMoneyLenient(get("qty"));
+  const unassigned=cells.map((value,index)=>({value:value.trim(),index}))
+    .filter(cell=>cell.value&&!Object.values(columnMap).includes(cell.index));
+  const issues=unassigned.length?[`Additional source details need identification: ${unassigned.map(cell=>cell.value).join(" | ").slice(0,100)}`]:[];
 
   return {
     code,
+    brand,
+    gtin,
+    manufacturerCode,
+    sellingUnit,
     description: description.slice(0, 120),
     packSize,
+    packSource,
     qty: qty !== null ? qty : null,
     price: price !== null ? price : amount,
     amount: amount !== null ? amount : price,
     priceUnavailable,
+    sourceLine:cells.join("\t"),
+    issues,
   };
 }
 
@@ -454,6 +489,80 @@ function findQuoteValidity(text){
     if(date)return date;
   }
   return null;
+}
+
+function reviewUncertainRows(rows,documentKind){
+  return rows.map(row=>{
+    const issues=[...(row.issues||[])];
+    if(documentKind==="invoice"){
+      if(row.qty==null)issues.push("Invoice quantity or selling unit could not be verified from the source line");
+      if(!row.code&&/^\d+[\s\-]/.test(row.description||""))issues.push("Vendor item code may have been included in the product description");
+      if(row.qty!=null&&row.amount!=null&&row.price!=null&&Math.abs(row.qty*row.price-row.amount)>0.02)
+        issues.push("Invoice quantity, unit price and extended total do not reconcile");
+    }else if(documentKind==="pricelist"&&row.amount!=null&&row.price!=null&&row.amount!==row.price){
+      issues.push("Two different prices were read from one line; verify that adjacent columns were not combined");
+    }
+    return {...row,issues};
+  });
+}
+
+// Service invoices often quote fractional rates (for example $0.099 per
+// towel). The generic freeform money scanner only accepts cents and can
+// silently turn that into $99. Read this layout by its column headings and
+// reconcile each row; do not infer its structure from a vendor name.
+function parseServiceInvoice(lines,text){
+  const heading=lines.findIndex(line=>/\bMATERIAL\b.*\bDESCRIPTION\b.*\bFREQ\b.*\bEXCH\b.*\bQTY\b.*\bUNIT PRICE\b.*\bLINE TOTAL\b/i.test(line));
+  if(heading<0)return null;
+  const rows=[],skipped=[];
+  const rowPattern=/^\s*([A-Z0-9-]{3,})\s+(.+?)\s+(\d{2})\s+([A-Z])\s+(\d+(?:\.\d+)?)\s+(\d+\.\d{3})\s+(\d+\.\d{2})\s*([YN])?\s*$/i;
+  for(const line of lines.slice(heading+1)){
+    if(/^\s*(?:SUBTOTAL|SALES TAX|TOTAL USD|Signature)\b/i.test(line))break;
+    const match=line.match(rowPattern);
+    if(!match){if(line.trim())skipped.push({line,reason:"Non-item or wrapped service detail"});continue;}
+    const [,code,description,,exchange,quantity,rate,total]=match;
+    const qty=Number(quantity),price=Number(rate),amount=Number(total);
+    const issues=[];
+    if(Math.abs(qty*price-amount)>0.011)issues.push("Service quantity and three-decimal rate do not reconcile with the line total");
+    rows.push({code,description:description.trim(),packSize:null,qty,price,amount,sellingUnit:"service",exchange,
+      priceUnavailable:false,sourceLine:line,issues});
+  }
+  return {mode:"service-invoice",headerFound:true,columnMap:{},rows,skipped,documentKind:"invoice",quoteValidUntil:findQuoteValidity(text)};
+}
+
+// Some invoices state an ordered/delivered count and a separate measured
+// quantity for billing. Recognize the column roles, then use the selling
+// unit's dimension; this applies equally to any trade and supplier.
+function parseGoodsInvoice(lines,text){
+  const heading=lines.findIndex(line=>/\bItem(?:\s*\/\s*Xref|\s*(?:No\.?|#))?\b.*\b(?:ORD|ORDERED)\b.*\b(?:DLV|DELIVERED)\b.*\b(?:UOM|UNIT)\b.*\bDescription\b.*\bPack\s*Size\b.*\b(?:Weight|Billed\s+Quantity)\b.*\bUnit\s*Price\b.*\b(?:Extended|Line\s+Total)\b/i.test(line));
+  if(heading<0)return null;
+  const rows=[],skipped=[];
+  const rowPattern=/^\s*([A-Z0-9][A-Z0-9-]{2,})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+([A-Z][A-Z0-9]{1,7})\s+(.+?)\s+\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})\s*$/i;
+  const packPattern=/(?:^|\s)(\d+(?:\.\d+)?(?:\s*[-/x]\s*\d+(?:\.\d+)?)?\s*(?:#|LB|LBS|OZ|GAL|QT|CT|EA)\.?)(?=\s*$)/i;
+  for(const line of lines.slice(heading+1)){
+    if(/^\s*(?:SUBTOTAL|TOTAL|AMOUNT DUE|SIGNATURE)\b/i.test(line))break;
+    const match=line.match(rowPattern);
+    if(!match){if(line.trim())skipped.push({line,reason:"Non-item or wrapped invoice detail"});continue;}
+    const [,code,ordered,delivered,uom,body,rawPrice,rawAmount]=match;
+    const measure=measurement(1,uom),measuredUnit=measure?.dimension==="mass"||measure?.dimension==="volume"||measure?.dimension==="length";
+    const weightMatch=measuredUnit?body.match(/\s+(\d+\.\d{2})\s*$/):null;
+    const weightPart=weightMatch?Number(weightMatch[1]):null;
+    const withoutWeight=weightMatch?body.slice(0,weightMatch.index).trim():body.trim();
+    const packMatch=withoutWeight.match(packPattern);
+    const packSize=packMatch?.[1]?.replace(/\.$/,'')||null;
+    const description=packMatch?withoutWeight.slice(0,packMatch.index).trim():withoutWeight;
+    const qty=measuredUnit?weightPart:Number(delivered);
+    const price=Number(rawPrice.replaceAll(',','')),amount=Number(rawAmount.replaceAll(',',''));
+    const issues=[];
+    if(!description)issues.push('Product description could not be identified');
+    if(!packSize)issues.push('Pack size needs review');
+    if(measure?.dimension==="unknown"&&!/^(?:CS|CASE|BX|BOX|PK|PACK|CT|CARTON|PALLET)$/i.test(uom))issues.push('Selling unit is not recognized; verify the billed quantity basis');
+    if(qty===null||!Number.isFinite(qty))issues.push('Measured billed quantity is missing for this selling unit');
+    else if(Math.abs(qty*price-amount)>0.025)issues.push('Billed quantity and unit price do not reconcile with extended total');
+    rows.push({code,description:description.slice(0,120),packSize,qty,orderedQty:Number(ordered),deliveredQty:Number(delivered),weight:weightPart,
+      sellingUnit:uom.toUpperCase(),price,amount,priceBasis:measuredUnit?'measure':'selling-unit',
+      priceUnavailable:false,sourceLine:line,issues});
+  }
+  return {mode:'goods-invoice',headerFound:true,columnMap:{},rows,skipped,documentKind:'invoice',quoteValidUntil:findQuoteValidity(text)};
 }
 
 // ── Freeform extraction (no reliable column delimiter) ──────────────
@@ -821,6 +930,11 @@ function extractLabeledFields(line) {
 function parseDocument(text) {
   const rawLines = text.split("\n").map(l => l.trimEnd()).filter(l => l.trim().length > 0);
 
+  const serviceInvoice=parseServiceInvoice(rawLines,text);
+  if(serviceInvoice)return serviceInvoice;
+  const goodsInvoice=parseGoodsInvoice(rawLines,text);
+  if(goodsInvoice)return goodsInvoice;
+
   const delimiter = sniffDelimiter(rawLines);
 
   // Informal emails have no table boundaries. Their subject, invoice
@@ -834,7 +948,8 @@ function parseDocument(text) {
       if(row) rows.push(row);
       else skipped.push({line,reason:isDocumentMetadata(line)?"document metadata, not a product":"no unambiguous product and monetary price"});
     }
-    return {mode:"contextual",headerFound:false,columnMap:{},rows,skipped,documentKind:detectDocumentKind(text),quoteValidUntil:findQuoteValidity(text)};
+    const documentKind=detectDocumentKind(text);
+    return {mode:"contextual",headerFound:false,columnMap:{},rows:reviewUncertainRows(rows,documentKind),skipped,documentKind,quoteValidUntil:findQuoteValidity(text)};
   }
 
   // ── FREEFORM MODE ──
@@ -891,7 +1006,8 @@ function parseDocument(text) {
     if (afterCount > 0) {
       skipped.push({ line: `(${afterCount} footer/note lines after the item table)`, reason: "outside the item table" });
     }
-    return { mode: "freeform", headerFound: headerIdx !== -1, columnMap: {}, rows:rows.map(r=>({...r,issues:r.issues||[]})), skipped, documentKind:detectDocumentKind(text),quoteValidUntil:findQuoteValidity(text) };
+    const documentKind=detectDocumentKind(text);
+    return { mode: "freeform", headerFound: headerIdx !== -1, columnMap: {}, rows:reviewUncertainRows(rows,documentKind), skipped, documentKind,quoteValidUntil:findQuoteValidity(text) };
   }
 
   // ── TABULAR MODE ──
@@ -935,7 +1051,8 @@ function parseDocument(text) {
     rows.push(row);
   }
 
-  return { mode: "tabular", headerFound, columnMap, rows:rows.map(r=>({...r,issues:r.issues||[]})), skipped, documentKind:detectDocumentKind(text),quoteValidUntil:findQuoteValidity(text) };
+  const documentKind=detectDocumentKind(text);
+  return { mode: "tabular", headerFound, columnMap, rows:reviewUncertainRows(rows,documentKind), skipped, documentKind,quoteValidUntil:findQuoteValidity(text) };
 }
 
 

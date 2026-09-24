@@ -81,6 +81,10 @@ configureVocabulary([
 t("taught unit parses a pack", parsePackSize("24 sheets")?.unit, "SHEET");
 t("taught unit prices per unit", pricePerUnit(48,"24 sheets","sheet")?.price, 2);
 t("two-word taught unit", parsePackSize("500 board feet")?.unit, "BF");
+t("pack syntax variants agree", packsEquivalent("4-5LB","4/5 LB"), true);
+t("space-separated pack agrees", packsEquivalent("12 32 OZ","12-32OZ"), true);
+t("a second pack component requires review", parsePackSize("4/5 LB + 2 EA")?.parsed, false);
+t("variable-weight marker requires review", parsePackSize("1-40# CB")?.parsed, false);
 t("taught unit: size conflict still blocks", safeProductScore("Plywood 24 sheets","Plywood 12 sheets"), 0);
 t("synonym links two spellings", safeProductScore("Chix Breast 40lb","Chicken Breast 40lb")>=MATCH_POLICY.autoLink, true);
 t("synonym in another trade", safeProductScore("PLYWD 3/4 4x8","Plywood 3/4 4x8")>=MATCH_POLICY.autoLink, true);

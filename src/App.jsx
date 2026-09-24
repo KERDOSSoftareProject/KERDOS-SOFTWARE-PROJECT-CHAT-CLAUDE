@@ -9,7 +9,7 @@ import { createVendorService } from "./services/vendors.js";
 import { createOperationsService } from "./services/operations.js";
 import { createImportService } from "./services/imports.js";
 import { loadSnapshot, saveSnapshot } from "./offline-store.js";
-import { configureVocabulary, eachPrice, pricePerUnit, parsePackSize, brandsMatch, quoteStatus } from "./procurement.js";
+import { configureVocabulary, eachPrice, pricePerUnit, parsePackSize, brandsMatch, quoteStatus, comparePurchasingPack, compareProductIdentity, casePriceFromQuote } from "./procurement.js";
 import { blockReason, orderable, priceForOffer, solveOrder } from "./core/ordering.js";
 import { compareItems, itemMatchesSearch } from "./core/catalog-browse.js";
 import { configureLocale, formatDate, formatMoney } from "./localization.js";
@@ -272,7 +272,7 @@ export default function App() {
     let linked=0, failed=0, firstError=null;
     for(const vi of unmapped){
       try{
-        const match=await catalogService.matchOrCreate({organizationId:org.id,description:vi.description,packSize:vi.pack_size,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems,mappings});
+        const match=await catalogService.matchOrCreate({organizationId:org.id,vendorId:vi.vendor_id,description:vi.description,packSize:vi.pack_size,brand:vi.brand||null,gtin:vi.gtin||null,manufacturerCode:vi.manufacturer_code||null,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems,mappings});
         if(!match) continue;
         await importService.createMapping({
           organization_id:org.id, catalog_item_id:match.catalogItemId, vendor_item_id:vi.id,
@@ -305,9 +305,15 @@ export default function App() {
         const quote=quoteStatus(vi,org?.settings||{});
         const expired=quote==="expired";
         const invoiceOnly=quote==="invoice_only";
-        const price=parseFloat(vi.price);
         const pack=vi.pack_size;
-        const each=quote==="current"?eachPrice(price,pack):null;
+        // Every vendor is ranked on the price of one full pack. A quote
+        // recorded per pound/gallon/each is converted through the pack;
+        // legacy rows with no recorded basis were always pack prices.
+        const quoteBasis=vi.price_basis||null;
+        const quoteUnit=vi.price_basis==="measure"?(vi.selling_unit||null):null;
+        const price=casePriceFromQuote(vi.price,quoteBasis,quoteUnit,pack);
+        const basisUnconvertible=price==null&&!!quoteBasis&&quoteBasis!=="case";
+        const each=quote==="current"&&price!=null?eachPrice(price,pack):null;
         // A locked brand blocks every vendor item that is a different
         // brand - and one with no brand listed, since "unknown" cannot
         // be verified as the locked brand.
@@ -316,14 +322,15 @@ export default function App() {
           vendorId:v.id, vendorName:v.name,
           vendorItemId:vi.id, vendorItemCode:vi.vendor_item_code,
           brand:vi.brand, packSize:pack, description:vi.description,
-          casePrice:price,
+          casePrice:price??parseFloat(vi.price),
+          quotedPrice:parseFloat(vi.price), quoteBasis, quoteUnit, basisUnconvertible,
           eachPrice:each?.price||null, eachSize:each?.size||null,
           mappingId:m.id,
-          matchConfidence:m.confidence_score, matchTrack:m.comparison_track,
+          matchConfidence:m.confidence_score, matchTrack:m.comparison_track, matchMethod:m.match_method,
           expired,
           priceUnavailable:quote==="unavailable",
           invoiceOnly,
-          unverified:["similar","review"].includes(m.comparison_track),
+          unverified:m.comparison_track!=="exact"||m.confidence_score!==100||!parsePackSize(pack)?.parsed,
           brandMismatch,
         };
       }).filter(Boolean).sort((a,b)=>{
@@ -333,6 +340,21 @@ export default function App() {
         if(ab!==bb) return ab?1:-1;
         return a.casePrice-b.casePrice;
       });
+
+      // Older manual links may predate verification. A mixed group is not a
+      // valid price comparison even if every saved row says "exact".
+      for(const option of options){
+        const conflicting=options.some(other=>{
+          if(other.vendorItemId===option.vendorItemId)return false;
+          return comparePurchasingPack(option.packSize,other.packSize).status!=="same" ||
+            compareProductIdentity(option.description,other.description).status!=="same" ||
+            (!!(option.brand||other.brand)&&!brandsMatch(option.brand,other.brand));
+        });
+        if(conflicting){
+          option.unverified=true;
+          option.comparisonWarning="Linked vendor products differ in description or pack; review this catalog item";
+        }
+      }
 
       // Per-unit price for the honest cross-vendor comparison. Shown in
       // the unit the client chose for this item (canonical_unit), or,
@@ -350,6 +372,7 @@ export default function App() {
         masterItemNumber:ci.master_item_number,
         name:ci.name,
         category:ci.catalog_categories?.name||penName,
+        categoryReview:!!ci.category_review, categoryReason:ci.category_reason||null,
         createdAt:ci.created_at,
         brandLocked:ci.brand_locked||false,
         lockedBrand,
@@ -413,7 +436,7 @@ export default function App() {
   // own badge on Price Sheets. Each tab's badge reflects only what's
   // actually reviewable on that tab.
   const needsAttentionCount=useMemo(()=>
-    mappings.filter(m=>["similar","review"].includes(m.comparison_track)).length,
+    mappings.filter(m=>m.comparison_track!=="exact"||m.confidence_score!==100).length,
   [mappings]);
   const invoiceReviewCount=flaggedInvoiceLines.length;
   const priceSheetReviewCount=priceUnavailableItems.length+expiredItems.length;
@@ -541,7 +564,7 @@ export default function App() {
     // Guide's categories are alphabetical - not the number-range order
     // Item Catalog uses, since this screen is for FINDING something to
     // order, not for working the numbering itself.
-    const set=new Set(productList.filter(i=>i.options.length>0).map(p=>p.category));
+    const set=new Set(productList.filter(i=>i.options.some(orderable)).map(p=>p.category));
     return [...set].sort((a,b)=>a.localeCompare(b));
   },[productList]);
 
@@ -550,7 +573,7 @@ export default function App() {
     // price mapped to it yet has nothing to order, so it's excluded here
     // even though it's fully visible in Item Catalog.
     const matches=productList.filter(i=>{
-      if(i.options.length===0) return false;
+      if(!i.options.some(orderable)) return false;
       if(orderCategoryFilter&&i.category!==orderCategoryFilter) return false;
       return itemMatchesSearch(i,search);
     });
@@ -560,6 +583,7 @@ export default function App() {
     // out-of-the-box behavior).
     const groups=new Map();
     matches.forEach(item=>{
+      item={...item,options:item.options.filter(orderable)};
       const cat=item.category;
       if(!groups.has(cat)) groups.set(cat,[]);
       groups.get(cat).push(item);
@@ -999,7 +1023,7 @@ export default function App() {
                                       <span style={{fontSize:11,fontWeight:600,color:"#94A3B8",gridColumn:"2 / 4",textAlign:"right"}}>Unavailable</span>
                                     ):(
                                       <>
-                                        <span style={{fontSize:12,fontWeight:700,textAlign:"right",whiteSpace:"nowrap"}}>{formatMoney(opt.unitPrice)}</span>
+                                        <span style={{fontSize:12,fontWeight:700,textAlign:"right",whiteSpace:"nowrap"}} title={opt.quoteBasis&&opt.quoteBasis!=="case"?`Vendor quotes ${formatMoney(opt.quotedPrice)} per ${opt.quoteUnit||"each"}; shown as one full pack`:undefined}>{formatMoney(opt.unitPrice)}</span>
                                         <span style={{fontSize:10,fontWeight:600,color:"#64748B",textAlign:"right",whiteSpace:"nowrap"}}>{rank===0?"Best":`+${formatMoney(opt.unitPrice-cheapestUnitPrice)}`}</span>
                                       </>
                                     )}
@@ -1289,7 +1313,7 @@ export default function App() {
               </div>
             )}
             <ItemCatalogPanel orgId={org.id} role={org.role} productList={productList} vendors={vendors} catalogItems={catalogItems} mappings={mappings}
-              vendorItems={vendorItems} categories={categories}
+              vendorItems={vendorItems} categories={categories} vocabulary={vocabulary}
               onUpdated={loadData} />
           </>
         )}

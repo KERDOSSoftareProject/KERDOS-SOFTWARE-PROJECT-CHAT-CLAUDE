@@ -73,6 +73,10 @@ export function createSupabaseBackend({url,anonKey}) {
           p_source_file_name:quote.sourceFileName||null,
           p_source_line:quote.sourceLine||null,
           p_source_document_id:quote.sourceDocumentId,
+          p_selling_unit:quote.sellingUnit||null,
+          p_price_basis:quote.priceBasis||null,
+          p_gtin:quote.gtin||null,
+          p_manufacturer_code:quote.manufacturerCode||null,
         }),"Apply price quotation");
       },
     },

@@ -1,4 +1,5 @@
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import {pdfTextLines} from "./core/pdf-layout.js";
 
 function localOcrPath(name="") {
   const base=String(import.meta.env.BASE_URL||"/").replace(/\/$/,"");
@@ -11,15 +12,8 @@ async function extractPdfText(file) {
   const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;
   let fullText="";
   for(let i=1;i<=pdf.numPages;i++){
-    const page=await pdf.getPage(i),content=await page.getTextContent(),lineGroups=[];
-    for(const item of content.items){
-      const y=item.transform[5],x=item.transform[4];
-      let group=lineGroups.find(candidate=>Math.abs(candidate.y-y)<3);
-      if(!group){group={y,words:[]};lineGroups.push(group);}
-      group.words.push({x,str:item.str});
-    }
-    lineGroups.sort((a,b)=>b.y-a.y);
-    for(const group of lineGroups){group.words.sort((a,b)=>a.x-b.x);fullText+=group.words.map(word=>word.str).join(" ")+"\n";}
+    const page=await pdf.getPage(i),content=await page.getTextContent();
+    fullText+=pdfTextLines(content.items).join("\n")+"\n";
   }
   if(fullText.trim().length>40)return fullText;
 

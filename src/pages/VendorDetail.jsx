@@ -1,6 +1,6 @@
 import {useState} from "react";
 import {backend} from "../backend/index.js";
-import {createCatalogService} from "../services/catalog.js";
+import {createCatalogService,mappingVerification} from "../services/catalog.js";
 import {createVendorService} from "../services/vendors.js";
 import {currencyCode,formatDate,formatMoney} from "../localization.js";
 import {btn,inp} from "../ui/styles.js";
@@ -83,7 +83,9 @@ export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,pric
     setMapBusy(true);
     const {mapping}=mappingFor(vendorItem.id);
     try{
-      await catalogService.assignVendorItem({organizationId:orgId,vendorItemId:vendorItem.id,catalogItemId:target.id,mappingId:mapping?.id||null});
+      const linked=(mappings||[]).filter(link=>link.catalog_item_id===target.id&&link.vendor_item_id!==vendorItem.id).map(link=>vendorItems.find(item=>item.id===link.vendor_item_id)).filter(Boolean);
+      const verification=mappingVerification(vendorItem,target,linked);
+      await catalogService.assignVendorItem({organizationId:orgId,vendorItemId:vendorItem.id,catalogItemId:target.id,mappingId:mapping?.id||null,verification});
       setMapEditId(null); setMapEditValue("");
       onUpdated();
     }catch(err){ setMapError(err.message); }

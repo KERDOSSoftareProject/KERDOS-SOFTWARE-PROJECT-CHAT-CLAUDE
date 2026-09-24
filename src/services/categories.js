@@ -1,6 +1,6 @@
 // Industry-neutral category and vocabulary operations. Industry knowledge is
 // stored as data; this service only copies and maintains that data for an org.
-import {classifyCategory,nextCategoryRange} from "../procurement.js";
+import {suggestCategory,nextCategoryRange} from "../procurement.js";
 
 async function run(promise,operation){
   const {data,error}=await promise;
@@ -62,7 +62,7 @@ export function createCategoryService(backend){
       if(!target)return null;
       const members=catalogItems.filter(item=>item.category_id===target.id);
       const masterItemNumber=members.length?Math.max(...members.map(item=>item.master_item_number||0))+1:(target.range_start||1);
-      await run(table("catalog_items").update({category_id:target.id,master_item_number:masterItemNumber}).eq("id",catalogItemId),"Could not move the item");
+      await run(table("catalog_items").update({category_id:target.id,master_item_number:masterItemNumber,category_review:false,category_reason:null}).eq("id",catalogItemId),"Could not move the item");
       return masterItemNumber;
     },
     async reclassifyUncategorized({catalogItems,categories}){
@@ -73,15 +73,17 @@ export function createCategoryService(backend){
       const working=[...catalogItems];
       const assignments=[];
       for(const item of stuck){
-        const target=classifyCategory(item.name,choices,working);
+        const suggested=suggestCategory(item.name,choices,working);
+        const target=suggested?.category;
         if(!target)continue;
+        const review=suggested.confidence!=="confident";
         const members=working.filter(candidate=>candidate.category_id===target.id);
         const number=members.length?Math.max(...members.map(candidate=>candidate.master_item_number||0))+1:(target.range_start||1);
         const index=working.findIndex(candidate=>candidate.id===item.id);
         if(index>=0)working[index]={...working[index],category_id:target.id,master_item_number:number};
-        assignments.push({itemId:item.id,categoryId:target.id,masterItemNumber:number});
+        assignments.push({itemId:item.id,categoryId:target.id,masterItemNumber:number,review,reason:review?suggested.reason:null});
       }
-      const results=await Promise.all(assignments.map(row=>table("catalog_items").update({category_id:row.categoryId,master_item_number:row.masterItemNumber}).eq("id",row.itemId)));
+      const results=await Promise.all(assignments.map(row=>table("catalog_items").update({category_id:row.categoryId,master_item_number:row.masterItemNumber,category_review:row.review,category_reason:row.reason}).eq("id",row.itemId)));
       const moved=results.filter(result=>!result.error).length;
       return {moved,checked:stuck.length,matchedButFailed:assignments.length-moved,firstWriteError:results.find(result=>result.error)?.error?.message||null};
     },
