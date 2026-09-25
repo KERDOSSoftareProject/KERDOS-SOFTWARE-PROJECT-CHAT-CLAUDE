@@ -5,7 +5,7 @@ import {compareProductIdentity,comparePurchasingPack,priceBasisFor} from "../pro
 // a new document with an omitted unit also quotes cases.
 export function resolveQuoteBasis(row,prior=null){
   const explicit=priceBasisFor(row.sellingUnit);
-  if(explicit)return {basis:explicit,sellingUnit:row.sellingUnit,source:row.sellingUnitSource==="remembered"?"confirmed vendor item":row.sellingUnitSource==="manual"?"manual selection":"document"};
+  if(explicit)return {basis:explicit,sellingUnit:row.sellingUnit,source:row.sellingUnitSource==="remembered"?"confirmed vendor item":row.sellingUnitSource==="manual"?"manual selection":row.sellingUnitSource==="invoice"?"invoice evidence":"document"};
   if(String(row.sellingUnit||"").trim())return null;
   if(!prior?.price_basis||!prior.selling_unit||!row.code||String(prior.vendor_item_code)!==String(row.code))return null;
   if(compareProductIdentity(row.description,prior.description).status!=="same"||

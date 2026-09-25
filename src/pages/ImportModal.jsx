@@ -1,4 +1,4 @@
-import {useEffect,useState} from "react";
+import {useEffect,useMemo,useState} from "react";
 import {backend} from "../backend/index.js";
 import {fileToText} from "../document-reader.js";
 import {findDate,findInvoiceNumber,parseDocument} from "../ingestion.js";
@@ -11,6 +11,7 @@ import {formatMoney} from "../localization.js";
 import {explainImportRow} from "../core/import-evidence.js";
 import {rememberImportRow,importResolutions,unitChoices} from "../core/catalog-fields.js";
 import {resolveQuoteBasis} from "../core/quote-basis.js";
+import {invoiceEvidence} from "../core/invoice-evidence.js";
 import {quoteContext} from "../knowledge/category-profiles.js";
 import {btn,inp} from "../ui/styles.js";
 
@@ -37,7 +38,28 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
   const [sortField,setSortField]=useState("itemNumber");
   const [sortDirection,setSortDirection]=useState(1);
   const [detailKey,setDetailKey]=useState(null);
+  const [invoiceSources,setInvoiceSources]=useState([]);
+  const [invoiceLoad,setInvoiceLoad]=useState("loading");
+  const [acceptedInvoiceConflicts,setAcceptedInvoiceConflicts]=useState(new Set());
   const quotedUnits=unitChoices(vocabulary);
+
+  useEffect(()=>{
+    if(mode!=="pricelist"||!vendorId)return;
+    let active=true;
+    setInvoiceLoad("loading");setInvoiceSources([]);setAcceptedInvoiceConflicts(new Set());
+    importService.invoiceSources(orgId,vendorId).then(invoices=>{
+      if(!active)return;
+      setInvoiceSources(invoices.flatMap(invoice=>parseDocument(invoice.raw_text||"").rows.map(row=>({
+        row,number:invoice.invoice_number,date:invoice.invoice_date,
+      }))));
+      setInvoiceLoad("ready");
+    }).catch(error=>{if(active)setInvoiceLoad(error.message||"Invoice lookup failed");});
+    return ()=>{active=false;};
+  },[mode,orgId,vendorId]);
+  const invoiceClues=useMemo(()=>new Map(parsedGroups.flatMap(group=>group.rows.map((row,index)=>
+    [`${group.id}:${index}`,invoiceEvidence(row,invoiceSources)]))),[parsedGroups,invoiceSources]);
+  const invoiceConflicts=parsedGroups.flatMap(group=>group.rows.map((row,index)=>`${group.id}:${index}`))
+    .filter(key=>invoiceClues.get(key)?.conflicts.length&&!acceptedInvoiceConflicts.has(key));
 
   async function handleDroppedFiles(files){
     const fileArr=Array.from(files||[]);
@@ -96,11 +118,14 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
   function updateParsedRow(groupId,index,patch){
     // Editing an ambiguous row invalidates a prior approval of its old value.
     setAcceptedIssues(prev=>{const next=new Set(prev);next.delete(`${groupId}:${index}`);return next;});
+    setAcceptedInvoiceConflicts(prev=>{const next=new Set(prev);next.delete(`${groupId}:${index}`);return next;});
     setParsedGroups(groups=>groups.map(g=>g.id!==groupId?g:{...g,rows:g.rows.map((r,i)=>i===index?{...r,...patch,originalFields:r.originalFields||{description:r.description,brand:r.brand,packSize:r.packSize,sellingUnit:r.sellingUnit},manualFields:[...new Set([...(r.manualFields||[]),...Object.keys(patch)])]}:r)}));
   }
   function approveIssue(groupId,index){setAcceptedIssues(prev=>new Set([...prev,`${groupId}:${index}`]));}
 
   async function doSave(){
+    if(mode==="pricelist"&&invoiceLoad==="loading"){setSaveReview("Checking existing invoices. Try again in a moment.");return;}
+    if(mode==="pricelist"&&invoiceConflicts.length){setSaveReview(`${invoiceConflicts.length} price-sheet row(s) disagree with invoices. Open Details and review each difference before saving.`);return;}
     if(missingInvoiceDates.length){setSaveReview("Confirm the invoice date for each document before recording invoice charges.");return;}
     if(unsafeDocuments.length){setSaveReview("This file identifies itself as an invoice and/or a price update inconsistent with the selected import mode. Split mixed documents, or select the correct mode before saving.");return;}
     if(mode==="invoice"&&needsReview.length){setSaveReview(`${needsReview.length} ambiguous row(s) still need a deliberate correction or approval. No unreviewed amount will change a current vendor quote.`);return;}
@@ -496,13 +521,14 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
             {!g.invoiceDate&&<span style={{color:"#B26A00"}}> Required</span>}
           </label>)}
           {unsafeDocuments.length>0&&<div style={{background:"#FFEBEE",color:"#B71C1C",padding:10,marginBottom:10,fontSize:12}}>Document type mismatch or mixed invoice and price update: {unsafeDocuments.map(g=>g.name).join(", ")}. Separate the sections, or switch the import type. Nothing from these documents will be saved until resolved.</div>}
+          {mode==="pricelist"&&<div style={{background:invoiceLoad==="ready"?"#E8F5E9":"#FFF3E0",padding:9,marginBottom:8,fontSize:12}}>{invoiceLoad==="ready"?`${invoiceSources.length} invoice line(s) available for cross-reference. Invoice amounts do not replace quoted prices.`:invoiceLoad==="loading"?"Checking this vendor's invoices before applying the price sheet…":`Invoice cross-reference unavailable: ${invoiceLoad}. Check invoice history before relying on this import.`}</div>}
           {mode==="pricelist"&&<div style={{overflowX:"auto",marginBottom:12}}>
             <table style={{borderCollapse:"collapse",width:"100%",minWidth:850,fontSize:11}}><thead><tr>
               {[["itemNumber","KERDOS item #"],["vendor","Vendor"],["category","Category"],["product","Product"],["brand","Brand"],["pack","Pack"],["price","Quoted price"],["sellingUnit","Quoted per"],["unitCost","Unit cost"]].map(([key,label])=><th key={key} style={{textAlign:"left",padding:6,borderBottom:"1px solid #ccd"}}><button onClick={()=>{setSortDirection(sortField===key?-sortDirection:1);setSortField(key);}} style={{background:"none",border:0,cursor:"pointer",fontWeight:700}}>{label} {sortField===key?(sortDirection===1?"↑":"↓"):""}</button></th>)}
               <th>Details</th></tr></thead><tbody>{evidenceRows.map(({evidence,key,row,group,index})=><tr key={key}>{["itemNumber","vendor","category","product","brand","pack","price","sellingUnit","unitCost"].map(name=>{
                 const f=evidence[name];return <td key={name} title={f.reason} style={{padding:6,borderBottom:"1px solid #eee",whiteSpace:"nowrap"}}>{name==="category"?<select aria-label={`Category for ${row.description}`} value={row.categoryId||""} onChange={e=>updateParsedRow(group.id,index,{categoryId:e.target.value||null})} style={{...inp,fontSize:11,minWidth:115,padding:4}}><option value="">{f.value||"Uncategorized"}{f.accuracy===75?" (suggested)":""}</option>{categories.filter(c=>!c.is_holding_pen).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>:name==="price"?<input aria-label={`Quoted price for ${row.description}`} type="number" min="0" step="any" value={row.priceUnavailable?"":row.price??""} onChange={e=>updateParsedRow(group.id,index,{price:e.target.value===""?null:Number(e.target.value),priceUnavailable:e.target.value==="",priceEdited:true})} style={{...inp,fontSize:11,width:86,padding:4}} />:name==="product"?<input aria-label={`Product for ${row.code||row.description}`} disabled={evidence.knownItem} value={evidence.knownItem?evidence.product.value:row.description||""} onChange={e=>updateParsedRow(group.id,index,{description:e.target.value})} style={{...inp,fontSize:11,width:210,padding:4}} />:name==="brand"?<input aria-label={`Brand for ${row.description}`} disabled={evidence.knownItem} value={evidence.knownItem?evidence.brand.value||"":row.brand||""} placeholder="Blank if absent" onChange={e=>updateParsedRow(group.id,index,{brand:e.target.value})} style={{...inp,fontSize:11,width:110,padding:4}} />:name==="pack"?<input aria-label={`Pack for ${row.description}`} disabled={evidence.knownItem} value={evidence.knownItem?evidence.pack.value||"":row.packSize||""} placeholder="e.g. 4/10 LB" onChange={e=>updateParsedRow(group.id,index,{packSize:e.target.value})} style={{...inp,fontSize:11,width:105,padding:4}} />:name==="sellingUnit"?<><select aria-label={`Quoted price per unit for ${row.description}`} disabled={evidence.knownItem&&!!f.value} value={evidence.knownItem?f.value||"":row.sellingUnit||""} onChange={e=>updateParsedRow(group.id,index,{sellingUnit:e.target.value,sellingUnitSource:"manual"})} style={{...inp,fontSize:11,width:105,padding:4}}><option value="">{f.value?`Likely ${f.value}`:"Select unit"}</option>{quotedUnits.map(unit=><option key={unit.value} value={unit.value}>{unit.label}</option>)}</select>{!evidence.knownItem&&!row.sellingUnit&&f.value&&<button title={f.reason} onClick={()=>updateParsedRow(group.id,index,{sellingUnit:f.value,sellingUnitSource:"manual"})} style={{border:0,background:"#FFF3E0",color:"#875200",fontSize:10,cursor:"pointer"}}>Use {f.value}</button>}</>:f.value==null?name==="itemNumber"?"New number on save":"—":name==="price"||name==="unitCost"?formatMoney(f.value):f.value}{name==="unitCost"&&f.value!=null&&evidence.pack.value&&<small style={{display:"block"}}>per {evidence.unitCost.unit||"unit"}</small>}{f.accuracy!=null&&<small style={{display:"block",color:f.accuracy<100?"#a65b00":"#45735b"}}>{f.accuracy}%</small>}</td>;
-              })}<td><button onClick={()=>setDetailKey(detailKey===key?null:key)}>Details</button></td></tr>)}</tbody></table>
-            {detailKey&&(()=>{const entry=evidenceRows.find(e=>e.key===detailKey);if(!entry)return null;return <div style={{background:"#f4f6fa",padding:12,marginTop:8,fontSize:12}}><b>{entry.evidence.knownItem?"Known vendor item — saved KERDOS link, updating price":"New or unfinished item — resolve fields"} · {entry.group.name}</b><div style={{marginTop:4}}>Source: {entry.evidence.source}</div>{entry.evidence.conflicts?.length>0&&<div style={{color:"#9B4400"}}>New quote held for review: {entry.evidence.conflicts.join(" ")}</div>}{["itemNumber","vendor","category","product","brand","pack","price","priceBasis","unitCost"].map(name=><div key={name} style={{marginTop:5}}><b>{name}:</b> {entry.evidence[name].value??"blank"} · {entry.evidence[name].accuracy??"not stated"}% — {entry.evidence[name].reason}</div>)}<div style={{marginTop:7}}>Percentages are rule-based evidence levels, not measured error probabilities.</div></div>;})()}
+              })}<td><button onClick={()=>setDetailKey(detailKey===key?null:key)}>Details{invoiceClues.get(key)?.conflicts.length?" ⚠":""}</button></td></tr>)}</tbody></table>
+            {detailKey&&(()=>{const entry=evidenceRows.find(e=>e.key===detailKey);if(!entry)return null;const clues=invoiceClues.get(detailKey);return <div style={{background:"#f4f6fa",padding:12,marginTop:8,fontSize:12}}><b>{entry.evidence.knownItem?"Known vendor item — saved KERDOS link, updating price":"New or unfinished item — resolve fields"} · {entry.group.name}</b><div style={{marginTop:4}}>Source: {entry.evidence.source}</div>{entry.evidence.conflicts?.length>0&&<div style={{color:"#9B4400"}}>New quote held for review: {entry.evidence.conflicts.join(" ")}</div>}{clues?.matches.length>0&&<div style={{marginTop:7}}>Matched {clues.matches.length} prior invoice line(s) for this vendor.</div>}{Object.entries(clues?.suggestions||{}).map(([field,suggestion])=><div key={field} style={{marginTop:5}}>Invoice {suggestion.source} says {field}: <b>{suggestion.value}</b> <button onClick={()=>updateParsedRow(entry.group.id,entry.index,{[field]:suggestion.value,[`${field}Source`]:"invoice",invoiceSources:{...entry.row.invoiceSources,[field]:suggestion.source},originalFields:entry.row.originalFields||{description:entry.row.description,brand:entry.row.brand,packSize:entry.row.packSize,sellingUnit:entry.row.sellingUnit}})}>Use invoice value</button></div>)}{clues?.conflicts.map((conflict,index)=><div key={index} style={{color:"#9B4400",marginTop:5}}>{conflict}</div>)}{!!clues?.conflicts.length&&<button onClick={()=>setAcceptedInvoiceConflicts(prev=>new Set([...prev,detailKey]))} disabled={acceptedInvoiceConflicts.has(detailKey)} style={{marginTop:6}}>{acceptedInvoiceConflicts.has(detailKey)?"Invoice difference reviewed":"Keep sheet value after review"}</button>}{["itemNumber","vendor","category","product","brand","pack","price","priceBasis","unitCost"].map(name=><div key={name} style={{marginTop:5}}><b>{name}:</b> {entry.evidence[name].value??"blank"} · {entry.evidence[name].accuracy??"not stated"}% — {entry.evidence[name].reason}</div>)}<div style={{marginTop:7}}>Percentages are rule-based evidence levels, not measured error probabilities.</div></div>;})()}
           </div>}
           {missingPriceBasis.length>0&&<div style={{background:"#FFF3E0",padding:9,fontSize:12,marginBottom:8}}>{missingPriceBasis.length} priced item(s) have no proven selling unit. They can still be imported and categorized. Their quoted amounts will stay unavailable for ordering and unit-cost calculation until each basis is resolved.</div>}
           {mode==="pricelist"&&parsedGroups.some(g=>g.rows.some(row=>quoteContext(row,g.rows)))&&<button onClick={()=>setParsedGroups(groups=>groups.map(g=>({...g,rows:g.rows.map(row=>{const suggestion=quoteContext(row,g.rows);const prior=vendorItems.find(vi=>vi.vendor_id===vendorId&&String(vi.vendor_item_code)===String(row.code));const mapped=prior&&mappings.some(m=>m.vendor_item_id===prior.id&&m.comparison_track==="exact"&&m.confidence_score===100);return suggestion&&!mapped?{...row,sellingUnit:suggestion.sellingUnit,sellingUnitSource:"manual",manualFields:[...new Set([...(row.manualFields||[]),"sellingUnit"])],originalFields:row.originalFields||{description:row.description,brand:row.brand,packSize:row.packSize,sellingUnit:row.sellingUnit}}:row;})})))} style={{...btn("#FFF3E0","#875200",{fontSize:11,marginBottom:10})}}>Apply supported price-unit suggestions after reviewing their reasons</button>}
@@ -551,7 +577,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           {saveReview&&<div style={{color:"#B71C1C",fontSize:12,marginBottom:8}}>{saveReview}</div>}
           <div style={{display:"flex",gap:8}}>
             <button onClick={()=>setStep(1)} style={{...btn("#EEE","#555"),flex:1}}>← Back</button>
-            <button onClick={doSave} disabled={loading||!allRows.length||unsafeDocuments.length>0||(mode==="invoice"&&needsReview.length>0)||missingInvoiceDates.length>0} style={{...btn("#003584"),flex:2}}>
+            <button onClick={doSave} disabled={loading||!allRows.length||unsafeDocuments.length>0||(mode==="invoice"&&needsReview.length>0)||missingInvoiceDates.length>0||(mode==="pricelist"&&(invoiceLoad==="loading"||invoiceConflicts.length>0))} style={{...btn("#003584"),flex:2}}>
               {loading?"Saving...":mode==="invoice"?`Save ${parsedGroups.filter(g=>g.rows.length).length} invoice${parsedGroups.filter(g=>g.rows.length).length===1?"":"s"}`:"Save "+allRows.length+" items"}
             </button>
           </div>
