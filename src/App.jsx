@@ -571,6 +571,7 @@ export default function App() {
     const set=new Set(productList.filter(i=>i.options.some(orderable)).map(p=>p.category));
     return [...set].sort((a,b)=>a.localeCompare(b));
   },[productList]);
+  const readyOrderCount=productList.filter(item=>item.options.some(orderable)).length;
 
   const filtered=useMemo(()=>{
     // Order Guide is for ORDERING - a client-created item with no vendor
@@ -803,6 +804,7 @@ export default function App() {
               }
             `}</style>
             <main style={{flex:1,minWidth:0}}>
+              <div style={{color:"white",fontSize:13,fontWeight:700,marginBottom:10}}>Order Guide · All vendors · {readyOrderCount} ready item{readyOrderCount===1?"":"s"}</div>
               {vendors.length>0&&(
                 <div style={{marginBottom:14}}>
                   <div style={{fontSize:11,fontWeight:700,color:"rgba(255,255,255,0.65)",letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:8}}>Your Vendors — tap for details</div>
@@ -859,6 +861,14 @@ export default function App() {
                   <h3 style={{margin:"0 0 8px"}}>No items yet</h3>
                   <p style={{color:"#888",fontSize:14,margin:"0 0 16px"}}>Import a vendor price list to get started</p>
                   <button onClick={()=>setTab("priceSheets")} style={{...btn("#003584")}}>Import Price Sheet</button>
+                </div>
+              )}
+
+              {productList.length>0&&filtered.length===0&&(
+                <div style={{background:"white",borderRadius:10,padding:24,color:"#24436B",marginBottom:12}}>
+                  <b>{search||orderCategoryFilter?"No ready items match this filter":"Your Order Guide has no ready items yet"}</b>
+                  <p style={{margin:"8px 0",fontSize:13}}>{search||orderCategoryFilter?"Clear the search or choose Full List to see all ready items.":"Imported invoice items and vendor listings appear in Item Catalog first. Confirm the product, pack, association and quoted price there; ready items from every vendor then appear here together."}</p>
+                  {search||orderCategoryFilter?<button onClick={()=>{setSearch("");setOrderCategoryFilter("");}} style={btn("#003584")}>Show Full List</button>:<button onClick={()=>setTab("catalog")} style={btn("#003584")}>Open Item Catalog</button>}
                 </div>
               )}
 

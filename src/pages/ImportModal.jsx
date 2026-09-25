@@ -32,6 +32,8 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
   const [result,setResult]=useState(null);
   const [dragOver,setDragOver]=useState(false);
   const [fileBusy,setFileBusy]=useState(false);
+  const [parsing,setParsing]=useState(false);
+  const [parseError,setParseError]=useState("");
   const [acceptedIssues,setAcceptedIssues]=useState(new Set());
   const [saveReview,setSaveReview]=useState("");
   const [autoSaveStarted,setAutoSaveStarted]=useState(false);
@@ -63,16 +65,18 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
 
   async function handleDroppedFiles(files){
     const fileArr=Array.from(files||[]);
-    if(!fileArr.length) return;
+    if(!fileArr.length||fileBusy||parsing) return;
     setFileBusy(true);
     try{
       const newGroups=await Promise.all(fileArr.map(async file=>{
         const text=await fileToText(file);
         return {id:`${file.name}_${file.size}_${Date.now()}_${Math.random()}`,file,name:file.name,text};
       }));
-      setFileGroups(prev=>[...prev,...newGroups]);
+      const combined=[...fileGroups,...newGroups];
+      setFileGroups(combined);
+      await parseSources(combined,pastedText);
     }catch(err){
-      alert(err.message);
+      setParseError(`Could not read the file: ${err.message||String(err)}`);
     }
     setFileBusy(false);
   }
@@ -81,22 +85,38 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
     setFileGroups(prev=>prev.filter(g=>g.id!==id));
   }
 
-  function doParse(){
+  async function parseSources(files,text){
     // Every dropped/selected file is parsed on its own — never merged into
     // one blob of raw text — since two different vendor documents can use
     // completely different table structures. A pasted blob (if any) is
     // treated as one more independent document, the same way.
-    const docs=[...fileGroups];
-    if(pastedText.trim().length>0){
-      docs.push({id:"pasted",file:null,name:"Pasted text",text:pastedText});
-    }
-    const groups=docs.map(d=>{
-      const parsed=parseDocument(d.text);
-      return {...d,rows:parsed.rows,skipped:parsed.skipped,documentKind:parsed.documentKind,quoteValidUntil:parsed.quoteValidUntil,invoiceDate:findDate(d.text)||""};
-    });
-    setParsedGroups(groups);
-    setStep(2);
+    setParseError("");setParsing(true);
+    // Yield once so the progress message renders before a large document is read.
+    await new Promise(resolve=>setTimeout(resolve,0));
+    try{
+      const docs=[...files];
+      if(text.trim().length>0){
+        docs.push({id:"pasted",file:null,name:"Pasted text",text});
+      }
+      const groups=[];
+      for(const d of docs){
+        try{
+          const parsed=parseDocument(d.text);
+          groups.push({...d,rows:parsed.rows,skipped:parsed.skipped,documentKind:parsed.documentKind,quoteValidUntil:parsed.quoteValidUntil,invoiceDate:findDate(d.text)||""});
+        }catch(error){throw new Error(`${d.name}: ${error.message||String(error)}`);}
+        await new Promise(resolve=>setTimeout(resolve,0));
+      }
+      if(!groups.some(group=>group.rows.length)){
+        setParseError(`No product rows could be read from ${docs.map(d=>d.name).join(", ")}. Check that the file contains item lines, or paste a sample of its text for review.`);
+        return;
+      }
+      setParsedGroups(groups);
+      setStep(2);
+    }catch(error){setParseError(`Could not parse the document: ${error.message||String(error)}`);}
+    finally{setParsing(false);}
   }
+
+  function doParse(){void parseSources(fileGroups,pastedText);}
 
   const allRows=parsedGroups.flatMap(g=>g.rows.map(row=>({...row,_source:g.name})));
   const evidenceRows=parsedGroups.flatMap(g=>g.rows.map((row,index)=>({row,group:g,index,key:`${g.id}:${index}`,
@@ -487,7 +507,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
               <input type="file" multiple accept=".csv,.txt,.tsv,.xlsx,.xls,.pdf,.eml,.html,.htm"
                 onChange={e=>{handleDroppedFiles(e.target.files);e.target.value="";}}
                 style={{fontSize:12}} />
-              {fileBusy&&<div style={{position:"absolute",inset:0,background:"rgba(255,255,255,0.85)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"#003584",fontWeight:700,borderRadius:8}}>Reading file...</div>}
+              {(fileBusy||parsing)&&<div style={{position:"absolute",inset:0,background:"rgba(255,255,255,0.85)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"#003584",fontWeight:700,borderRadius:8}}>{parsing?"Reading item rows…":"Reading file…"}</div>}
             </div>
             {fileGroups.length>0&&(
               <div style={{marginTop:8}}>
@@ -505,11 +525,11 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
             <textarea
               style={{...inp,height:120,resize:"vertical",fontFamily:"monospace",fontSize:12}}
               value={pastedText} onChange={e=>setPastedText(e.target.value)}
+              onPaste={e=>{const pasted=e.clipboardData.getData("text");if(pasted.trim().length>=10){e.preventDefault();setPastedText(pasted);void parseSources(fileGroups,pasted);}}}
               placeholder="Copy from Excel, email, PDF — paste here..." />
           </div>
-          <button onClick={doParse} disabled={fileGroups.length===0 && pastedText.trim().length<10} style={{...btn("#003584"),width:"100%"}}>
-            Parse {fileGroups.length>0?`${fileGroups.length} file${fileGroups.length>1?"s":""}`+(pastedText.trim()?" + pasted text":""):"pasted text"}
-          </button>
+          {parseError&&<div role="alert" style={{background:"#FFEBEE",color:"#B71C1C",padding:10,marginBottom:9,fontSize:12}}>{parseError}</div>}
+          {pastedText.trim().length>=10&&<button onClick={doParse} disabled={fileBusy||parsing} style={{...btn("#003584"),width:"100%"}}>{parsing?"Reading item rows…":"Review pasted text"}</button>}
         </>}
 
         {step===2&&<>
