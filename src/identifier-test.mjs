@@ -1,13 +1,25 @@
 import assert from "node:assert/strict";
-import {normalizeGtin,normalizeManufacturerCode,packFromDescription,abbreviationPairs,isAbbreviationOf,configureVocabulary,compareProductIdentity,parsePackSize,comparePurchasingPack} from "./procurement.js";
+import {normalizeGtin,normalizeManufacturerCode,packFromDescription,abbreviationPairs,isAbbreviationOf,configureVocabulary,compareProductIdentity,parsePackSize,comparePurchasingPack,bestInvoiceMatch,assertKnownPriceBasis} from "./procurement.js";
 const packTail=packFromDescription;
 import {parseDocument} from "./ingestion.js";
 import {identifierMatch,mappingGap,createCatalogService,engineVerifiable} from "./services/catalog.js";
 import {suggestCategory} from "./procurement.js";
 import {createCategoryService} from "./services/categories.js";
+import {configureCategoryProfile} from "./knowledge/category-profiles.js";
 
 let passed=0;
 const test=async(name,fn)=>{try{await fn();passed++;}catch(err){console.error(`FAIL ${name}`);throw err;}};
+await test("an invoice cannot pick arbitrarily between equally plausible listings",()=>{
+  assert.equal(bestInvoiceMatch("American cheese",[
+    {id:"v1",description:"American cheese"},{id:"v2",description:"American cheese"}]),null);
+  assert.equal(bestInvoiceMatch("American cheese",[{id:"v1",description:"American cheese"}])?.vendorItem.id,"v1");
+});
+await test("an explicit unknown selling unit cannot become a case quote",()=>{
+  assert.throws(()=>assertKnownPriceBasis("mystery unit"),/Unknown selling unit/);
+  assert.equal(assertKnownPriceBasis("LB")?.basis,"measure");
+  assert.equal(assertKnownPriceBasis("CASE")?.basis,"case");
+  assert.equal(assertKnownPriceBasis(null),null);
+});
 
 // --- identifiers ---
 await test("valid UPC-A and EAN-13 normalize to a 14-digit GTIN",()=>{
@@ -160,6 +172,20 @@ await test("a tie between categories is still placed, as a guess naming both",()
   assert.equal(s.confidence,"guess");assert.match(s.reason,/Meat & Poultry and Dairy & Eggs/);
 });
 await test("nothing resembling anything goes to the holding pen",()=>assert.equal(suggestCategory("WIDGET XYZ",cats,examples),null));
+await test("prepared vegetables are reviewed outside Produce while fresh vegetables remain Produce",()=>{
+  configureCategoryProfile("Restaurant");
+  const restaurant=[{id:"produce",name:"Produce",keywords:["potato","eggplant","artichoke"]},{id:"general",name:"General",keywords:["fries","frozen","canned"]}];
+  assert.equal(suggestCategory("BREADED EGGPLANT",restaurant,[]).category.id,"general");
+  assert.equal(suggestCategory("SWEET POTATO FRIES",restaurant,[]).category.id,"general");
+  assert.equal(suggestCategory("FRESH EGGPLANT",restaurant,[]).category.id,"produce");
+  assert.equal(suggestCategory("CANNED ARTICHOKE HEARTS",restaurant,[]).category.id,"general");
+  assert.equal(suggestCategory("FRESH ARTICHOKE HEARTS",restaurant,[]).category.id,"produce");
+  assert.equal(suggestCategory("BREADED EGGPLANT",restaurant,[]).confidence,"guess");
+  const better=[...restaurant,{id:"prepared",name:"Prepared Foods",keywords:["breaded","fries"]}];
+  assert.equal(suggestCategory("SWEET POTATO FRIES",better,[]).category.id,"prepared");
+  configureCategoryProfile(null);
+  assert.equal(suggestCategory("BREADED EGGPLANT",restaurant,[]).category.id,"produce","other industries do not inherit restaurant rules");
+});
 await test("matchOrCreate files a new product under its best guess with the review flag",async()=>{
   const inserted=[];
   const query=name=>({insert:row=>({select:()=>({single:()=>{inserted.push({table:name,row});return Promise.resolve({data:{id:"new",...row},error:null});}})})});

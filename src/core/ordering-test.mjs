@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {blockReason,orderable,priceForOffer,solveOrder} from "./ordering.js";
+import {blockReason,orderable,priceForOffer,rankVendorOffers,solveOrder} from "./ordering.js";
 const option=(vendorId,price,extra={})=>({vendorId,vendorName:vendorId,vendorItemId:`${vendorId}-item`,price,packSize:"1 CT",matchTrack:"exact",matchConfidence:100,...extra});
 assert.equal(orderable(option("a",10)),true);
 assert.equal(orderable(option("a",10,{matchTrack:"new"})),false);
@@ -23,8 +23,14 @@ assert.deepEqual(split.map(line=>[line.assignedVendorId,line.quantity,line.lineT
 const quotes=[{...option("a",12),casePrice:12,eachPrice:3},{...option("b",10),casePrice:10,eachPrice:2}];
 const agreement={vendorId:"a",price:8};
 assert.equal(priceForOffer(quotes[0],agreement),8);
+assert.equal(priceForOffer(quotes[0],{a:8,b:9}),8);
+assert.equal(priceForOffer(quotes[1],{a:8,b:9}),9,"every vendor keeps its own agreed price");
 assert.equal(priceForOffer(quotes[1],agreement),10,"another vendor must retain its own quote");
 assert.equal(priceForOffer(quotes[0],null,"each"),3,"an each quote is unchanged without its own agreement");
+const ranked=rankVendorOffers([{...option("minores",55.9),casePrice:55.9},{...option("cityline",56.9),casePrice:56.9},{...option("mina",57),casePrice:57}],null);
+assert.deepEqual(ranked.map(o=>[o.vendorId,o.difference]),[["minores",0],["cityline",1],["mina",1.1]]);
+const customRank=rankVendorOffers(ranked,{cityline:54.5,mina:57});
+assert.deepEqual(customRank.map(o=>[o.vendorId,o.difference]),[["cityline",0],["minores",1.4],["mina",2.5]]);
 const reranked=solveOrder([{catalogItemId:"cheese",quantity:1,options:quotes.map(o=>({...o,price:priceForOffer(o,agreement)}))}],[])[0];
 assert.equal(reranked.assignedVendorId,"a","the agreed vendor becomes the winner when its price is lowest");
 const chosen=solveOrder([{catalogItemId:"cheese",quantity:1,forcedVendorId:"b",options:quotes.map(o=>({...o,price:priceForOffer(o,agreement)}))}],[])[0];

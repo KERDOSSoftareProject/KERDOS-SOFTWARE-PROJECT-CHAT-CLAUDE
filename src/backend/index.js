@@ -14,6 +14,7 @@ function unconfigured(reason){
     documents:{upload:fail,signedUrl:fail,remove:fail},
     realtime:{subscribeToOrganization:()=>()=>{}},
     pricing:{applyQuote:fail},
+    catalog:{saveRow:fail},
     invoices:{record:fail},
     team:{acceptInvite:fail},
     records:{query:()=>{throw new Error(reason);}},

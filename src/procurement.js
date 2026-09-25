@@ -1,5 +1,6 @@
 // KERDOS deterministic procurement primitives.
 // Pure functions only: no UI, database, client, vendor, or industry assumptions.
+import {categoryContext} from "./knowledge/category-profiles.js";
 
 // One named place for the auto-link cutoff instead of the same magic
 // number repeated at each call site. At or above this score two
@@ -120,6 +121,7 @@ function classifyCategory(description, categories=[], catalogItems=[]) {
   if (!descWords.length) return null;
   const scored=[];
   for (const category of categories) {
+    if(category.is_holding_pen)continue;
     let vocabularyScore=0;
     let longestPhrase=0;
     const vocabulary=[category.name,...(Array.isArray(category.keywords)?category.keywords:[])].filter(Boolean);
@@ -155,6 +157,9 @@ function classifyCategory(description, categories=[], catalogItems=[]) {
 // shares a defining word with the product. Anything weaker is null and
 // the item goes to the holding pen as before.
 function suggestCategory(description, categories=[], catalogItems=[]) {
+  const contextWords=normalizeForMatch(description);
+  const contextualPlacement=categoryContext(contextWords,categories);
+  if (contextualPlacement) return contextualPlacement;
   const confident=classifyCategory(description,categories,catalogItems);
   if (confident) return {category:confident,confidence:"confident",reason:"Vocabulary and existing items point here"};
   const descWords=normalizeForMatch(description);
@@ -229,7 +234,8 @@ function parsePackSize(raw) {
       eachStr:`1 ${unit}`,caseStr:outerQty>1?`${outerQty}/1 ${unit}`:`1 ${unit}`};
   }
   const clean=working.replace(/[×x]/g,"x").replace(/(\d)\s*[-]\s*(?=\d)/g,"$1/").replace(/#/g," lb ").replace(/\s+/g," ").trim();
-  const number="(\\d+(?:\\.\\d+)?)";
+  // Vendor packs routinely omit the leading zero: 200/.5 OZ, 4/.5 GAL.
+  const number="((?:\\d+(?:\\.\\d+)?|\\.\\d+))";
   // A known unit (any number of words, longest first) is preferred; an
   // unknown single word is still accepted as a unit of its own.
   const unit=`(${UNIT_ALTERNATION}|[a-z]+)`;
@@ -385,7 +391,7 @@ function packFromDescription(description){
 // price of one full pack, so every quote is converted to that basis
 // before it is compared, and a quote that cannot be converted is held
 // for review rather than compared on the wrong footing.
-const CASE_WORDS=new Set(["cs","case","cases","cse","bx","box","boxes","pk","pack","packs","ct","ctn","carton","cartons","pallet","pallets","bag","bags","bdl","bundle","roll","rolls","tray","trays","dz","doz","dozen","flat","flats","sleeve","sleeves","tub","tubs","pail","pails","jug","jugs","drum","drums","cn","can","cans","jar","jars","btl","bottle","bottles","kit","kits"]);
+const CASE_WORDS=new Set(["cs","case","cases","cse","bx","box","boxes","pk","pack","packs","ct","ctn","carton","cartons","pallet","pallets","bag","bags","bdl","bundle","roll","rolls","tray","trays","flat","flats","sleeve","sleeves","tub","tubs","pail","pails","jug","jugs","drum","drums","cn","can","cans","jar","jars","btl","bottle","bottles","kit","kits"]);
 const EACH_WORDS=new Set(["ea","each","pc","pcs","piece","pieces","un","unit","units","hd","head","heads","bn","bunch","bunches","lp","loaf","loaves"]);
 
 function priceBasisFor(sellingUnit){
@@ -398,6 +404,13 @@ function priceBasisFor(sellingUnit){
   // Built-in units and units the organization taught KERDOS both count.
   if(UNIT_LOOKUP.has(key)) return {basis:"measure",unit:normalizeUnit(key)};
   return null;
+}
+
+function assertKnownPriceBasis(sellingUnit){
+  const basis=priceBasisFor(sellingUnit);
+  if(String(sellingUnit||"").trim()&&!basis)
+    throw new Error(`Unknown selling unit "${sellingUnit}"; the quote was not applied. Teach KERDOS the unit or correct this row.`);
+  return basis;
 }
 
 // Price of one full pack from a quote on any basis. A quote with no
@@ -587,13 +600,16 @@ function bestPurchasingSuggestion(description,packSize,catalogItems=[]){
 }
 
 function bestInvoiceMatch(description,candidates=[],threshold=MATCH_POLICY.autoLink) {
-  let best=null,bestScore=0;
+  const ranked=[];
   for(const candidate of candidates){
     if(!candidate?.description||compareProductIdentity(description,candidate.description).status!=="same") continue;
     const score=safeProductScore(description,candidate.description);
-    if(score>=threshold&&score>bestScore){best=candidate;bestScore=score;}
+    if(score>=threshold)ranked.push({vendorItem:candidate,score});
   }
-  return best?{vendorItem:best,score:bestScore}:null;
+  ranked.sort((a,b)=>b.score-a.score);
+  // Similarity cannot select a winner between two credible vendor products.
+  if(ranked.length>1&&ranked[0].score-ranked[1].score<0.05)return null;
+  return ranked[0]||null;
 }
 
 // A current quotation is NOT a past invoice charge. Expiry can be client-
@@ -623,5 +639,5 @@ export {
   MATCH_POLICY, UNIT_DEFINITIONS, configureVocabulary, normalizeUnit, measurement, parsePackSize, packsEquivalent, normalizedPrice, eachPrice,
   unitsForDimension, pricePerUnit, brandsMatch, priceBasisFor, casePriceFromQuote, quotePriceOnBasis, normalizeGtin, normalizeManufacturerCode, packFromDescription, isAbbreviationOf, abbreviationPairs,
   normalizeForMatch, wordsMatch, classifyCategory, suggestCategory, nextCategoryRange,
-  safeProductScore, productIdentity, compareProductIdentity, comparePurchasingPack, bestPurchasingMatch, bestPurchasingSuggestion, quoteStatus, bestCatalogMatch, bestInvoiceMatch,
+  safeProductScore, productIdentity, compareProductIdentity, comparePurchasingPack, bestPurchasingMatch, bestPurchasingSuggestion, quoteStatus, bestCatalogMatch, bestInvoiceMatch, assertKnownPriceBasis,
 };

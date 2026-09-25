@@ -39,7 +39,13 @@ assert.equal(classifyCategory("Plywood 4x8",[{id:"lumber",name:"Lumber",keywords
 const next=await service.assignItem({catalogItemId:"i2",categoryId:"c1",catalogItems:[{id:"i1",category_id:"c1",master_item_number:1000}],categories:[{id:"c1",range_start:1000}]});
 assert.equal(next,1001);
 assert.deepEqual(calls.at(-1).update,{category_id:"c1",master_item_number:1001,category_review:false,category_reason:null});
+const retained=await service.assignItem({catalogItemId:"i2",categoryId:"c1",catalogItems:[{id:"i2",category_id:"h",master_item_number:9001}],categories:[{id:"h",is_holding_pen:true},{id:"c1",range_start:1000}]});
+assert.equal(retained,9001,"moving a row keeps its client item number");
+assert.deepEqual(calls.at(-1).update,{category_id:"c1",category_review:false,category_reason:null});
 const moved=await service.reclassifyUncategorized({catalogItems:[{id:"i3",name:"Paper Towels",category_id:"h"}],categories:[{id:"h",is_holding_pen:true},{id:"c1",keywords:["paper"],range_start:1000}]});
 assert.equal(moved.moved,1);
 assert.equal(moved.checked,1);
+const retainedByEngine=await service.reclassifyUncategorized({catalogItems:[{id:"i4",name:"Paper Towels",category_id:"h",master_item_number:9002}],categories:[{id:"h",is_holding_pen:true},{id:"c1",keywords:["paper"],range_start:1000}]});
+assert.equal(retainedByEngine.moved,1);
+assert.equal(calls.at(-1).update.master_item_number,undefined);
 console.log("KERDOS provider-neutral category-service tests passed");

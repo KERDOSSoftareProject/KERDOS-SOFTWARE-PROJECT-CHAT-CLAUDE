@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import {priceBasisFor,casePriceFromQuote,quotePriceOnBasis,configureVocabulary} from "./procurement.js";
+import {priceBasisFor,casePriceFromQuote,quotePriceOnBasis,configureVocabulary,parsePackSize} from "./procurement.js";
 import {readyToConfirm,createCatalogService} from "./services/catalog.js";
 
 let passed=0;
 const test=async(name,fn)=>{try{await fn();passed++;}catch(err){console.error(`FAIL ${name}`);throw err;}};
+await test("vendor packs without a leading zero still resolve their measurement",()=>{
+  assert.equal(parsePackSize("200/.5OZ")?.total,100);
+  assert.equal(parsePackSize("4/.5 GAL")?.total,2);
+});
 
 // --- basis recognition: what the vendor's selling unit means ---
 await test("case words",()=>{for(const w of ["CS","case","Bx","PK","CT","cs."])assert.equal(priceBasisFor(w).basis,"case",w);});

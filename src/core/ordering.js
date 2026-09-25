@@ -25,7 +25,17 @@ export function blockReason(option){
 // separate explicit override.
 export function priceForOffer(option,negotiation,unit="case"){
   const quoted=unit==="each"?option.eachPrice:option.casePrice;
-  return negotiation?.vendorId===option.vendorId&&Number.isFinite(negotiation.price)&&negotiation.price>0?negotiation.price:quoted;
+  const agreed=negotiation?.vendorId===option.vendorId?negotiation.price:negotiation?.[option.vendorId];
+  return Number.isFinite(agreed)&&agreed>0?agreed:quoted;
+}
+
+// The same ranking drives the menu, savings display and chosen vendor.
+// Blocked quotations remain visible but never establish the best price.
+export function rankVendorOffers(options,negotiations,unit="case"){
+  const ranked=options.map(option=>({...option,unitPrice:priceForOffer(option,negotiations,unit)}))
+    .sort((a,b)=>Number(!orderable(a))-Number(!orderable(b))||a.unitPrice-b.unitPrice);
+  const best=ranked.find(orderable)?.unitPrice??null;
+  return ranked.map(option=>({...option,difference:orderable(option)&&best!=null?money(option.unitPrice-best):null}));
 }
 
 export function solveOrder(cartItems,vendors){

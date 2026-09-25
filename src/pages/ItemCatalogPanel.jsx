@@ -1,8 +1,11 @@
 import {useMemo,useState} from "react";
+import {createCatalogRowsService} from "../services/catalog-rows.js";
+import {CatalogRows} from "./CatalogRows.jsx";
+import {unitChoices} from "../core/catalog-fields.js";
 import {backend} from "../backend/index.js";
 import {createCatalogService,mappingVerification,readyToConfirm,engineVerifiable,mappingGap,GAP_LABELS} from "../services/catalog.js";
 import {createCategoryService} from "../services/categories.js";
-import {bestCatalogMatch,bestPurchasingSuggestion,compareProductIdentity,comparePurchasingPack,parsePackSize,unitsForDimension} from "../procurement.js";
+import {bestCatalogMatch,bestPurchasingSuggestion,compareProductIdentity,comparePurchasingPack,parsePackSize,unitsForDimension,suggestCategory,priceBasisFor} from "../procurement.js";
 import {blockReason,orderable} from "../core/ordering.js";
 import {compareItems,itemMatchesSearch} from "../core/catalog-browse.js";
 import {formatMoney} from "../localization.js";
@@ -13,10 +16,12 @@ const catalogService=createCatalogService(backend);
 const categoryService=createCategoryService(backend);
 
 const MULTI_VENDOR_FILTER="__multi_vendor__";
+const CATEGORY_REVIEW_FILTER="__category_review__";
 
 export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,mappings,vendorItems,categories,vocabulary=[],onUpdated}) {
   const canManage=role==="owner"||role==="manager";
   const [search,setSearch]=useState("");
+  const [rowView,setRowView]=useState(true);
   const [showReview,setShowReview]=useState(false);
   const [mappedOnly,setMappedOnly]=useState(false);
   const [categoryFilter,setCategoryFilter]=useState("");
@@ -25,6 +30,10 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
   const [busyMappingId,setBusyMappingId]=useState(null);
   const [packEditFor,setPackEditFor]=useState(null);
   const [packValue,setPackValue]=useState("");
+  const [vendorEditId,setVendorEditId]=useState(null);
+  const [basisEditId,setBasisEditId]=useState(null);
+  const [basisValue,setBasisValue]=useState("");
+  const [vendorDraft,setVendorDraft]=useState({description:"",brand:"",packSize:"",caseQty:"",eachQty:"",unit:"EA"});
   const [renamingId,setRenamingId]=useState(null);
   const [renameValue,setRenameValue]=useState("");
   const [categoryEditId,setCategoryEditId]=useState(null);
@@ -67,7 +76,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
     const packs=[...new Set(linked.map(vi=>vi.pack_size).filter(Boolean))];
     const vendorsCount=new Set(linked.map(vi=>vi.vendor_id)).size;
     const compared=packs.length===1?comparePurchasingPack(sourcePack,packs[0]):null;
-    return {packs,vendorsCount,warning:packs.length>1?"Mixed existing packs — inspect first":compared?.status!=="same"?"Pack needs verification":null};
+    return {packs,vendorsCount,brands:[...new Set(linked.map(v=>v.brand||"Brand not stated"))],descriptions:[...new Set(linked.map(v=>v.description))],warning:packs.length>1?"Mixed existing packs — inspect first":compared?.status!=="same"?"Pack needs verification":null};
   }
 
   // Categories are ordered alphabetically - same as Order Guide, so both screens'
@@ -86,6 +95,15 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
     const eligible=item.options.filter(orderable);
     return eligible.some((a,i)=>eligible.slice(i+1).some(b=>a.vendorId!==b.vendorId&&comparePurchasingPack(a.packSize,b.packSize).status==="same"));
   }),[multiVendorItems]);
+  // Re-evaluate older placements when an industry's context profile improves.
+  // This is review-only: a past client choice is never silently overwritten.
+  const categoryCorrections=useMemo(()=>new Map(catalogItems.flatMap(item=>{
+    const suggested=suggestCategory(item.name,categories,catalogItems);
+    return suggested?.category?.id&&suggested.category.id!==item.category_id&&
+      suggested.reason?.includes("Prepared product form")?[[item.id,suggested]]:[];
+  })),[catalogItems,categories,vocabulary]);
+  const uncategorizedName=categories.find(c=>c.is_holding_pen)?.name||"Uncategorized";
+  const uncategorizedItems=productList.filter(item=>item.category===uncategorizedName);
 
   // Full List is one alphabetical client catalog. Selecting a product type
   // narrows that same alphabetized list without changing item identity or
@@ -94,13 +112,14 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
     const items=productList.filter(item=>{
       if(mappedOnly&&!isMapped(item))return false;
       if(categoryFilter===MULTI_VENDOR_FILTER){if(new Set(item.options.map(o=>o.vendorId)).size<2)return false;}
+      else if(categoryFilter===CATEGORY_REVIEW_FILTER){if(!categoryCorrections.has(item.catalogItemId))return false;}
       else if(categoryFilter&&item.category!==categoryFilter) return false;
       return itemMatchesSearch(item,search);
     });
     const alphabetized=[...items].sort((a,b)=>compareItems(a,b,"alpha"));
-    const label=categoryFilter===MULTI_VENDOR_FILTER?"Multiple Vendors":categoryFilter||"Full List";
+    const label=categoryFilter===MULTI_VENDOR_FILTER?"Multiple Vendors":categoryFilter===CATEGORY_REVIEW_FILTER?"Review categories":categoryFilter||"Full List";
     return alphabetized.length?[{category:label,items:alphabetized}]:[];
-  },[productList,search,categoryFilter,mappedOnly]);
+  },[productList,search,categoryFilter,mappedOnly,categoryCorrections]);
 
   function statusFor(item){
     if(!isMapped(item))return {label:"Not mapped",color:"#B26A00",bg:"#FFF3E0"};
@@ -153,7 +172,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
   // Products the engine placed in a category as a best guess. The client
   // either accepts the placement (one click, or all at once) or moves it
   // with the usual category control, which clears the flag.
-  const guessedCategoryItems=useMemo(()=>productList.filter(item=>item.categoryReview),[productList]);
+  const guessedCategoryItems=useMemo(()=>productList.filter(item=>item.categoryReview&&item.category!==uncategorizedName),[productList,uncategorizedName]);
   const [acceptingCategories,setAcceptingCategories]=useState(false);
   async function handleAcceptCategories(){
     if(!guessedCategoryItems.length)return;
@@ -185,13 +204,35 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
     if(!vendor||!target)return setError("This vendor product is no longer available. Refresh the catalog.");
     if(!parsePackSize(packValue)?.parsed)return setError("Enter a readable pack, such as 4/10 LB, 1-40#, or 12/32 OZ.");
     setBusyMappingId(mappingId);
-    const saved=await act(async()=>{
-      const {error:writeError}=await backend.records.query("vendor_items").update({pack_size:packValue.trim()}).eq("id",vendor.id).eq("organization_id",orgId);
-      if(writeError)throw writeError;
-      // Correcting source data is not a customer's decision to map it.
-      // The association remains pending until they explicitly confirm.
-    });
+    const saved=await act(()=>catalogService.correctVendorFields({organizationId:orgId,vendorItem:vendor,mappingId,
+      description:vendor.description,brand:vendor.brand,packSize:packValue}));
     if(saved){setPackEditFor(null);setPackValue("");}
+    setBusyMappingId(null);
+  }
+  function openVendorEdit(option){
+    const parsed=parsePackSize(option.packSize);
+    setVendorDraft({description:option.description||"",brand:option.brand||"",packSize:option.packSize||"",
+      caseQty:parsed?.parsed?String(parsed.caseQty):"",eachQty:parsed?.parsed?String(parsed.unitQty):"",unit:parsed?.parsed?parsed.unit:"EA"});
+    setVendorEditId(option.vendorItemId);
+  }
+  async function saveVendorEdit(option){
+    const vendor=viMap.get(option.vendorItemId);
+    if(!vendor)return setError("The vendor item is unavailable. Refresh Item Catalog.");
+    setBusyMappingId(option.mappingId);
+    const saved=await act(()=>catalogService.correctVendorFields({organizationId:orgId,vendorItem:vendor,mappingId:option.mappingId,
+      description:vendorDraft.description,brand:vendorDraft.brand,packSize:vendorDraft.packSize}));
+    if(saved)setVendorEditId(null);
+    setBusyMappingId(null);
+  }
+  async function saveBasis(option){
+    const vendor=viMap.get(option.vendorItemId);
+    const basis=priceBasisFor(basisValue);
+    if(!vendor||!basis||!Number.isFinite(Number(vendor.price))||Number(vendor.price)<=0)
+      return setError("Choose CASE, EACH, or a recognized unit for this quoted amount.");
+    setBusyMappingId(option.mappingId);
+    const saved=await act(()=>createCatalogRowsService(backend).save({organizationId:orgId,vendorItem:vendor,
+      mapping:mappings.find(m=>m.id===option.mappingId),patch:{selling_unit:basisValue}}));
+    if(saved){setBasisEditId(null);setBasisValue("");}
     setBusyMappingId(null);
   }
   async function handleRemapExisting(mappingId,newCatalogItemId){
@@ -201,7 +242,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
     const target=ciMap.get(newCatalogItemId);
     const summary=candidateSummary(newCatalogItemId,vendor?.pack_size);
     const verification=mappingVerification(vendor,target,linkedByCatalog.get(newCatalogItemId)||[]);
-    if(!target||!window.confirm(`Move this vendor product?\n\n${vendor?.description||"Unknown vendor product"}\nIts pack: ${vendor?.pack_size||"Not provided"}\n\nFrom: ${current?.name||"Unknown"}\nTo: #${target.master_item_number} ${target.name}\nExisting packs: ${summary.packs.join(", ")||"Not listed"}\n${summary.warning?`Attention: ${summary.warning}.\n`:""}${verification.comparison_track==="review"?"The association will remain in review and its price will not compete until the product and pack are verified.\n":"The full product descriptions and packs agree; its price may compete.\n"}Only this vendor product moves. The other vendor products stay where they are. This selection is saved for future imports.`))return;
+    if(!target||!window.confirm(`Move this vendor product?\n\n${vendor?.description||"Unknown vendor product"}\nIts pack: ${vendor?.pack_size||"Not provided"}\n\nFrom: ${current?.name||"Unknown"}\nTo: #${target.master_item_number} ${target.name}\nExisting packs: ${summary.packs.join(", ")||"Not listed"}\nImported brand: ${vendor?.brand||"Not stated"}\nExisting brands: ${summary.brands.join(", ")}\n${summary.warning?`Attention: ${summary.warning}.\n`:""}${verification.comparison_track==="review"?"The association will remain in review and its price will not compete until the product and pack are verified.\n":"The full product descriptions and packs agree; its price may compete.\n"}Only this vendor product moves. The other vendor products stay where they are. This selection is saved for future imports.`))return;
     setBusyMappingId(mappingId);
     if(verification.comparison_track==="exact")await learnFrom(vendor,(linkedByCatalog.get(newCatalogItemId)||[]).filter(peer=>peer.id!==vendor?.id));
     if(await act(()=>catalogService.remapToExisting(mappingId,newCatalogItemId,verification))){ setRemapOpenFor(null); setRemapSearch(""); }
@@ -361,6 +402,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
         </div>
       </div>
 
+      <div style={{display:"flex",gap:8,marginBottom:12}}><button onClick={()=>setRowView(true)} style={btn(rowView?"#003584":"#EEE",rowView?"white":"#333")}>Edit catalog rows</button><button onClick={()=>setRowView(false)} style={btn(!rowView?"#003584":"#EEE",!rowView?"white":"#333")}>Product details</button></div>
       {error&&<div style={{background:"#FFF3E0",color:"#E65100",padding:"10px 12px",borderRadius:8,fontSize:13,marginBottom:14}}>{error}</div>}
 
       {canManage&&addingItem&&(
@@ -394,6 +436,9 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
         <button onClick={()=>{setShowReview(false);setMappedOnly(false);setCategoryFilter(MULTI_VENDOR_FILTER);}} style={{background:"white",border:"1px solid #C5DBF4",borderRadius:9,padding:"11px 14px",cursor:"pointer",textAlign:"left",minWidth:220}}>
           <b style={{display:"block",fontSize:20,color:"#0D4385"}}>{multiVendorItems.length}</b><span style={{fontSize:12,color:"#405A76"}}>Products linked to 2+ vendors</span>
         </button>
+        {categoryCorrections.size>0&&<button onClick={()=>{setShowReview(false);setMappedOnly(false);setCategoryFilter(CATEGORY_REVIEW_FILTER);}} style={{background:"#FFF8E1",border:"1px solid #E8D79B",borderRadius:9,padding:"11px 14px",cursor:"pointer",textAlign:"left",minWidth:220}}>
+          <b style={{display:"block",fontSize:20,color:"#8D6E00"}}>{categoryCorrections.size}</b><span style={{fontSize:12,color:"#405A76"}}>Older category placements to review</span>
+        </button>}
         <div style={{background:"#EBF8F1",border:"1px solid #B9E3CB",borderRadius:9,padding:"11px 14px",minWidth:220}}>
           <b style={{display:"block",fontSize:20,color:"#23764C"}}>{comparableItems.length}</b><span style={{fontSize:12,color:"#405A76"}}>With matching packs and current quotes</span>
         </div>
@@ -445,7 +490,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                         <button key={ci.id} disabled={busyMappingId===m.mappingId} onClick={()=>handleRemapExisting(m.mappingId,ci.id)}
                           style={{display:"block",width:"100%",textAlign:"left",background:"white",border:"1px solid #EEE",borderRadius:5,padding:"6px 8px",marginBottom:4,fontSize:12,cursor:"pointer"}}>
                           <span style={{fontFamily:"monospace",color:"#003584",fontWeight:800}}>#{ci.master_item_number}</span> · {ci.name}
-                          <span style={{display:"block",paddingLeft:3,fontSize:10,color:candidateSummary(ci.id,m.packSize).warning?"#B26A00":"#39764F"}}>Pack: {candidateSummary(ci.id,m.packSize).packs.join(", ")||"Unknown"} · {candidateSummary(ci.id,m.packSize).vendorsCount} vendor(s){candidateSummary(ci.id,m.packSize).warning?` · ${candidateSummary(ci.id,m.packSize).warning}`:""}</span>
+                          <span style={{display:"block",paddingLeft:3,fontSize:10,color:candidateSummary(ci.id,m.packSize).warning?"#B26A00":"#39764F"}}>Brand: {candidateSummary(ci.id,m.packSize).brands.join(", ")} · Pack: {candidateSummary(ci.id,m.packSize).packs.join(", ")||"Unknown"} · {candidateSummary(ci.id,m.packSize).vendorsCount} vendor(s){candidateSummary(ci.id,m.packSize).warning?` · ${candidateSummary(ci.id,m.packSize).warning}`:""}</span>
                         </button>
                       ))}
                     </div>
@@ -489,10 +534,13 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
         <button onClick={()=>setCategoryFilter("")} style={chipStyle(!categoryFilter)}>
           Full List
         </button>
+        {uncategorizedItems.length>0&&<button onClick={()=>{setCategoryFilter(uncategorizedName);setShowReview(false);}} style={chipStyle(categoryFilter===uncategorizedName)}>
+          Choose category ({uncategorizedItems.length})
+        </button>}
         <button onClick={()=>setCategoryFilter(categoryFilter===MULTI_VENDOR_FILTER?"":MULTI_VENDOR_FILTER)} style={chipStyle(categoryFilter===MULTI_VENDOR_FILTER)}>
           Multiple Vendors ({multiVendorItems.length})
         </button>
-        {categoryList.map(c=>{
+        {categoryList.filter(c=>c!==uncategorizedName).map(c=>{
           const isSelected=categoryFilter===c;
           return (
             <button key={c} onClick={()=>setCategoryFilter(isSelected?"":c)} style={chipStyle(isSelected)}>
@@ -552,7 +600,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
         <div style={{background:"white",borderRadius:10,padding:20,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
           <p style={{color:"#888",fontSize:13,margin:0}}>No items match that search.</p>
         </div>
-      ):groupedItems.map(group=>(
+      ):rowView?<CatalogRows orgId={orgId} items={groupedItems.flatMap(g=>g.items)} catalogItems={catalogItems} vendorItems={vendorItems} mappings={mappings} vendors={vendors} categories={categories} vocabulary={vocabulary} canManage={canManage} onUpdated={onUpdated} onConfirm={handleConfirm} onDetails={id=>{setRowView(false);setMapPanelOpenFor(id);}} />:groupedItems.map(group=>(
         <div key={group.category} style={{marginBottom:20}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,paddingLeft:2}}>
             {canManage&&<input type="checkbox"
@@ -586,6 +634,9 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                     <div style={{minWidth:0}}>
                       <div style={{fontWeight:800,fontSize:13,color:"#152D4B"}}>{item.name}</div>
                       <div style={{fontSize:10,color:"#75859A",marginTop:3}}>{item.category} · {new Set(item.options.map(o=>o.vendorId)).size} vendor{new Set(item.options.map(o=>o.vendorId)).size===1?"":"s"} linked</div>
+                      {categoryCorrections.has(item.catalogItemId)&&<div style={{fontSize:10,color:"#9C5A00",fontWeight:800,marginTop:4}}>
+                        Review category: suggested {categoryCorrections.get(item.catalogItemId).category.name} · open item to change
+                      </div>}
                       {item.categoryReview&&<div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginTop:4}}>
                         <span style={{fontSize:10,fontWeight:800,color:"#8D6E00",background:"#FFF8E1",borderRadius:5,padding:"2px 7px"}} title={item.categoryReason||""}>Category suggested — confirm or move</span>
                         {canManage&&<button onClick={()=>act(()=>catalogService.confirmCategory(item.catalogItemId))} style={{border:0,background:"none",color:"#2E7D32",cursor:"pointer",fontSize:11,fontWeight:700,padding:0}}>Looks right</button>}
@@ -615,16 +666,39 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                     </div>}
                     <div style={{display:"grid",gridTemplateColumns:"140px minmax(180px,1fr) 95px 95px 100px 170px",gap:10,padding:"8px 10px",fontSize:10,fontWeight:800,color:"#49617C",background:"#DFEAF7",borderRadius:"6px 6px 0 0"}}><span>Vendor</span><span>Description</span><span>Pack</span><span>Price</span><span>Per unit</span><span>Association</span></div>
                     {item.options.map(o=><div key={o.vendorItemId} style={{display:"grid",gridTemplateColumns:"140px minmax(180px,1fr) 95px 95px 100px 170px",gap:10,padding:"10px",alignItems:"center",background:"white",borderBottom:"1px solid #E8EDF4",fontSize:11}}>
-                      <b>{o.vendorName}</b><span>{o.description}{o.brand?` · ${o.brand}`:""}</span><b>{o.packSize||"Unknown"}</b><b>{formatMoney(o.casePrice)}</b><b>{o.perUnit?`${formatMoney(o.perUnit.price)}/${o.perUnit.unit}`:"—"}</b>
+                      <b>{o.vendorName}</b><span>{o.description}{o.brand?` · ${o.brand}`:""}</span><b>{o.packSize||"Unknown"}</b><b>{o.casePrice!=null?formatMoney(o.casePrice):"No quote"}</b><b>{o.perUnit?`${formatMoney(o.perUnit.price)}/${o.perUnit.unit}`:"—"}</b>
                       <button disabled={!canManage} onClick={()=>{setRemapOpenFor(o.mappingId);setRemapSearch("");}} style={{...btn("#E8F1FB","#003584",{fontSize:10,padding:"6px"})}}>Change association</button>
+                      {canManage&&<div style={{gridColumn:"1 / -1"}}>
+                        <button onClick={()=>vendorEditId===o.vendorItemId?setVendorEditId(null):openVendorEdit(o)} style={{...btn("#E8F1FB","#003584",{fontSize:10,padding:"5px 8px"})}}>{vendorEditId===o.vendorItemId?"Close field editor":"Correct product, brand or pack"}</button>
+                        {vendorEditId===o.vendorItemId&&<div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"end",padding:10,marginTop:7,background:"#F4F8FE",borderRadius:6}}>
+                          <label>Product description<input aria-label="Vendor product description" style={{...inp,width:205,fontSize:11}} value={vendorDraft.description} onChange={e=>setVendorDraft(d=>({...d,description:e.target.value}))} /></label>
+                          <label>Brand<input aria-label="Vendor brand, blank if absent" placeholder="Leave blank if absent" style={{...inp,width:130,fontSize:11}} value={vendorDraft.brand} onChange={e=>setVendorDraft(d=>({...d,brand:e.target.value}))} /></label>
+                          <label>Pack<input aria-label="Vendor pack size" style={{...inp,width:145,fontSize:11}} value={vendorDraft.packSize} onChange={e=>setVendorDraft(d=>({...d,packSize:e.target.value}))} /></label>
+                          <label>Case contains<input aria-label="Inner items per case" type="number" min="1" style={{...inp,width:70,fontSize:11}} value={vendorDraft.caseQty} onChange={e=>setVendorDraft(d=>{const next={...d,caseQty:e.target.value};if(Number(next.caseQty)>0&&Number(next.eachQty)>0)next.packSize=`${next.caseQty}/${next.eachQty} ${next.unit}`;return next;})} /></label>
+                          <label>Each size<input aria-label="Size of each inner item" type="number" min="0.001" step="any" style={{...inp,width:75,fontSize:11}} value={vendorDraft.eachQty} onChange={e=>setVendorDraft(d=>{const next={...d,eachQty:e.target.value};if(Number(next.caseQty)>0&&Number(next.eachQty)>0)next.packSize=`${next.caseQty}/${next.eachQty} ${next.unit}`;return next;})} /></label>
+                          <label>Unit<select aria-label="Pack measurement unit" style={{...inp,width:95,fontSize:11}} value={vendorDraft.unit} onChange={e=>setVendorDraft(d=>({...d,unit:e.target.value,packSize:Number(d.caseQty)>0&&Number(d.eachQty)>0?`${d.caseQty}/${d.eachQty} ${e.target.value}`:d.packSize}))}>
+                            {[...new Set([vendorDraft.unit,...unitChoices(vocabulary,true).map(u=>u.value)])].map(unit=><option key={unit} value={unit}>{unit}</option>)}
+                          </select></label>
+                          <button disabled={busyMappingId===o.mappingId} onClick={()=>saveVendorEdit(o)} style={{...btn("#003584","white",{fontSize:11})}}>Save correction</button>
+                          <div style={{flexBasis:"100%",fontSize:10,color:"#875200"}}>Changing defining fields keeps the KERDOS association but pauses this offer for verification before price comparison.</div>
+                        </div>}
+                      </div>}
+                      {canManage&&o.priceUnavailable&&!o.quoteBasis&&o.quotedPrice!=null&&<div style={{gridColumn:"1 / -1",background:"#FFF3E0",padding:8,borderRadius:6}}>
+                        <b>Quoted amount {formatMoney(o.quotedPrice)} · selling unit unknown.</b> The product stays here; this price cannot compete yet.
+                        {basisEditId===o.vendorItemId?<div style={{display:"flex",gap:7,marginTop:7,alignItems:"center"}}>
+                          <select aria-label="Confirm quoted selling unit" value={basisValue} onChange={e=>setBasisValue(e.target.value)} style={{...inp,width:125,fontSize:11}}><option value="">Select unit</option>{unitChoices(vocabulary).map(unit=><option key={unit.value} value={unit.value}>{unit.label}</option>)}</select>
+                          <button disabled={busyMappingId===o.mappingId||!basisValue} onClick={()=>saveBasis(o)} style={{...btn("#003584","white",{fontSize:11})}}>Confirm quoted unit</button>
+                          <button onClick={()=>setBasisEditId(null)} style={{...btn("#EEE","#555",{fontSize:11})}}>Cancel</button>
+                        </div>:<button onClick={()=>{setBasisEditId(o.vendorItemId);setBasisValue("");}} style={{...btn("#FFF","#875200",{fontSize:11,marginLeft:8})}}>Resolve price unit</button>}
+                      </div>}
                       <details style={{gridColumn:"1 / -1",fontSize:11,color:"#49617C"}}><summary style={{cursor:"pointer",fontWeight:700}}>Mapping details</summary>
                         <div style={{marginTop:6,padding:"7px 9px",background:"#F4F8FE",borderRadius:6}}>
                           {o.unverified?"Not mapped":"Mapped"} · {o.unverified?o.matchConfidence!=null?`${o.matchConfidence}% wording similarity; verification still needed`:"Verification still needed":"100% verified"} · {o.matchMethod==="manual"?"Association selected by client":o.matchMethod==="rule_based"?"Association selected by KERDOS engine":"Association source unavailable"}
                         </div>
                       </details>
                       {remapOpenFor===o.mappingId&&<div style={{gridColumn:"1 / -1",background:"#F4F8FE",padding:9,borderRadius:6}}>
-                        <input autoFocus style={{...inp,fontSize:12}} placeholder="Search by KERDOS number or item name" value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} />
-                        <div style={{maxHeight:160,overflowY:"auto",marginTop:5}}>{catalogItems.filter(ci=>ci.id!==item.catalogItemId&&(!remapSearch.trim()||ci.name.toLowerCase().includes(remapSearch.trim().toLowerCase())||String(ci.master_item_number).includes(remapSearch.trim()))).slice(0,10).map(ci=><button key={ci.id} disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapExisting(o.mappingId,ci.id)} style={{display:"block",width:"100%",textAlign:"left",background:"white",border:"1px solid #E4EBF3",borderRadius:4,padding:"7px 8px",marginBottom:3,cursor:"pointer"}}><b style={{color:"#003584"}}>#{ci.master_item_number}</b> · {ci.name}<span style={{display:"block",fontSize:10,color:candidateSummary(ci.id,o.packSize).warning?"#B26A00":"#39764F"}}>Pack: {candidateSummary(ci.id,o.packSize).packs.join(", ")||"Unknown"} · {candidateSummary(ci.id,o.packSize).vendorsCount} vendor(s){candidateSummary(ci.id,o.packSize).warning?` · ${candidateSummary(ci.id,o.packSize).warning}`:""}</span></button>)}</div>
+                        <div style={{fontSize:12}}>Imported: {o.description} · {o.brand||"Brand not stated"} · {o.packSize||"Pack unknown"}</div><input autoFocus style={{...inp,fontSize:12}} placeholder="Search by KERDOS number or item name" value={remapSearch} onChange={e=>setRemapSearch(e.target.value)} />
+                        <div style={{maxHeight:160,overflowY:"auto",marginTop:5}}>{catalogItems.filter(ci=>ci.id!==item.catalogItemId&&(!remapSearch.trim()||ci.name.toLowerCase().includes(remapSearch.trim().toLowerCase())||String(ci.master_item_number).includes(remapSearch.trim()))).slice(0,10).map(ci=><button key={ci.id} disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapExisting(o.mappingId,ci.id)} style={{display:"block",width:"100%",textAlign:"left",background:"white",border:"1px solid #E4EBF3",borderRadius:4,padding:"7px 8px",marginBottom:3,cursor:"pointer"}}><b style={{color:"#003584"}}>#{ci.master_item_number}</b> · {ci.name}<span style={{display:"block",fontSize:10,color:candidateSummary(ci.id,o.packSize).warning?"#B26A00":"#39764F"}}>Brand: {candidateSummary(ci.id,o.packSize).brands.join(", ")} · Pack: {candidateSummary(ci.id,o.packSize).packs.join(", ")||"Unknown"} · {candidateSummary(ci.id,o.packSize).vendorsCount} vendor(s){candidateSummary(ci.id,o.packSize).warning?` · ${candidateSummary(ci.id,o.packSize).warning}`:""}</span></button>)}</div>
                         <div style={{display:"flex",gap:8,marginTop:6}}><button disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapNew(o.mappingId,o.description)} style={{...btn("#E5EEF8","#003584",{fontSize:11})}}>Create separate product</button><button onClick={()=>{setRemapOpenFor(null);setRemapSearch("");}} style={{...btn("#EEE","#555",{fontSize:11})}}>Cancel</button></div>
                       </div>}
                       {!orderable(o)&&<span style={{gridColumn:"1 / -1",fontSize:10,color:"#B26A00"}}>⚠ {blockReason(o)}</span>}

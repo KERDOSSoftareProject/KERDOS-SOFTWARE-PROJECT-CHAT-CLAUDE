@@ -1,7 +1,7 @@
 // KERDOS owns this contract. Providers implement it; screens never define it.
 // Keep capability names about business needs, not vendor products or syntax.
 export const BACKEND_CAPABILITIES = Object.freeze([
-  "session", "workspace", "documents", "realtime", "pricing", "invoices", "team", "records",
+  "session", "workspace", "documents", "realtime", "pricing", "catalog", "invoices", "team", "records",
 ]);
 
 export function assertBackendContract(backend) {
@@ -15,6 +15,7 @@ export function assertBackendContract(backend) {
     documents:["upload","signedUrl","remove"],
     realtime:["subscribeToOrganization"],
     pricing:["applyQuote"],
+    catalog:["saveRow"],
     invoices:["record"],
     team:["acceptInvite"],
     records:["query"],

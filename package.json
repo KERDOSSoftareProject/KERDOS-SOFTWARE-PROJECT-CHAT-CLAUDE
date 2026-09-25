@@ -8,7 +8,7 @@
     "build": "vite build",
     "database:build": "node scripts/build-database-update.mjs",
     "preview": "vite preview",
-    "test": "npm run lint && node src/regression.mjs && node src/ingestion-test.mjs && node src/core/ordering-test.mjs && node src/core/catalog-browse-test.mjs && node src/price-basis-test.mjs && node src/identifier-test.mjs && node src/services/catalog-test.mjs && node src/services/categories-test.mjs && node src/services/organization-test.mjs && node src/services/service-boundaries-test.mjs && node src/session-test.mjs && node src/backend-contract-test.mjs && node src/backend/records-test.mjs && node src/backend/portable-provider-test.mjs && node src/offline-store-test.mjs && node src/deployment-test.mjs",
+    "test": "npm run lint && node src/regression.mjs && node src/ingestion-test.mjs && node src/core/import-evidence-test.mjs && node src/core/catalog-fields-test.mjs && node src/core/quote-basis-test.mjs && node src/core/quote-context-test.mjs && node src/core/ordering-test.mjs && node src/core/catalog-browse-test.mjs && node src/price-basis-test.mjs && node src/identifier-test.mjs && node src/services/catalog-test.mjs && node src/services/categories-test.mjs && node src/services/organization-test.mjs && node src/services/service-boundaries-test.mjs && node src/session-test.mjs && node src/backend-contract-test.mjs && node src/backend/records-test.mjs && node src/backend/portable-provider-test.mjs && node src/offline-store-test.mjs && node src/deployment-test.mjs && node src/backend/catalog-row-sql-test.mjs",
     "lint": "eslint src scripts vite.config.js"
   },
   "dependencies": {
@@ -21,6 +21,7 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "@vitejs/plugin-react": "^4.3.4",
     "eslint": "^9.39.5",
     "eslint-plugin-react": "^7.37.5",

@@ -1,4 +1,30 @@
 // Shared browsing helpers used by both Item Catalog and Order Guide.
+import {safeProductScore,compareProductIdentity,comparePurchasingPack,casePriceFromQuote,quoteStatus} from "../procurement.js";
+
+// A listing on another catalog item (or with no mapping) is evidence worth
+// reviewing, never an orderable offer. The same pack is required before even
+// proposing a price comparison. Confirming the link remains an Item Catalog
+// action, which persists the client's decision for subsequent imports.
+export function comparisonReviewCandidates(item, vendorItems, mappings, vendors, settings={}){
+  const mappedHere=new Set(mappings.filter(m=>m.catalog_item_id===item.catalogItemId).map(m=>m.vendor_item_id));
+  const linkedVendorIds=new Set(item.options.map(o=>o.vendorId));
+  const vendorById=new Map(vendors.map(v=>[v.id,v]));
+  const references=item.options.filter(o=>o.packSize);
+  if(!references.length)return [];
+  return vendorItems.filter(vi=>!mappedHere.has(vi.id)&&!linkedVendorIds.has(vi.vendor_id))
+    .map(vi=>{
+      const witness=references.find(o=>comparePurchasingPack(vi.pack_size,o.packSize).status==="same"&&
+        compareProductIdentity(vi.description,o.description).status!=="different"&&
+        safeProductScore(vi.description,o.description)>=0.5);
+      if(!witness)return null;
+      const vendor=vendorById.get(vi.vendor_id);
+      if(!vendor)return null;
+      const price=quoteStatus(vi,settings)==="current"
+        ?casePriceFromQuote(vi.price,vi.price_basis||null,vi.selling_unit||null,vi.pack_size):null;
+      return {vendorId:vi.vendor_id,vendorName:vendor.name,description:vi.description,packSize:vi.pack_size,
+        price,score:safeProductScore(vi.description,witness.description)};
+    }).filter(Boolean).sort((a,b)=>b.score-a.score||a.vendorName.localeCompare(b.vendorName));
+}
 
 // Three ways to order items within a category (or a full/unfiltered list):
 // alphabetical by name, this org's own client item-number sequence, or the

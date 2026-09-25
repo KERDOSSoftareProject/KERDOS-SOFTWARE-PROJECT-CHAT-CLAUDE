@@ -77,8 +77,16 @@ export function createSupabaseBackend({url,anonKey}) {
           p_price_basis:quote.priceBasis||null,
           p_gtin:quote.gtin||null,
           p_manufacturer_code:quote.manufacturerCode||null,
+          p_import_row:quote.importRow||null,
+          p_field_resolutions:quote.fieldResolutions||null,
         }),"Apply price quotation");
       },
+    },
+    catalog:{
+      saveRow(row){return providerResult(client.rpc("kerdos_save_catalog_row",{
+        p_organization_id:row.organizationId,p_vendor_item_id:row.vendorItemId,p_mapping_id:row.mappingId,
+        p_expected_revision:row.expectedRevision,p_patch:row.patch,p_price_basis:row.priceBasis,p_price_available:row.priceAvailable,
+      }),"Save catalog row");},
     },
     invoices:{
       record(header,lines){

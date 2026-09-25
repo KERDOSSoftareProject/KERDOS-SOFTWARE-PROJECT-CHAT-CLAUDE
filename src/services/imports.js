@@ -14,8 +14,8 @@ export function createImportService(backend){
       return run(query.maybeSingle(),"Could not look up the item");
     },
     vendorItems(organizationId,vendorId){return run(table("vendor_items").select("*").eq("organization_id",organizationId).eq("vendor_id",vendorId),"Could not inspect existing vendor products");},
-    mapping(organizationId,vendorItemId){return run(table("item_mappings").select("id").eq("organization_id",organizationId).eq("vendor_item_id",vendorItemId).maybeSingle(),"Could not check the catalog link");},
-    createMapping(row){return run(table("item_mappings").insert(row),"Could not link the item to your catalog");},
+    mapping(organizationId,vendorItemId){return run(table("item_mappings").select("*").eq("organization_id",organizationId).eq("vendor_item_id",vendorItemId).maybeSingle(),"Could not check the catalog link");},
+    createMapping(row){return run(table("item_mappings").insert(row).select("id").single(),"Could not link the item to your catalog");},
     async duplicateInvoice({organizationId,vendorId,invoiceNumber,rawText}){
       let query=table("invoices").select("id").eq("organization_id",organizationId).eq("vendor_id",vendorId);
       query=invoiceNumber?query.eq("invoice_number",invoiceNumber):query.eq("raw_text",rawText);

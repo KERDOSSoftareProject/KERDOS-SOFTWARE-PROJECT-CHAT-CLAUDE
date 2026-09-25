@@ -60,9 +60,15 @@ export function createCategoryService(backend){
     async assignItem({catalogItemId,categoryId,catalogItems,categories}){
       const target=categories.find(category=>category.id===categoryId);
       if(!target)return null;
+      const current=catalogItems.find(item=>item.id===catalogItemId);
+      // A category is a location, not the item's identity. Keep its assigned
+      // number and every linked vendor mapping when the whole row moves.
+      const existingNumber=current?.master_item_number;
       const members=catalogItems.filter(item=>item.category_id===target.id);
-      const masterItemNumber=members.length?Math.max(...members.map(item=>item.master_item_number||0))+1:(target.range_start||1);
-      await run(table("catalog_items").update({category_id:target.id,master_item_number:masterItemNumber,category_review:false,category_reason:null}).eq("id",catalogItemId),"Could not move the item");
+      const masterItemNumber=existingNumber??(members.length?Math.max(...members.map(item=>item.master_item_number||0))+1:(target.range_start||1));
+      const update={category_id:target.id,category_review:false,category_reason:null};
+      if(existingNumber==null)update.master_item_number=masterItemNumber;
+      await run(table("catalog_items").update(update).eq("id",catalogItemId),"Could not move the item");
       return masterItemNumber;
     },
     async reclassifyUncategorized({catalogItems,categories}){
@@ -78,12 +84,12 @@ export function createCategoryService(backend){
         if(!target)continue;
         const review=suggested.confidence!=="confident";
         const members=working.filter(candidate=>candidate.category_id===target.id);
-        const number=members.length?Math.max(...members.map(candidate=>candidate.master_item_number||0))+1:(target.range_start||1);
+        const number=item.master_item_number??(members.length?Math.max(...members.map(candidate=>candidate.master_item_number||0))+1:(target.range_start||1));
         const index=working.findIndex(candidate=>candidate.id===item.id);
         if(index>=0)working[index]={...working[index],category_id:target.id,master_item_number:number};
-        assignments.push({itemId:item.id,categoryId:target.id,masterItemNumber:number,review,reason:review?suggested.reason:null});
+        assignments.push({itemId:item.id,categoryId:target.id,masterItemNumber:item.master_item_number==null?number:null,review,reason:review?suggested.reason:null});
       }
-      const results=await Promise.all(assignments.map(row=>table("catalog_items").update({category_id:row.categoryId,master_item_number:row.masterItemNumber,category_review:row.review,category_reason:row.reason}).eq("id",row.itemId)));
+      const results=await Promise.all(assignments.map(row=>table("catalog_items").update({category_id:row.categoryId,...(row.masterItemNumber==null?{}:{master_item_number:row.masterItemNumber}),category_review:row.review,category_reason:row.reason}).eq("id",row.itemId)));
       const moved=results.filter(result=>!result.error).length;
       return {moved,checked:stuck.length,matchedButFailed:assignments.length-moved,firstWriteError:results.find(result=>result.error)?.error?.message||null};
     },

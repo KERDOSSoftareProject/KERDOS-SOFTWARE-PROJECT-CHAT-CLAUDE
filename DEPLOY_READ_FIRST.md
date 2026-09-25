@@ -1,4 +1,6 @@
-# KERDOS ENGINE v3 — deployment order
+# KERDOS ENGINE v3 — deployment hold
+
+Read `REVIEW_STATUS.md` first. This integrated review build is not approved for upload to the live site until the database and real-data checks there are complete.
 
 This package keeps GitHub's current working Pages workflow and its asset-path verification script. The original v3 ZIP omitted that script and supplied a workflow without the blank-screen protection.
 

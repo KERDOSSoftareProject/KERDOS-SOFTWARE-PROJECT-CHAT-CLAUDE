@@ -51,7 +51,7 @@ const provider=assertBackendContract({
   workspace:{memberships:fn,snapshot:fn},
   documents:{upload:fn,signedUrl:fn,remove:fn},
   realtime:{subscribeToOrganization:()=>()=>{}},
-  pricing:{applyQuote:fn},invoices:{record:fn},team:{acceptInvite:fn},
+  pricing:{applyQuote:fn},catalog:{saveRow:fn},invoices:{record:fn},team:{acceptInvite:fn},
   records:createRecords(execute),
 });
 const categories=createCategoryService(provider);

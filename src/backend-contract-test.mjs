@@ -6,7 +6,7 @@ const valid={
   workspace:{memberships:fn,snapshot:fn},
   documents:{upload:fn,signedUrl:fn,remove:fn},
   realtime:{subscribeToOrganization:fn},
-  pricing:{applyQuote:fn},
+  pricing:{applyQuote:fn},catalog:{saveRow:fn},
   invoices:{record:fn},
   team:{acceptInvite:fn},
   records:{query:fn},

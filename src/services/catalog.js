@@ -1,6 +1,7 @@
 // Catalog writes expressed in KERDOS business language. The service depends
 // only on the provider's generic table capability; UI code never names or
 // imports a database vendor.
+import {prepareCatalogCorrection} from "./catalog-rows.js";
 import {bestPurchasingMatch,bestPurchasingSuggestion,suggestCategory,nextCategoryRange,compareProductIdentity,comparePurchasingPack,brandsMatch,parsePackSize,abbreviationPairs} from "../procurement.js";
 
 // An association is a customer's assertion about identity. Ordering eligibility
@@ -13,7 +14,9 @@ export function mappingVerification(vendorItem,catalogItem,linkedVendorItems=[])
   const identity=descriptions.map(description=>compareProductIdentity(vendorItem.description,description));
   const packs=peers.map(peer=>comparePurchasingPack(vendorItem.pack_size,peer.pack_size));
   const brandsAgree=peers.every(peer=>!vendorItem.brand&&!peer.brand||brandsMatch(vendorItem.brand,peer.brand));
-  const exact=!!parsePackSize(vendorItem.pack_size)?.parsed&&brandsAgree&&identity.every(result=>result.status==="same")&&packs.every(result=>result.status==="same");
+  const identifiersAgree=peers.every(peer=>(!vendorItem.gtin||!peer.gtin||vendorItem.gtin===peer.gtin)&&
+    (!vendorItem.manufacturer_code||!peer.manufacturer_code||vendorItem.manufacturer_code===peer.manufacturer_code));
+  const exact=!!parsePackSize(vendorItem.pack_size)?.parsed&&brandsAgree&&identifiersAgree&&identity.every(result=>result.status==="same")&&packs.every(result=>result.status==="same");
   return {comparison_track:exact?"exact":"review",confidence_score:exact?100:null,match_method:"manual"};
 }
 async function run(promise,operation){
@@ -93,10 +96,33 @@ export function identifierMatch({gtin=null,manufacturerCode=null,brand=null,pack
     if(!witness)continue;
     const via=byGtin?"barcode":"manufacturer code";
     const pack=comparePurchasingPack(packSize,witness.pack_size);
-    if(pack.status==="same")return {catalogItem:candidate,track:"exact",score:1,method:"identifier",reason:`Same ${via} as an existing vendor listing in the same pack`};
+    const allAgree=candidate.linkedVendorItems.every(peer=>comparePurchasingPack(packSize,peer.pack_size).status==="same"&&
+      (!brand||!peer.brand||brandsMatch(brand,peer.brand))&&
+      (!gtin||!peer.gtin||peer.gtin===gtin)&&
+      (!manufacturerCode||!peer.manufacturer_code||!brand||!peer.brand||
+        !brandsMatch(brand,peer.brand)||peer.manufacturer_code===manufacturerCode));
+    if(pack.status==="same"&&allAgree)return {catalogItem:candidate,track:"exact",score:1,method:"identifier",reason:`Same ${via} as an existing vendor listing in the same pack`};
     return {catalogItem:candidate,track:"similar",score:0.9,method:"identifier",reason:`Same ${via} as an existing vendor listing, but the pack differs or is unreadable (${packSize||"none"} vs ${witness.pack_size||"none"})`};
   }
   return null;
+}
+
+// Record the evidence used for an automatic association. A match to the
+// catalog label alone cannot override a conflicting linked vendor listing.
+export function associationEvidence({description,packSize,brand,gtin,manufacturerCode},candidate){
+  const peers=candidate.linkedVendorItems||[];
+  const checks=peers.map(peer=>({
+    identity:compareProductIdentity(description,peer.description).status,
+    pack:comparePurchasingPack(packSize,peer.pack_size).status,
+    brand:!brand||!peer.brand||brandsMatch(brand,peer.brand),
+    identifier:(!gtin||!peer.gtin||gtin===peer.gtin)&&
+      (!manufacturerCode||!peer.manufacturer_code||!brand||!peer.brand||
+        !brandsMatch(brand,peer.brand)||manufacturerCode===peer.manufacturer_code),
+  }));
+  return {peers:checks.length,checks,exact:checks.length>0&&checks.every((c,i)=>
+    (c.identity==="same"||!!gtin&&peers[i].gtin===gtin||
+      !!manufacturerCode&&!!brand&&brandsMatch(brand,peers[i].brand)&&peers[i].manufacturer_code===manufacturerCode)&&
+    c.pack==="same"&&c.brand&&c.identifier)};
 }
 
 // Mappings the engine is allowed to verify on its own under the agreed
@@ -128,7 +154,7 @@ export function engineVerifiable({mappings=[],vendorItems=[],catalogItems=[]}){
 export function createCatalogService(backend){
   const table=backend.records.query;
   return {
-    async matchOrCreate({organizationId,vendorId,description,packSize,brand=null,gtin=null,manufacturerCode=null,catalogItems,categories,vendorItems=[],mappings=[]}){
+    async matchOrCreate({organizationId,vendorId,description,packSize,brand=null,gtin=null,manufacturerCode=null,categoryId=null,catalogItems,categories,vendorItems=[],mappings=[]}){
       const byId=new Map(vendorItems.map(vi=>[vi.id,vi]));
       const candidates=catalogItems.map(ci=>{
         const linked=mappings.map(m=>m.catalog_item_id===ci.id?byId.get(m.vendor_item_id):null).filter(Boolean);
@@ -140,15 +166,20 @@ export function createCatalogService(backend){
       });
       // Identifiers come first: they settle identity without wording.
       const proven=identifierMatch({gtin,manufacturerCode,brand,packSize,vendorId},candidates);
-      if(proven?.track==="exact")return {catalogItemId:proven.catalogItem.id,track:"exact",score:1,method:"identifier",reason:proven.reason};
+      if(proven?.track==="exact"){
+        const evidence=associationEvidence({description,packSize,brand,gtin,manufacturerCode},proven.catalogItem);
+        if(evidence.exact)return {catalogItemId:proven.catalogItem.id,track:"exact",score:1,method:"identifier",reason:proven.reason};
+      }
       const match=proven||bestPurchasingMatch(description,packSize,candidates);
       // Brand is part of a verified identity. Unknown brand does not prove
       // equality to a named brand; differing brands can be proposed for
       // substitution, but never placed in the same exact-price comparison.
       const brandVerified=match&&(!brand&&!match.catalogItem.knownBrand||brandsMatch(brand,match.catalogItem.knownBrand));
-      if(match?.track==="exact"&&brandVerified&&match.catalogItem.otherVendorPresent)return {catalogItemId:match.catalogItem.id,track:"exact",score:1};
+      if(match?.track==="exact"&&brandVerified&&match.catalogItem.otherVendorPresent&&
+        associationEvidence({description,packSize,brand,gtin,manufacturerCode},match.catalogItem).exact)
+        return {catalogItemId:match.catalogItem.id,track:"exact",score:1};
       const suggestion=match||bestPurchasingSuggestion(description,packSize,candidates);
-      const placement=await this.placeInCategory({organizationId,description,categories,catalogItems});
+      const placement=await this.placeInCategory({organizationId,description,categoryId,categories,catalogItems});
       const created=await this.createItem({organizationId,name:description,categoryId:placement.category?.id||null,categoryReview:placement.review,categoryReason:placement.reason,catalogItems,categories});
       catalogItems.push(created);
       return {catalogItemId:created.id,track:suggestion?"review":"new",score:suggestion?.score??null,reason:match?.reason||"Possible product; verify defining details before linking"};
@@ -156,10 +187,15 @@ export function createCatalogService(backend){
     // Most likely category first, holding pen last. A guessed placement is
     // flagged for review so the client confirms or moves it, instead of
     // filing every new product from scratch.
-    async placeInCategory({organizationId,description,categories,catalogItems}){
+    async placeInCategory({organizationId,description,categoryId=null,categories,catalogItems}){
+      if(categoryId){
+        const selected=categories.find(category=>category.id===categoryId&&!category.is_holding_pen);
+        if(!selected)throw new Error("Choose an available category for this organization.");
+        return {category:selected,review:false,reason:null};
+      }
       const suggested=suggestCategory(description,categories,catalogItems);
       if(suggested)return {category:suggested.category,review:suggested.confidence!=="confident",reason:suggested.confidence==="confident"?null:suggested.reason};
-      return {category:await this.ensureHoldingCategory(organizationId,categories),review:false,reason:null};
+      return {category:await this.ensureHoldingCategory(organizationId,categories),review:true,reason:"Category unknown; select a category to move this entire item and its vendor listings"};
     },
     async ensureHoldingCategory(organizationId,categories){
       const existing=categories.find(category=>category.is_holding_pen)||null;
@@ -171,7 +207,10 @@ export function createCatalogService(backend){
     },
     async createItem({organizationId,name,categoryId,categoryReview=false,categoryReason=null,catalogItems,categories}){
       const category=categories.find(candidate=>candidate.id===categoryId)||null;
-      const itemsInCategory=catalogItems.filter(item=>item.category_id===categoryId);
+      // Include numbers from items later moved to another category. Their
+      // KERDOS numbers remain theirs and must never be recycled here.
+      const itemsInCategory=catalogItems.filter(item=>item.master_item_number>=Number(category?.range_start||1)&&
+        item.master_item_number<=Number(category?.range_end||Number.MAX_SAFE_INTEGER));
       const masterItemNumber=itemsInCategory.length?Math.max(...itemsInCategory.map(item=>item.master_item_number||0))+1:(category?.range_start||1);
       return run(table("catalog_items").insert({organization_id:organizationId,category_id:categoryId||null,master_item_number:masterItemNumber,name:name.slice(0,120),matching_behavior:"flexible",canonical_unit:null,brand_locked:false,category_review:!!categoryReview,category_reason:categoryReason||null}).select().single(),"Could not create the item");
     },
@@ -196,6 +235,12 @@ export function createCatalogService(backend){
     confirmMapping(mappingId,verification){
       if(!verification)throw new Error("Check this product against the catalog and its vendor packs before confirming.");
       return run(table("item_mappings").update(verification).eq("id",mappingId),"Could not confirm the match");
+    },
+    async correctVendorFields({organizationId,vendorItem,mappingId,description,brand,packSize}){
+      const patch={description,brand,pack_size:packSize};
+      const request=prepareCatalogCorrection({organizationId,vendorItem,mapping:{id:mappingId,vendor_item_id:vendorItem?.id,organization_id:organizationId},patch});
+      await backend.catalog.saveRow(request);
+      return true;
     },
     async confirmMappings(entries){
       let confirmed=0;
