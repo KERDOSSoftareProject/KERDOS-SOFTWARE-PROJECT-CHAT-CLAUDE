@@ -6,10 +6,8 @@ export function createOperationsService(backend){
   const table=backend.records.query;
   return {
     updateInvoice(invoiceId,patch){return run(table("invoices").update(patch).eq("id",invoiceId),"Could not update the invoice");},
-    async deleteInvoice(invoiceId){
-      await run(table("invoice_lines").delete().eq("invoice_id",invoiceId),"Could not delete the invoice lines");
-      return run(table("invoices").delete().eq("id",invoiceId),"Could not delete the invoice");
-    },
+    deleteInvoice(organizationId,invoiceId){return backend.documents.deleteInvoiceRecord(organizationId,invoiceId);},
+    deletePriceSheet(organizationId,documentId){return backend.documents.deletePriceSheet(organizationId,documentId);},
     olderPriceHistory(organizationId,offset,limit=2000){
       return run(table("price_history").select("*").eq("organization_id",organizationId).order("effective_date",{ascending:false}).order("id",{ascending:false}).range(offset,offset+limit-1),"Could not load earlier price sheets");
     },

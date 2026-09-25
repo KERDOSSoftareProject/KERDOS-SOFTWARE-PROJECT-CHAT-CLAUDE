@@ -49,7 +49,7 @@ const provider=assertBackendContract({
   kind:"in-memory-test",
   session:{get:fn,subscribe:()=>()=>{},signIn:fn,signUp:fn,signOut:fn},
   workspace:{memberships:fn,snapshot:fn},
-  documents:{upload:fn,signedUrl:fn,remove:fn},
+  documents:{upload:fn,signedUrl:fn,remove:fn,deletePriceSheet:fn,deleteInvoiceRecord:fn},
   realtime:{subscribeToOrganization:()=>()=>{}},
   pricing:{applyQuote:fn},catalog:{saveRow:fn},invoices:{record:fn},team:{acceptInvite:fn},
   records:createRecords(execute),

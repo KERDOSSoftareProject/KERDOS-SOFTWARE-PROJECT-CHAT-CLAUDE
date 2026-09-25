@@ -51,6 +51,8 @@ export function createSupabaseBackend({url,anonKey}) {
       upload(path,file,options){return providerResult(client.storage.from("documents").upload(path,file,options),"Upload document");},
       signedUrl(path,seconds=3600){return providerResult(client.storage.from("documents").createSignedUrl(path,seconds),"Open document");},
       remove(paths){return providerResult(client.storage.from("documents").remove(paths),"Remove document");},
+      deletePriceSheet(organizationId,documentId){return providerResult(client.rpc("kerdos_delete_price_sheet",{p_organization_id:organizationId,p_document_id:documentId}),"Delete price sheet");},
+      deleteInvoiceRecord(organizationId,invoiceId){return providerResult(client.rpc("kerdos_delete_invoice_record",{p_organization_id:organizationId,p_invoice_id:invoiceId}),"Delete invoice");},
     },
     realtime:{
       subscribeToOrganization(organizationId,onChange){

@@ -4,7 +4,7 @@ const fn=()=>{};
 const valid={
   session:{get:fn,subscribe:fn,signIn:fn,signUp:fn,signOut:fn},
   workspace:{memberships:fn,snapshot:fn},
-  documents:{upload:fn,signedUrl:fn,remove:fn},
+  documents:{upload:fn,signedUrl:fn,remove:fn,deletePriceSheet:fn,deleteInvoiceRecord:fn},
   realtime:{subscribeToOrganization:fn},
   pricing:{applyQuote:fn},catalog:{saveRow:fn},
   invoices:{record:fn},

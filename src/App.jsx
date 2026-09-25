@@ -128,6 +128,7 @@ export default function App() {
   // but the same "browse by item type, order by code/alpha" idea applies.
   const [orderCategoryFilter,setOrderCategoryFilter]=useState("");
   const [orderSortMode,setOrderSortMode]=useState("alpha"); // "alpha" | "itemNumber" | "vendorCode"
+  function openOrderGuide(){setSearch("");setOrderCategoryFilter("");setTab("order");}
 
   // Startup and session transitions are owned by sessionController (see
   // session.js), not decided here. It reports a single "entered" flag for
@@ -618,12 +619,33 @@ export default function App() {
   async function deleteInvoice(inv){
     if(!window.confirm(`Delete this ${inv.vendors?.name||""} invoice? This can't be undone.`)) return;
     try{
-      await operationsService.deleteInvoice(inv.id);
-      if(inv.file_path){
-        await documents.remove([inv.file_path]);
-      }
-    }catch(err){ alert(err.message); }
-    loadData();
+      const result=await operationsService.deleteInvoice(org.id,inv.id);
+      await loadData();
+      if(result?.file_path)try{await documents.remove([result.file_path]);}
+      catch(err){alert(`Invoice record deleted, but its stored file needs cleanup: ${err.message}`);}
+    }catch(err){alert(err.message);}
+  }
+
+  async function deletePriceSheet(doc,reimport=false){
+    if(String(doc.id).startsWith("legacy__")){
+      alert("This older price history has no individual source document ID. Its price can be cleared, but this file cannot be safely deleted on its own.");return;
+    }
+    if(!window.confirm(`Delete ${doc.fileName}? Its quote history from this sheet will be removed and its current prices cleared. Product mappings and other sheets remain. You can then import the file again.`))return;
+    try{
+      const result=await operationsService.deletePriceSheet(org.id,doc.id);
+      await loadData();
+      if(result?.file_path)try{await documents.remove([result.file_path]);}
+      catch(err){alert(`Price sheet record deleted, but its stored file needs cleanup: ${err.message}`);}
+      if(reimport){setSelectedVendorId(doc.vendorId);setImportMode("pricelist");setShowPaste(true);}
+    }catch(err){alert(err.message);}
+  }
+
+  async function clearPriceSheet(doc){
+    const active=vendorItems.filter(vi=>vi.vendor_id===doc.vendorId&&vi.import_row?.sourceDocumentId===doc.id&&quoteStatus(vi,org?.settings||{})==="current");
+    if(!active.length){alert("This sheet has no current prices to clear.");return;}
+    if(!window.confirm(`Remove ${active.length} current price(s) from the Order Guide? This sheet stays in history, and its item links remain.`))return;
+    try{await vendorService.expireQuotes({organizationId:org.id,vendorId:doc.vendorId,vendorItemIds:active.map(vi=>vi.id)});await loadData();}
+    catch(err){alert(err.message);}
   }
 
   async function loadOlderPriceHistory(){
@@ -736,7 +758,7 @@ export default function App() {
       <header style={{background:"#003584",color:"white",padding:"0 16px",height:52,
         display:"flex",alignItems:"center",justifyContent:"space-between",
         position:"sticky",top:0,zIndex:200,boxShadow:"0 2px 8px rgba(0,0,0,0.3)"}}>
-        <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={()=>setTab("order")}>
+        <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={openOrderGuide}>
           <span style={{fontSize:24}}>🦉</span>
           <div style={{fontWeight:900,fontSize:15,letterSpacing:"0.18em",color:"#4A90D9"}}>KERDOS</div>
         </div>
@@ -773,7 +795,7 @@ export default function App() {
           ["priceSheets",`📊 Price Sheets${priceSheetReviewCount>0?` (${priceSheetReviewCount})`:""}`],
           ["invoices",`📁 Invoices${invoiceReviewCount>0?` (${invoiceReviewCount})`:""}`],
           ...(org.role==="owner"||org.role==="manager"?[["team","👥 Admin"]]:[])].map(([id,label])=>(
-          <button key={id} onClick={()=>setTab(id)}
+          <button key={id} onClick={()=>id==="order"?openOrderGuide():setTab(id)}
             style={{flex:1,padding:"12px 4px",border:"none",background:"none",cursor:"pointer",
               fontSize:12,fontWeight:600,
               color:tab===id?"#003584":"#888",
@@ -1294,6 +1316,7 @@ export default function App() {
             formatDate={formatDate} formatMoney={formatMoney} orgSettings={org.settings} role={org.role}
             onImport={vendorId=>{setSelectedVendorId(vendorId);setImportMode("pricelist");setShowPaste(true);}}
             onExpireVendor={expireVendorQuotes} onExpireOne={expireOneQuote}
+            onDelete={deletePriceSheet} onClear={clearPriceSheet}
             onViewOriginal={viewStoredFile} onViewSource={viewSourceDocument}
             expandedId={expandedPricePeriod} setExpandedId={setExpandedPricePeriod}
             unavailableCount={priceUnavailableItems.length} expiredCount={expiredItems.length}

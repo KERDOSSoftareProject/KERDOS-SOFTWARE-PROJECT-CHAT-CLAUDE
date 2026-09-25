@@ -12,7 +12,7 @@ export function assertBackendContract(backend) {
   const methods = {
     session:["get","subscribe","signIn","signUp","signOut"],
     workspace:["memberships","snapshot"],
-    documents:["upload","signedUrl","remove"],
+    documents:["upload","signedUrl","remove","deletePriceSheet","deleteInvoiceRecord"],
     realtime:["subscribeToOrganization"],
     pricing:["applyQuote"],
     catalog:["saveRow"],
