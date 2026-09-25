@@ -17,7 +17,12 @@ const SNAPSHOT_QUERIES = Object.freeze([
 
 export function createSupabaseBackend({url,anonKey}) {
   if(!url||!anonKey) throw new Error("Supabase adapter requires an external URL and anonymous key");
-  const client=createClient(url,anonKey);
+  // Auth belongs to this browser tab. A refresh or a switch to another tab
+  // keeps the session; closing this tab ends it. Remove the old default
+  // localStorage token once so an earlier persistent login cannot revive it.
+  const storageKey=`sb-${new URL(url).hostname.split(".")[0]}-auth-token`;
+  try{window.localStorage.removeItem(storageKey);}catch{}
+  const client=createClient(url,anonKey,{auth:{storage:window.sessionStorage,storageKey,persistSession:true}});
   return {
     kind:"supabase",
     session:{
