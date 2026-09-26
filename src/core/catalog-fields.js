@@ -43,10 +43,10 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category}){
 // field too: repeat vendor shorthand must not erase a client's clean wording.
 const FIELDS={description:"description",brand:"brand",packSize:"pack_size"};
 export function rememberImportRow(row,prior,mapping=null){
-  if(!prior||!row.code||String(row.code)!==String(prior.vendor_item_code))return row;
+  if(!prior||(row.code?String(row.code)!==String(prior.vendor_item_code):!!prior.vendor_item_code))return row;
   if(mapping?.vendor_item_id===prior.id&&mapping.comparison_track==="exact"&&mapping.confidence_score===100){
-    // Established identity: vendor + vendor item code is the key. Price
-    // updates never have to prove the description or pack again.
+    // The import resolved this vendor listing first. The saved association
+    // and field corrections survive changes in document row order.
     const changes=knownItemChanges(row,prior);
     const conflicts=changes.map(change=>change.reason);
     return {...row,description:prior.description,brand:prior.brand||"",packSize:prior.pack_size,
@@ -64,7 +64,7 @@ export function rememberImportRow(row,prior,mapping=null){
     const same=incoming===original||incoming===corrected||!incoming||
       (input==="description"&&[original,corrected].filter(Boolean).some(d=>compareProductIdentity(incoming,d).status==="same"))||
       (input==="packSize"&&[original,corrected].filter(Boolean).some(p=>comparePurchasingPack(incoming,p).status==="same"));
-    if(!same)throw new Error(`Vendor item ${row.code}: ${input} changed from the known source. The saved correction and association were kept; review this field.`);
+    if(!same)throw new Error(`Vendor item ${row.code||`NVIM-${prior.nvim_number}`}: ${input} changed from the known source. The saved correction and association were kept; review this field.`);
     result[input]=remembered.value??"";
   }
   return result;

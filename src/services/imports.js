@@ -8,11 +8,12 @@ export function createImportService(backend){
     findPriceDocument({organizationId,vendorId,fingerprint}){return run(table("import_documents").select("id,status").eq("organization_id",organizationId).eq("vendor_id",vendorId).eq("document_kind","pricelist").eq("fingerprint",fingerprint).maybeSingle(),"Could not verify whether the file was already imported");},
     createPriceDocument(row){return run(table("import_documents").insert(row).select("id").single(),"Could not preserve the source document");},
     finalizeDocument(documentId,status){return run(table("import_documents").update({status}).eq("id",documentId),"Could not finalize the source record");},
-    findVendorItem({organizationId,vendorId,code,description}){
-      let query=table("vendor_items").select("*").eq("organization_id",organizationId).eq("vendor_id",vendorId);
-      query=code?query.eq("vendor_item_code",code):query.eq("description",description);
-      return run(query.maybeSingle(),"Could not look up the item");
+    findVendorItem({organizationId,vendorId,code}){
+      return run(table("vendor_items").select("*").eq("organization_id",organizationId)
+        .eq("vendor_id",vendorId).eq("vendor_item_code",code).maybeSingle(),"Could not look up the item");
     },
+    vendorItemById(organizationId,vendorId,itemId){return run(table("vendor_items").select("*")
+      .eq("organization_id",organizationId).eq("vendor_id",vendorId).eq("id",itemId).maybeSingle(),"Could not inspect the selected vendor listing");},
     vendorItems(organizationId,vendorId){return run(table("vendor_items").select("*").eq("organization_id",organizationId).eq("vendor_id",vendorId),"Could not inspect existing vendor products");},
     mapping(organizationId,vendorItemId){return run(table("item_mappings").select("*").eq("organization_id",organizationId).eq("vendor_item_id",vendorItemId).maybeSingle(),"Could not check the catalog link");},
     createMapping(row){return run(table("item_mappings").insert(row).select("id").single(),"Could not link the item to your catalog");},

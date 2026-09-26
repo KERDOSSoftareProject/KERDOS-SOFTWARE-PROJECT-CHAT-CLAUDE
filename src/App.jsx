@@ -323,7 +323,7 @@ export default function App() {
         const brandMismatch=!!lockedBrand&&!brandsMatch(vi.brand,lockedBrand);
         return {
           vendorId:v.id, vendorName:v.name,
-          vendorItemId:vi.id, vendorItemCode:vi.vendor_item_code,
+          vendorItemId:vi.id, vendorItemCode:vi.vendor_item_code,vendorNvim:vi.nvim_number,
           brand:vi.brand, packSize:pack, description:vi.description,
           casePrice:quote==="unavailable"&&vi.price_basis==null?null:price??(vi.price==null?null:parseFloat(vi.price)),
           quotedPrice:vi.price==null?null:parseFloat(vi.price), quoteBasis, quoteUnit, basisUnconvertible,

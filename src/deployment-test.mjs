@@ -10,6 +10,7 @@ const requiredMigrations=[
   "migration_007_atomic_invoices.sql","migration_009_price_basis.sql",
   "migration_010_catalog_rows.sql",
   "migration_011_document_deletion.sql",
+  "migration_012_vendor_nvim.sql",
 ];
 for(const file of requiredMigrations) assert.ok(fs.statSync(path.join(root,"knowledge",file)).size>100,`${file} missing or empty`);
 

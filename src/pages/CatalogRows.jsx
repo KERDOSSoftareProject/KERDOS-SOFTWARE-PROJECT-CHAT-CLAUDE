@@ -4,6 +4,7 @@ import {createCatalogRowsService} from "../services/catalog-rows.js";
 import {CATALOG_COLUMNS,catalogRowEvidence,unitChoices} from "../core/catalog-fields.js";
 import {parsePackSize} from "../procurement.js";
 import {formatMoney} from "../localization.js";
+import {vendorListingLabel} from "../core/vendor-listing.js";
 import {btn,inp} from "../ui/styles.js";
 
 const service=createCatalogRowsService(backend);
@@ -55,8 +56,8 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
     <tr style={{background:dirty?"#FFFDF3":"white"}}>
       {CATALOG_COLUMNS.map(([key])=>{
         const f=evidence[key];let content;
-        if(key==="itemNumber")content=<><b>#{f.value}</b><small style={{display:"block"}}>Vendor #{vendorItem.vendor_item_code||"—"}</small></>;
-        else if(key==="vendor")content=f.value;
+        if(key==="itemNumber")content=<b>#{f.value}</b>;
+        else if(key==="vendor")content=<><b>{f.value}</b><small style={{display:"block"}}>{vendorItem.vendor_item_code?`Vendor #${vendorItem.vendor_item_code}`:vendorListingLabel(vendorItem)||"NVIM pending"}</small></>;
         else if(key==="category")content=<select aria-label={`Category for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:130}} disabled={!canManage||busy} value={categoryId||""} onChange={e=>edit("category_id",e.target.value)}><option value="" disabled>Choose category</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>;
         else if(key==="pack")content=<><select aria-label={`Pack for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:175}} disabled={!canManage||busy} value={packMode||current.pack_size||""} onChange={e=>{const value=e.target.value;if(value==="__case__"||value==="__each__"||value==="__custom__")openPackEditor(value);else{setPackMode("");edit("pack_size",value);}}}><option value="">Select pack type and size</option><option value="__case__">Case / full pack — set quantities…</option><option value="__each__">Each / individual item — set size…</option><optgroup label="Previously seen pack sizes">{current.pack_size&&!packOptions.includes(current.pack_size)&&<option value={current.pack_size}>{packLabel(current.pack_size)}</option>}{packOptions.map(pack=><option key={pack} value={pack}>{packLabel(pack)}</option>)}</optgroup><option value="__custom__">Other — enter a custom pack…</option></select><small style={{display:"block"}}>Saved pack: {current.pack_size||"not set"}</small>{canManage&&<button style={{border:0,background:"none",color:"#245785",cursor:"pointer",fontSize:11}} onClick={()=>openPackEditor(packMode)}>Set pack quantities</button>}{customPack&&<input aria-label={`Custom pack for ${vendorItem.vendor_item_code}`} style={{...inputStyle,marginTop:4}} disabled={busy} value={current.pack_size||""} placeholder="e.g. 4/10 LB" onChange={e=>edit("pack_size",e.target.value)}/>}</>;
         else if(fields[key])content=<input aria-label={`${key} for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:key==="product"?220:95}} disabled={!canManage||busy} type={key==="price"?"number":"text"} step={key==="price"?"any":undefined} min={key==="price"?"0":undefined} value={current[fields[key]]??""} placeholder={key==="brand"?"Blank if absent":""} onChange={e=>edit(fields[key],e.target.value)} />;

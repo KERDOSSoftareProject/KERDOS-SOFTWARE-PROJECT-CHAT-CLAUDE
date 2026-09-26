@@ -4,10 +4,14 @@ import {suggestCategory,parsePackSize,casePriceFromQuote,pricePerUnit,bestPurcha
 import {rememberImportRow} from "./catalog-fields.js";
 import {resolveQuoteBasis} from "./quote-basis.js";
 import {quoteContext} from "../knowledge/category-profiles.js";
+import {findUncodedVendorListing,vendorListingLabel} from "./vendor-listing.js";
 
 const field=(value,accuracy,reason,source="document")=>({value,accuracy,reason,source});
 export function explainImportRow(row,{vendor=null,categories=[],catalogItems=[],vendorItems=[],mappings=[],documentRows=[]}={}){
-  const prior=vendorItems.find(vi=>vi.vendor_id===vendor?.id&&row.code&&String(vi.vendor_item_code)===String(row.code));
+  const vendorListings=vendorItems.filter(vi=>vi.vendor_id===vendor?.id);
+  const prior=(row.selectedVendorItemId?vendorListings.find(vi=>vi.id===row.selectedVendorItemId):null)
+    ||(row.code?vendorListings.find(vi=>String(vi.vendor_item_code)===String(row.code)):null)
+    ||findUncodedVendorListing(row,vendorListings).item;
   const savedMapping=prior?mappings.find(m=>m.vendor_item_id===prior.id):null;
   const savedItem=savedMapping?catalogItems.find(c=>c.id===savedMapping.catalog_item_id):null;
   if(savedMapping?.comparison_track==="exact"&&savedMapping.confidence_score===100){
@@ -41,7 +45,7 @@ export function explainImportRow(row,{vendor=null,categories=[],catalogItems=[],
   const number=savedItem?.master_item_number??candidate?.master_item_number??null;
   return {
     itemNumber:field(number,savedItem?(savedMapping.comparison_track==="exact"?100:75):matchAccuracy,savedItem?"Existing vendor item number linked to this KERDOS number":number?matchAccuracy===100?"Existing item is consistent with the linked product and pack":"Possible existing item; check all defining details":"New KERDOS item number will be assigned on import","catalog"),
-    vendor:field(vendor?.name||null,vendor?.name?100:0,vendor?.name?"Selected vendor":"Vendor not selected","selection"),
+    vendor:field(vendor?.name?`${vendor.name} · ${row.code?`Vendor #${row.code}`:vendorListingLabel(prior)||"NVIM assigned on save"}`:null,vendor?.name?100:0,vendor?.name?"Vendor selected; KERDOS assigns NVIM only if the vendor supplied no item code":"Vendor not selected","selection"),
     category:field(category?.category?.name||null,["confident","confirmed"].includes(category?.confidence)?100:category?75:0,category?.reason||"No category evidence; place for review",selectedCategory?"manual selection":"category profile"),
     product:field(description||null,description?100:0,description?"Description extracted; product identity requires comparison with other listings":"Description missing"),
     brand:field(brand||null,brand?100:null,brand?"Brand stated on source":"Brand not provided; left blank"),
