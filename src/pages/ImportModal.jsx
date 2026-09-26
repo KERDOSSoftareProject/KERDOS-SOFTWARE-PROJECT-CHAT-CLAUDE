@@ -145,6 +145,14 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
   function approveIssue(groupId,index){setAcceptedIssues(prev=>new Set([...prev,`${groupId}:${index}`]));}
 
   async function doSave(){
+    try { await saveImport(); }
+    catch(error){
+      setSaveReview(`Import stopped: ${error.message||String(error)}. Items already saved remain in your catalog; check the import history before retrying.`);
+      setLoading(false);
+    }
+  }
+
+  async function saveImport(){
     if(mode==="pricelist"&&invoiceLoad==="loading"){setSaveReview("Checking existing invoices. Try again in a moment.");return;}
     if(mode==="pricelist"&&invoiceConflicts.length){setSaveReview(`${invoiceConflicts.length} price-sheet row(s) disagree with invoices. Open Details and review each difference before saving.`);return;}
     if(missingInvoiceDates.length){setSaveReview("Confirm the invoice date for each document before recording invoice charges.");return;}
@@ -152,7 +160,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
     if(mode==="invoice"&&needsReview.length){setSaveReview(`${needsReview.length} ambiguous row(s) still need a deliberate correction or approval. No unreviewed amount will change a current vendor quote.`);return;}
     setSaveReview("");setLoading(true);
     const vendor=vendors.find(v=>v.id===vendorId);
-    let updated=0,created=0,invoiceTotal=0,invoicesCreated=0,mapped=0,packsFilled=0,basisReview=0;
+    let updated=0,created=0,invoiceTotal=0,invoicesCreated=0,mapped=0,packsFilled=0,basisReview=0,invoiceLinks=0;
     const identified=[];
     let saveError=null;
 
@@ -337,6 +345,8 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
       // and orderable, instead of vanishing into a permanent "no match".
       const workingCatalogItems=[...catalogItems];
       const workingCategories=[...categories];
+      const workingVendorItems=[...vendorItems];
+      const workingMappings=[...mappings];
 
       for(const group of parsedGroups){
         if(!group.rows.length) continue;
@@ -420,13 +430,22 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           // silently misleading.
           if(!matched&&!codeConflict&&row.description){
             try{
-              pendingCatalog=await catalogService.matchOrCreate({organizationId:orgId,vendorId,description:row.description,packSize:row.packSize,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems,mappings});
+              pendingCatalog=await catalogService.matchOrCreate({organizationId:orgId,vendorId,description:row.description,packSize:row.packSize,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems:workingVendorItems,mappings:workingMappings});
               method="created_from_invoice"; confidence=null;
               invoiceIdentified.push({description:row.description,packSize:row.packSize||null,price:row.price,track:pendingCatalog.track,confidence:pendingCatalog.score==null?null:Math.round(pendingCatalog.score*100),reason:pendingCatalog.reason||null,invoice:true});
             }catch(err){
               method="unmatched";
               saveError=(saveError?saveError+" ":"")+`"${row.description}": ${err.message||String(err)}`;
             }
+          }
+          // A vendor listing can already exist from an older import but have
+          // no catalog link. An invoice must repair that gap too.
+          if(matched&&!workingMappings.some(link=>link.vendor_item_id===matched.id)){
+            try{
+              pendingCatalog=await catalogService.matchOrCreate({organizationId:orgId,vendorId,description:matched.description,packSize:matched.pack_size||row.packSize,brand:matched.brand||null,gtin:matched.gtin||null,manufacturerCode:matched.manufacturer_code||null,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems:workingVendorItems,mappings:workingMappings});
+              invoiceIdentified.push({description:row.description,packSize:matched.pack_size||row.packSize||null,price:row.price,track:pendingCatalog.track,confidence:pendingCatalog.score==null?null:Math.round(pendingCatalog.score*100),reason:pendingCatalog.reason||null,invoice:true});
+              workingMappings.push({vendor_item_id:matched.id,catalog_item_id:pendingCatalog.catalogItemId});
+            }catch(error){saveError=(saveError?saveError+" ":"")+`"${row.description}": catalog link needs review (${error.message||String(error)}).`;}
           }
           if(codeConflict)saveError=(saveError?saveError+" ":"")+`Invoice line ${row.description}: ${method?.startsWith("ambiguous")?"multiple vendor products could match":"item code conflicts with the previously identified product"}; the original invoice line was recorded without a product link.`;
           let quotedPrice=null,quote=null;
@@ -471,6 +490,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
             raw_text:group.text,invoice_date:group.invoiceDate,invoice_number:invoiceNo,
             file_path:filePath,file_name:fileName,
           },linesToInsert);
+          invoiceLinks+=linesToInsert.filter(line=>line.catalog_item_id).length;
           invoicesCreated++;
           invoiceTotal+=groupTotal;
           identified.push(...invoiceIdentified);
@@ -481,19 +501,21 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
       }
     }
 
-    setResult({mode,vendor:vendor?.name,updated,created,mapped,basisReview,invoiceTotal:r2(invoiceTotal),invoicesCreated,count:allRows.length,error:saveError,identified,packsFilled});
-    await onDone();
+    setResult({mode,vendor:vendor?.name,updated,created,mapped,basisReview,invoiceLinks,invoiceTotal:r2(invoiceTotal),invoicesCreated,count:allRows.length,error:saveError,identified,packsFilled});
+    try{await onDone();}
+    catch(error){setResult(previous=>({...previous,error:[previous.error,`Saved, but the catalog could not refresh: ${error.message||String(error)}. Reload the app to see the saved items.`].filter(Boolean).join(" ")}));}
     setStep(3);setLoading(false);
   }
 
-  // Invoice recording retains its existing flow. A price sheet always shows
-  // field evidence before changing current quotes or catalog mappings.
+  // Start saving as soon as the parsed rows and invoice cross-reference are
+  // ready. A person is needed only when the source contradicts prior evidence.
   useEffect(()=>{
-    if(mode!=="invoice"||step!==2||autoSaveStarted||loading||!allRows.length) return;
+    if(step!==2||autoSaveStarted||loading||!allRows.length) return;
     if(unsafeDocuments.length||missingInvoiceDates.length||needsReview.length) return;
+    if(mode==="pricelist"&&(invoiceLoad==="loading"||invoiceConflicts.length))return;
     setAutoSaveStarted(true);
     doSave();
-  },[mode,step,autoSaveStarted,loading,allRows.length,unsafeDocuments.length,missingInvoiceDates.length,needsReview.length]);
+  },[mode,step,autoSaveStarted,loading,allRows.length,unsafeDocuments.length,missingInvoiceDates.length,needsReview.length,invoiceLoad,invoiceConflicts.length]);
 
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
@@ -549,7 +571,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
 
         {step===2&&<>
           <div style={{background:"#E8F5E9",padding:"10px 14px",borderRadius:8,marginBottom:14,fontSize:13}}>
-            Found {allRows.length} items across {parsedGroups.length} document{parsedGroups.length===1?"":"s"} — review and confirm
+            Found {allRows.length} items across {parsedGroups.length} document{parsedGroups.length===1?"":"s"} — {loading?"saving automatically…":unsafeDocuments.length||missingInvoiceDates.length||needsReview.length||invoiceConflicts.length?"resolve the highlighted issue to finish saving":"saving automatically…"}
           </div>
           {mode==="invoice"&&parsedGroups.map(g=><label key={g.id} style={{display:"block",fontSize:12,marginBottom:7}}>
             Invoice date for {g.name}: <input type="date" value={g.invoiceDate||""} onChange={e=>setParsedGroups(groups=>groups.map(x=>x.id===g.id?{...x,invoiceDate:e.target.value}:x))} />
@@ -612,24 +634,22 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           {saveReview&&<div style={{color:"#B71C1C",fontSize:12,marginBottom:8}}>{saveReview}</div>}
           <div style={{display:"flex",gap:8}}>
             <button onClick={()=>setStep(1)} style={{...btn("#EEE","#555"),flex:1}}>← Back</button>
-            <button onClick={doSave} disabled={loading||!allRows.length||unsafeDocuments.length>0||(mode==="invoice"&&needsReview.length>0)||missingInvoiceDates.length>0||(mode==="pricelist"&&(invoiceLoad==="loading"||invoiceConflicts.length>0))} style={{...btn("#003584"),flex:2}}>
-              {loading?"Saving...":mode==="invoice"?`Save ${parsedGroups.filter(g=>g.rows.length).length} invoice${parsedGroups.filter(g=>g.rows.length).length===1?"":"s"}`:"Save "+allRows.length+" items"}
-            </button>
+            {(saveReview||unsafeDocuments.length||missingInvoiceDates.length||needsReview.length||invoiceConflicts.length)?<button onClick={doSave} disabled={loading||!allRows.length||unsafeDocuments.length>0||needsReview.length>0||missingInvoiceDates.length>0||invoiceLoad==="loading"||invoiceConflicts.length>0} style={{...btn("#003584"),flex:2}}>Continue after resolving issues</button>:<div role="status" style={{flex:2,padding:10,textAlign:"center",color:"#003584",fontWeight:700}}>Processing automatically…</div>}
           </div>
         </>}
 
         {step===3&&result&&(
           <div style={{textAlign:"center",padding:"20px 0"}}>
             <div style={{fontSize:40,marginBottom:12}}>{result.error?"⚠️":"✅"}</div>
-            <h3 style={{margin:"0 0 8px"}}>{result.vendor}</h3>
+            <h3 style={{margin:"0 0 8px"}}>{result.error?"Done with items needing attention":"Done"} · {result.vendor}</h3>
             {result.mode==="pricelist"
               ?<p style={{color:"#666",fontSize:14}}>{result.updated} items updated · {result.created} new items added · {result.mapped} linked to your catalog{result.identified?.length?` · ${result.identified.filter(item=>item.track==="exact"&&item.confidence===100).length} of ${result.identified.length} verified automatically`:""}</p>
-              :<p style={{color:"#666",fontSize:14}}>{result.invoicesCreated} invoice{result.invoicesCreated===1?"":"s"} recorded · {result.count} line{result.count===1?"":"s"} · {formatMoney(result.invoiceTotal)} total{result.packsFilled?` · ${result.packsFilled} missing pack size${result.packsFilled===1?"":"s"} filled from this invoice`:""}</p>}
+              :<p style={{color:"#666",fontSize:14}}>{result.invoicesCreated} invoice{result.invoicesCreated===1?"":"s"} recorded · {result.count} line{result.count===1?"":"s"} · {result.invoiceLinks} catalog link{result.invoiceLinks===1?"":"s"} saved · {formatMoney(result.invoiceTotal)} total{result.packsFilled?` · ${result.packsFilled} missing pack size${result.packsFilled===1?"":"s"} filled from this invoice`:""}</p>}
             {result.identified?.length>0&&<div style={{textAlign:"left",background:"#F7F9FC",borderRadius:8,padding:12,maxHeight:230,overflowY:"auto"}}>
               <div style={{fontWeight:700,fontSize:13,marginBottom:7}}>{result.identified.length} vendor listing{result.identified.length===1?"":"s"} linked to your catalog</div>
               {result.identified.map((item,i)=><div key={i} style={{background:"white",border:"1px solid #E1E7F0",borderRadius:6,padding:8,marginBottom:5,fontSize:12}}>
                 <b>{item.description}</b><div>Pack: {item.packSize||"Not provided"} · {formatMoney(item.price)}{item.invoice?" paid on invoice (historical)":" quoted"}</div>
-                <div style={{color:item.track==="exact"&&item.confidence===100&&item.packSize?"#2E7D32":"#B26A00"}}>{item.track==="exact"&&item.confidence===100&&item.packSize?"Mapped · 100%":"Not mapped"}{item.track==="review"&&item.confidence!=null?` · ${item.confidence}% wording similarity`:""}{item.track==="review"&&item.reason?` · ${item.reason}`:""}</div>
+                <div style={{color:item.track==="exact"&&item.confidence===100&&item.packSize?"#2E7D32":"#B26A00"}}>{item.track==="exact"&&item.confidence===100&&item.packSize?"Linked · verified 100%":"Linked · needs verification"}{item.track==="review"&&item.confidence!=null?` · ${item.confidence}% wording similarity`:""}{item.track==="review"&&item.reason?` · ${item.reason}`:""}</div>
               </div>)}
               {result.identified.some(item=>item.track!=="exact"||item.confidence!==100||!item.packSize)&&<div style={{fontSize:11,color:"#666"}}>Finish mapping these products in Item Catalog before their prices appear in the Order Guide.</div>}
             </div>}

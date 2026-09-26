@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { backend } from "./backend/index.js";
 import { createSessionController } from "./session.js";
 import { createDocumentService } from "./services/documents.js";
@@ -266,29 +266,40 @@ export default function App() {
   },[vendorItems,mappings]);
 
   const [backfilling,setBackfilling]=useState(false);
+  const [catalogRepairError,setCatalogRepairError]=useState("");
+  const attemptedCatalogRepair=useRef(new Set());
   async function backfillMappings(){
     setBackfilling(true);
+    setCatalogRepairError("");
     const mappedIds=new Set(mappings.map(m=>m.vendor_item_id));
     const unmapped=vendorItems.filter(vi=>!mappedIds.has(vi.id));
     const workingCatalogItems=[...catalogItems];
     const workingCategories=[...categories];
-    let linked=0, failed=0, firstError=null;
+    const workingMappings=[...mappings];
+    let failed=0, firstError=null;
     for(const vi of unmapped){
       try{
-        const match=await catalogService.matchOrCreate({organizationId:org.id,vendorId:vi.vendor_id,description:vi.description,packSize:vi.pack_size,brand:vi.brand||null,gtin:vi.gtin||null,manufacturerCode:vi.manufacturer_code||null,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems,mappings});
+        const match=await catalogService.matchOrCreate({organizationId:org.id,vendorId:vi.vendor_id,description:vi.description,packSize:vi.pack_size,brand:vi.brand||null,gtin:vi.gtin||null,manufacturerCode:vi.manufacturer_code||null,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems,mappings:workingMappings});
         if(!match) continue;
         await importService.createMapping({
           organization_id:org.id, catalog_item_id:match.catalogItemId, vendor_item_id:vi.id,
           confidence_score:Math.round((match.score??0)*100),
           match_method:"rule_based", comparison_track:match.track,
         });
-        linked++;
+        workingMappings.push({vendor_item_id:vi.id,catalog_item_id:match.catalogItemId});
       }catch(err){ failed++; if(!firstError) firstError=err.message||String(err); }
     }
-    if(failed) alert(`Linked ${linked} item${linked===1?"":"s"}; ${failed} could not be linked. First error: ${firstError}`);
-    await loadData();
-    setBackfilling(false);
+    if(failed)setCatalogRepairError(`${failed} vendor item${failed===1?"":"s"} could not be linked. ${firstError}`);
+    try{await loadData();}finally{setBackfilling(false);}
   }
+
+  useEffect(()=>{
+    if(tab!=="catalog"||!org||org.role==="employee"||backfilling||!unmappedCount)return;
+    const key=`${org.id}:${vendorItems.filter(vi=>!mappings.some(m=>m.vendor_item_id===vi.id)).map(vi=>vi.id).sort().join(",")}`;
+    if(attemptedCatalogRepair.current.has(key))return;
+    attemptedCatalogRepair.current.add(key);
+    void backfillMappings();
+  },[tab,org?.id,org?.role,unmappedCount,vendorItems,mappings,backfilling]);
 
   const productList=useMemo(()=>{
     if(!catalogItems.length) return [];
@@ -1348,11 +1359,7 @@ export default function App() {
           <>
             {org.role!=="employee"&&unmappedCount>0&&(
               <div style={{background:"#FFF3E0",borderRadius:10,padding:16,marginBottom:14,textAlign:"center"}}>
-                <div style={{fontWeight:800,color:"#E65100",marginBottom:4}}>Finish bringing {unmappedCount} imported vendor item{unmappedCount===1?"":"s"} into Item Catalog</div>
-                <p style={{color:"#8A5A00",fontSize:12,margin:"0 0 10px"}}>KERDOS will link equivalent vendor descriptions to one client-owned item and create a new client item only when no safe match exists. Your Full List remains one alphabetical catalog—not a copy of every price-sheet row.</p>
-                <button onClick={backfillMappings} disabled={backfilling} style={{...btn("#E65100")}}>
-                  {backfilling?"Building catalog...":`Add imported items to Item Catalog`}
-                </button>
+                <div role="status" style={{fontWeight:800,color:"#E65100"}}>{backfilling?`Bringing ${unmappedCount} imported item${unmappedCount===1?"":"s"} into the catalog…`:catalogRepairError||`${unmappedCount} imported item${unmappedCount===1?"":"s"} waiting for catalog links`}</div>
               </div>
             )}
             <ItemCatalogPanel orgId={org.id} role={org.role} productList={productList} vendors={vendors} catalogItems={catalogItems} mappings={mappings}
