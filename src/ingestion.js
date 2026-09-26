@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
-import {measurement,normalizeGtin,normalizeManufacturerCode,packFromDescription} from "./procurement.js";
+import {measurement,normalizeGtin,normalizeManufacturerCode,packFromDescription,parsePackSize} from "./procurement.js";
 // KERDOS INGESTION MODULE
 // ════════════════════════════════════════════════════════════════════
 //
@@ -403,17 +403,34 @@ function extractRow(cells, columnMap) {
   const packSize = columnPack || descriptionPack;
   const packSource = columnPack ? "column" : descriptionPack ? "description" : null;
   const qty = parseMoneyLenient(get("qty"));
-  const unassigned=cells.map((value,index)=>({value:value.trim(),index}))
-    .filter(cell=>cell.value&&!Object.values(columnMap).includes(cell.index));
-  const issues=unassigned.length?[`Additional source details need identification: ${unassigned.map(cell=>cell.value).join(" | ").slice(0,100)}`]:[];
+  // Cells in columns the sheet never labeled (a brand, a grade, a type)
+  // are kept with the row as details and shown in the item name as the
+  // vendor wrote them. They are not a problem to resolve on import; the
+  // engine may later place one in the brand box, and the client can
+  // correct any of it in Item Catalog.
+  let details=cells.map((value,index)=>({value:value.trim(),index}))
+    .filter(cell=>cell.value&&!Object.values(columnMap).includes(cell.index)&&parseMoney(cell.value)===null&&!isNoPricePlaceholder(cell.value))
+    .map(cell=>cell.value);
+  // A row with no item code whose unlabeled cell looks like one ("X2700",
+  // "1234567", "AB-100") gets that cell as its code; the engine says so.
+  let rowCode=code;
+  let codeSource=code?"column":null;
+  if(!rowCode){
+    const codeLike=details.find(detail=>/^[A-Z0-9][A-Z0-9\-\/\.]{2,15}$/i.test(detail)&&/\d/.test(detail)&&!parsePackSize(detail)?.parsed);
+    if(codeLike){rowCode=codeLike;codeSource="details";details=details.filter(detail=>detail!==codeLike);}
+  }
+  const fullDescription=[description,...details.filter(detail=>!description.toLowerCase().includes(detail.toLowerCase()))].join(" ").trim();
+  const issues=[];
 
   return {
-    code,
+    code: rowCode,
+    codeSource,
     brand,
     gtin,
     manufacturerCode,
     sellingUnit,
-    description: description.slice(0, 120),
+    description: fullDescription.slice(0, 120),
+    details,
     packSize,
     packSource,
     qty: qty !== null ? qty : null,
@@ -495,6 +512,9 @@ function reviewUncertainRows(rows,documentKind){
   return rows.map(row=>{
     const issues=[...(row.issues||[])];
     if(documentKind==="invoice"){
+      // An invoice line must be fully understood before it can touch a
+      // quote; unlabeled cells on it still need a person.
+      if(row.details?.length)issues.push(`Unlabeled invoice details need identification: ${row.details.join(" | ").slice(0,100)}`);
       if(row.qty==null)issues.push("Invoice quantity or selling unit could not be verified from the source line");
       if(!row.code&&/^\d+[\s\-]/.test(row.description||""))issues.push("Vendor item code may have been included in the product description");
       if(row.qty!=null&&row.amount!=null&&row.price!=null&&Math.abs(row.qty*row.price-row.amount)>0.02)

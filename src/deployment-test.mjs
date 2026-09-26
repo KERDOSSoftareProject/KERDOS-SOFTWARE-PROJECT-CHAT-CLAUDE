@@ -22,6 +22,14 @@ const migrationSql=requiredMigrations.map(file=>fs.readFileSync(path.join(root,"
 for(const rpc of [...adapter.matchAll(/client\.rpc\("([^"]+)"/g)].map(match=>match[1]))
   assert.match(migrationSql,new RegExp(`function\\s+(?:public\\.)?${rpc}\\b`,`i`),`adapter RPC ${rpc} has no migration`);
 
+// A price-sheet import must never wait on a person: the auto-save may hold
+// only for a document that is not a price sheet, or for invoices. Rows with
+// issues are saved with the issues attached for Item Catalog.
+const importModal=fs.readFileSync(path.join(root,"src/pages/ImportModal.jsx"),"utf8");
+assert.match(importModal,/if\(mode==="invoice"&&\(missingInvoiceDates\.length\|\|needsReview\.length\)\) return;/,"price-sheet auto-save must not be gated on row issues");
+assert.ok(!/if\(unsafeDocuments\.length\|\|missingInvoiceDates\.length\|\|needsReview\.length\) return;/.test(importModal),"old price-sheet review gate must be gone");
+assert.match(importModal,/conflicts:rowNeedsReview\?rowIssues:\[\]/,"row issues must be saved on the vendor listing for Item Catalog");
+
 // Every adapter parameter of the quote RPC must exist in the migrated function signature.
 for(const param of [...adapter.matchAll(/\bp_[a-z_]+(?=:)/g)].map(m=>m[0]))
   assert.match(migrationSql,new RegExp(`\\b${param}\\b`),`adapter passes ${param} but no migration declares it`);

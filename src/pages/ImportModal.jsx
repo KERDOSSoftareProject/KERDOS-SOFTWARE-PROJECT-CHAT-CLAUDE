@@ -13,7 +13,6 @@ import {explainImportRow} from "../core/import-evidence.js";
 import {rememberImportRow,importResolutions,unitChoices} from "../core/catalog-fields.js";
 import {resolveQuoteBasis} from "../core/quote-basis.js";
 import {invoiceEvidence} from "../core/invoice-evidence.js";
-import {quoteContext} from "../knowledge/category-profiles.js";
 import {btn,inp} from "../ui/styles.js";
 
 const catalogService=createCatalogService(backend);
@@ -22,7 +21,7 @@ const documents=createDocumentService(backend);
 const importService=createImportService(backend);
 const r2=value=>Math.round(value*100)/100;
 
-export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vocabulary=[],vendorItems=[],mappings=[],onClose,onDone,initialVendorId,initialMode}) {
+export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vocabulary=[],vendorItems=[],mappings=[],onClose,onDone,onFinished,initialVendorId,initialMode}) {
   const [vendorId,setVendorId]=useState(initialVendorId||vendors[0]?.id||"");
   const mode=initialMode||"pricelist";
   const [pastedText,setPastedText]=useState("");
@@ -86,6 +85,29 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
     setFileGroups(prev=>prev.filter(g=>g.id!==id));
   }
 
+  // What this sheet's prices are for, when the sheet doesn't say. "As
+  // stated" assumes nothing; choosing Case/Each/a unit applies to every
+  // row that has no selling unit of its own. One choice replaces one
+  // click per row.
+  const [sheetBasis,setSheetBasis]=useState("");
+  const knownBrands=useMemo(()=>[...new Set(vendorItems.map(vi=>String(vi.brand||"").trim()).filter(Boolean))],[vendorItems]);
+  function settleRow(row){
+    let next=row;
+    if(!next.sellingUnit&&sheetBasis&&mode==="pricelist")next={...next,sellingUnit:sheetBasis,sellingUnitSource:"sheet"};
+    // An unlabeled cell that matches a brand this organization already
+    // knows is that brand; the engine fills it and says where it came from.
+    if(!next.brand&&next.details?.length&&knownBrands.length){
+      const found=next.details.find(detail=>knownBrands.some(known=>brandsMatch(known,detail)));
+      if(found)next={...next,brand:found,brandSource:"details"};
+    }
+    return next;
+  }
+  // "Import another" returns to the file picker with the same vendor and
+  // sheet setting, ready for the next file.
+  function startAnother(){
+    setFileGroups([]);setParsedGroups([]);setPastedText("");setResult(null);setSaveReview("");setParseError("");
+    setAcceptedIssues(new Set());setAcceptedInvoiceConflicts(new Set());setAutoSaveStarted(false);setStep(1);
+  }
   async function parseSources(files,text){
     // Every dropped/selected file is parsed on its own — never merged into
     // one blob of raw text — since two different vendor documents can use
@@ -103,7 +125,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
       for(const d of docs){
         try{
           const parsed=parseDocument(d.text);
-          groups.push({...d,rows:parsed.rows,skipped:parsed.skipped,documentKind:parsed.documentKind,quoteValidUntil:parsed.quoteValidUntil,invoiceDate:findDate(d.text)||""});
+          groups.push({...d,rows:parsed.rows.map(settleRow),skipped:parsed.skipped,documentKind:parsed.documentKind,quoteValidUntil:parsed.quoteValidUntil,invoiceDate:findDate(d.text)||""});
         }catch(error){throw new Error(`${d.name}: ${error.message||String(error)}`);}
         await new Promise(resolve=>setTimeout(resolve,0));
       }
@@ -135,7 +157,6 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
   const missingInvoiceDates=mode==="invoice"?parsedGroups.filter(g=>g.rows.length&&!/^\d{4}-\d{2}-\d{2}$/.test(g.invoiceDate||"")):[];
   const needsReview=parsedGroups.flatMap(g=>g.rows.map((row,index)=>({groupId:g.id,index,row})))
     .filter(x=>x.row.issues?.length&&!acceptedIssues.has(`${x.groupId}:${x.index}`));
-  const missingPriceBasis=mode==="pricelist"?evidenceRows.filter(entry=>!entry.row.priceUnavailable&&(!entry.evidence.priceBasis.value||entry.evidence.conflicts?.length)):[];
   function updateParsedRow(groupId,index,patch){
     // Editing an ambiguous row invalidates a prior approval of its old value.
     setAcceptedIssues(prev=>{const next=new Set(prev);next.delete(`${groupId}:${index}`);return next;});
@@ -154,7 +175,6 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
 
   async function saveImport(){
     if(mode==="pricelist"&&invoiceLoad==="loading"){setSaveReview("Checking existing invoices. Try again in a moment.");return;}
-    if(mode==="pricelist"&&invoiceConflicts.length){setSaveReview(`${invoiceConflicts.length} price-sheet row(s) disagree with invoices. Open Details and review each difference before saving.`);return;}
     if(missingInvoiceDates.length){setSaveReview("Confirm the invoice date for each document before recording invoice charges.");return;}
     if(unsafeDocuments.length){setSaveReview("This file identifies itself as an invoice and/or a price update inconsistent with the selected import mode. Split mixed documents, or select the correct mode before saving.");return;}
     if(mode==="invoice"&&needsReview.length){setSaveReview(`${needsReview.length} ambiguous row(s) still need a deliberate correction or approval. No unreviewed amount will change a current vendor quote.`);return;}
@@ -204,7 +224,12 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
         const basisBeforeGroup=basisReview;
       for(const sourceRow of group.rows){
         let row=sourceRow;
-        const rowNeedsReview=!!sourceRow.issues?.length&&!acceptedIssues.has(`${group.id}:${group.rows.indexOf(sourceRow)}`);
+        // A price sheet never waits on a person. A row with parser issues or
+        // an invoice disagreement is saved with those notes attached, so
+        // Item Catalog shows exactly what to finish; nothing is held back.
+        const rowKey=`${group.id}:${group.rows.indexOf(sourceRow)}`;
+        const rowIssues=[...(sourceRow.issues||[]),...(!acceptedInvoiceConflicts.has(rowKey)?(invoiceClues.get(rowKey)?.conflicts||[]):[])];
+        const rowNeedsReview=!!rowIssues.length&&!acceptedIssues.has(rowKey);
         try{
         if(!rowNeedsReview&&!row.priceUnavailable&&(!Number.isFinite(Number(row.price))||Number(row.price)<=0)) throw new Error("No confirmed positive unit price");
         let ex=row.code?await importService.findVendorItem({organizationId:orgId,vendorId,code:row.code}):null;
@@ -259,11 +284,11 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           priceUnavailable:!!row.priceUnavailable||needsBasis,effectiveDate:importBatchTime,
           quoteValidUntil:group.quoteValidUntil,sourceFilePath,
           sourceFileName:group.name,sourceLine:row.sourceLine||null,sourceDocumentId,
-          importRow:{row:sourceRow,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:rowNeedsReview,conflicts:rowNeedsReview?sourceRow.issues:[],changes:row.changes||[]},
+          importRow:{row:sourceRow,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:rowNeedsReview,conflicts:rowNeedsReview?rowIssues:[],changes:row.changes||[]},
           fieldResolutions:importResolutions(sourceRow,ex||{}),
         });
         if(needsBasis&&ex){
-          const {error}=await backend.records.query("vendor_items").update({import_row:{row:sourceRow,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,changes:row.changes||[],conflicts:rowNeedsReview?sourceRow.issues:row.conflicts?.length?row.conflicts:["Incoming quoted unit is unresolved"]}}).eq("id",ex.id).eq("organization_id",orgId);
+          const {error}=await backend.records.query("vendor_items").update({import_row:{row:sourceRow,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,changes:row.changes||[],conflicts:rowNeedsReview?rowIssues:row.conflicts?.length?row.conflicts:["Incoming quoted unit is unresolved"]}}).eq("id",ex.id).eq("organization_id",orgId);
           if(error)throw new Error(`Could not save the incoming quote for review: ${error.message}`);
         }
         if(row.brand){
@@ -501,7 +526,18 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
       }
     }
 
-    setResult({mode,vendor:vendor?.name,updated,created,mapped,basisReview,invoiceLinks,invoiceTotal:r2(invoiceTotal),invoicesCreated,count:allRows.length,error:saveError,identified,packsFilled});
+    const summary={mode,vendor:vendor?.name,updated,created,mapped,basisReview,invoiceLinks,invoiceTotal:r2(invoiceTotal),invoicesCreated,count:allRows.length,error:saveError,identified,packsFilled};
+    setResult(summary);
+    // A clean finish closes the import on its own and hands a one-line
+    // "Done" to the page behind it. The screen stays open only when
+    // something needs to be read: an error, or invoice charges to check.
+    if(!saveError&&mode==="pricelist"){
+      try{await onDone();}catch{/* the page refresh reports its own failure */}
+      setLoading(false);
+      onFinished?.({message:`Upload successful — ${allRows.length} row${allRows.length===1?"":"s"} from ${vendor?.name||"vendor"} saved${basisReview?`; ${basisReview} to finish in Item Catalog`:""}.`});
+      setStep(4);
+      return;
+    }
     try{await onDone();}
     catch(error){setResult(previous=>({...previous,error:[previous.error,`Saved, but the catalog could not refresh: ${error.message||String(error)}. Reload the app to see the saved items.`].filter(Boolean).join(" ")}));}
     setStep(3);setLoading(false);
@@ -511,8 +547,11 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
   // ready. A person is needed only when the source contradicts prior evidence.
   useEffect(()=>{
     if(step!==2||autoSaveStarted||loading||!allRows.length) return;
-    if(unsafeDocuments.length||missingInvoiceDates.length||needsReview.length) return;
-    if(mode==="pricelist"&&(invoiceLoad==="loading"||invoiceConflicts.length))return;
+    if(unsafeDocuments.length) return;
+    // Price sheets save automatically with issues attached to their rows.
+    // Invoices still wait: an unreviewed charge must never alter a quote.
+    if(mode==="invoice"&&(missingInvoiceDates.length||needsReview.length)) return;
+    if(mode==="pricelist"&&invoiceLoad==="loading")return;
     setAutoSaveStarted(true);
     doSave();
   },[mode,step,autoSaveStarted,loading,allRows.length,unsafeDocuments.length,missingInvoiceDates.length,needsReview.length,invoiceLoad,invoiceConflicts.length]);
@@ -532,6 +571,17 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
               {vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
             </select>
           </div>
+          {mode==="pricelist"&&<div style={{marginBottom:14}}>
+            <div style={{fontSize:12,fontWeight:600,color:"#666",marginBottom:4}}>Prices on this sheet are per</div>
+            <select style={inp} value={sheetBasis} onChange={e=>setSheetBasis(e.target.value)}>
+              <option value="">As stated on the sheet (rows without a unit are finished in Item Catalog)</option>
+              <option value="CS">Case — the whole pack</option>
+              <option value="EA">Each — one unit in the pack</option>
+              <optgroup label="Unit of measure">
+                {["LB","OZ","KG","GAL","QT","L"].map(u=><option key={u} value={u}>per {u}</option>)}
+              </optgroup>
+            </select>
+          </div>}
           <div style={{marginBottom:14}}>
             <div style={{fontSize:12,fontWeight:600,color:"#666",marginBottom:4}}>Drag in one or more {mode==="pricelist"?"price list":"invoice"} files</div>
             <div
@@ -571,7 +621,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
 
         {step===2&&<>
           <div style={{background:"#E8F5E9",padding:"10px 14px",borderRadius:8,marginBottom:14,fontSize:13}}>
-            Found {allRows.length} items across {parsedGroups.length} document{parsedGroups.length===1?"":"s"} — {loading?"saving automatically…":unsafeDocuments.length||missingInvoiceDates.length||needsReview.length||invoiceConflicts.length?"resolve the highlighted issue to finish saving":"saving automatically…"}
+            Found {allRows.length} items across {parsedGroups.length} document{parsedGroups.length===1?"":"s"} — {loading?"saving automatically…":unsafeDocuments.length||(mode==="invoice"&&(missingInvoiceDates.length||needsReview.length||invoiceConflicts.length))?"resolve the highlighted issue to finish saving":mode==="pricelist"&&(needsReview.length||invoiceConflicts.length)?`saving automatically; ${needsReview.length+invoiceConflicts.length} row${needsReview.length+invoiceConflicts.length===1?"":"s"} will be marked to finish in Item Catalog`:"saving automatically…"}
           </div>
           {mode==="invoice"&&parsedGroups.map(g=><label key={g.id} style={{display:"block",fontSize:12,marginBottom:7}}>
             Invoice date for {g.name}: <input type="date" value={g.invoiceDate||""} onChange={e=>setParsedGroups(groups=>groups.map(x=>x.id===g.id?{...x,invoiceDate:e.target.value}:x))} />
@@ -587,8 +637,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
               })}<td><button onClick={()=>setDetailKey(detailKey===key?null:key)}>Details{invoiceClues.get(key)?.conflicts.length?" ⚠":""}</button></td></tr>)}</tbody></table>
             {detailKey&&(()=>{const entry=evidenceRows.find(e=>e.key===detailKey);if(!entry)return null;const clues=invoiceClues.get(detailKey);return <div style={{background:"#f4f6fa",padding:12,marginTop:8,fontSize:12}}><b>{entry.evidence.knownItem?"Known vendor item — saved KERDOS link, updating price":"New or unfinished item — resolve fields"} · {entry.group.name}</b><div style={{marginTop:4}}>Source: {entry.evidence.source}</div>{entry.evidence.conflicts?.length>0&&<div style={{color:"#9B4400"}}>New quote held for review: {entry.evidence.conflicts.join(" ")}</div>}{clues?.matches.length>0&&<div style={{marginTop:7}}>Matched {clues.matches.length} prior invoice line(s) for this vendor.</div>}{Object.entries(clues?.suggestions||{}).map(([field,suggestion])=><div key={field} style={{marginTop:5}}>Invoice {suggestion.source} says {field}: <b>{suggestion.value}</b> <button onClick={()=>updateParsedRow(entry.group.id,entry.index,{[field]:suggestion.value,[`${field}Source`]:"invoice",invoiceSources:{...entry.row.invoiceSources,[field]:suggestion.source},originalFields:entry.row.originalFields||{description:entry.row.description,brand:entry.row.brand,packSize:entry.row.packSize,sellingUnit:entry.row.sellingUnit}})}>Use invoice value</button></div>)}{clues?.conflicts.map((conflict,index)=><div key={index} style={{color:"#9B4400",marginTop:5}}>{conflict}</div>)}{!!clues?.conflicts.length&&<button onClick={()=>setAcceptedInvoiceConflicts(prev=>new Set([...prev,detailKey]))} disabled={acceptedInvoiceConflicts.has(detailKey)} style={{marginTop:6}}>{acceptedInvoiceConflicts.has(detailKey)?"Invoice difference reviewed":"Keep sheet value after review"}</button>}{["itemNumber","vendor","category","product","brand","pack","price","priceBasis","unitCost"].map(name=><div key={name} style={{marginTop:5}}><b>{name}:</b> {entry.evidence[name].value??"blank"} · {entry.evidence[name].accuracy??"not stated"}% — {entry.evidence[name].reason}</div>)}<div style={{marginTop:7}}>Percentages are rule-based evidence levels, not measured error probabilities.</div></div>;})()}
           </div>}
-          {missingPriceBasis.length>0&&<div style={{background:"#FFF3E0",padding:9,fontSize:12,marginBottom:8}}>{missingPriceBasis.length} priced item(s) have no proven selling unit. They can still be imported and categorized. Their quoted amounts will stay unavailable for ordering and unit-cost calculation until each basis is resolved.</div>}
-          {mode==="pricelist"&&parsedGroups.some(g=>g.rows.some(row=>quoteContext(row,g.rows)))&&<button onClick={()=>setParsedGroups(groups=>groups.map(g=>({...g,rows:g.rows.map(row=>{const suggestion=quoteContext(row,g.rows);const prior=vendorItems.find(vi=>vi.vendor_id===vendorId&&String(vi.vendor_item_code)===String(row.code));const mapped=prior&&mappings.some(m=>m.vendor_item_id===prior.id&&m.comparison_track==="exact"&&m.confidence_score===100);return suggestion&&!mapped?{...row,sellingUnit:suggestion.sellingUnit,sellingUnitSource:"manual",manualFields:[...new Set([...(row.manualFields||[]),"sellingUnit"])],originalFields:row.originalFields||{description:row.description,brand:row.brand,packSize:row.packSize,sellingUnit:row.sellingUnit}}:row;})})))} style={{...btn("#FFF3E0","#875200",{fontSize:11,marginBottom:10})}}>Apply supported price-unit suggestions after reviewing their reasons</button>}
+
           <div style={{maxHeight:340,overflowY:"auto",marginBottom:14}}>
             {parsedGroups.flatMap(g=>g.rows.map((row,i)=>mode==="pricelist"&&!row.issues?.length?null:(
               <div key={`${g.id}:${i}`} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #F0F0F0",fontSize:13}}>
@@ -634,10 +683,24 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           {saveReview&&<div style={{color:"#B71C1C",fontSize:12,marginBottom:8}}>{saveReview}</div>}
           <div style={{display:"flex",gap:8}}>
             <button onClick={()=>setStep(1)} style={{...btn("#EEE","#555"),flex:1}}>← Back</button>
-            {(saveReview||unsafeDocuments.length||missingInvoiceDates.length||needsReview.length||invoiceConflicts.length)?<button onClick={doSave} disabled={loading||!allRows.length||unsafeDocuments.length>0||needsReview.length>0||missingInvoiceDates.length>0||invoiceLoad==="loading"||invoiceConflicts.length>0} style={{...btn("#003584"),flex:2}}>Continue after resolving issues</button>:<div role="status" style={{flex:2,padding:10,textAlign:"center",color:"#003584",fontWeight:700}}>Processing automatically…</div>}
+            {(saveReview||unsafeDocuments.length||(mode==="invoice"&&(missingInvoiceDates.length||needsReview.length||invoiceConflicts.length)))?<button onClick={doSave} disabled={loading||!allRows.length||unsafeDocuments.length>0||(mode==="invoice"&&(needsReview.length>0||missingInvoiceDates.length>0||invoiceConflicts.length>0))||invoiceLoad==="loading"} style={{...btn("#003584"),flex:2}}>Continue after resolving issues</button>:<div role="status" style={{flex:2,padding:10,textAlign:"center",color:"#003584",fontWeight:700}}>Processing automatically…</div>}
           </div>
         </>}
 
+        {step===4&&result&&(
+          <div style={{textAlign:"center",padding:"24px 0 8px"}}>
+            <div style={{fontSize:40,marginBottom:10}}>✅</div>
+            <h3 style={{margin:"0 0 6px"}}>Upload successful</h3>
+            <p style={{color:"#666",fontSize:14,margin:"0 0 18px"}}>
+              {result.count} row{result.count===1?"":"s"} from {result.vendor} saved
+              {result.basisReview>0?` · ${result.basisReview} to finish in Item Catalog`:""}
+            </p>
+            <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+              <button onClick={startAnother} style={{...btn("#E8F1FB","#003584",{padding:"10px 18px"})}}>Import another</button>
+              <button onClick={onClose} style={{...btn("#003584","white",{padding:"10px 18px"})}}>Done</button>
+            </div>
+          </div>
+        )}
         {step===3&&result&&(
           <div style={{textAlign:"center",padding:"20px 0"}}>
             <div style={{fontSize:40,marginBottom:12}}>{result.error?"⚠️":"✅"}</div>

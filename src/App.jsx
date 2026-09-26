@@ -92,6 +92,9 @@ export default function App() {
     catch { return "order"; }
   });
   const [showPaste,setShowPaste]=useState(false);
+  // One plain line after an import finishes on its own; it clears itself.
+  const [importNotice,setImportNotice]=useState(null);
+  useEffect(()=>{ if(!importNotice) return; const t=setTimeout(()=>setImportNotice(null),8000); return ()=>clearTimeout(t); },[importNotice]);
   const [selectedVendorId,setSelectedVendorId]=useState(null);
   const [importMode,setImportMode]=useState("pricelist");
   const [vendorDetailId,setVendorDetailId]=useState(null);
@@ -1402,7 +1405,12 @@ export default function App() {
         )}
       </div>
 
-      {showPaste&&org.role!=="employee"&&<PasteModal vendors={vendors} orgId={org.id} orgSettings={org.settings} catalogItems={catalogItems} categories={categories} vocabulary={vocabulary} vendorItems={vendorItems} mappings={mappings} onClose={()=>setShowPaste(false)} onDone={loadData} initialVendorId={selectedVendorId} initialMode={importMode} />}
+      {showPaste&&org.role!=="employee"&&<PasteModal vendors={vendors} orgId={org.id} orgSettings={org.settings} catalogItems={catalogItems} categories={categories} vocabulary={vocabulary} vendorItems={vendorItems} mappings={mappings} onClose={()=>setShowPaste(false)} onDone={loadData} onFinished={setImportNotice} initialVendorId={selectedVendorId} initialMode={importMode} />}
+      {importNotice&&(
+        <div role="status" onClick={()=>setImportNotice(null)} style={{position:"fixed",left:"50%",bottom:24,transform:"translateX(-50%)",background:"#1B5E20",color:"white",padding:"12px 18px",borderRadius:8,fontSize:13,fontWeight:700,boxShadow:"0 6px 20px rgba(0,0,0,0.25)",zIndex:1000,cursor:"pointer"}}>
+          {importNotice.message}
+        </div>
+      )}
       {showAddVendor&&<AddVendorModal orgId={org.id} onClose={()=>setShowAddVendor(false)} onDone={loadData} />}
       {editingInvoice&&org.role!=="employee"&&<InvoiceEditModal invoice={editingInvoice} vendors={vendors} onClose={()=>setEditingInvoice(null)} onDone={loadData} />}
     </div>
