@@ -14,6 +14,7 @@ import {rememberImportRow,importResolutions,unitChoices} from "../core/catalog-f
 import {resolveQuoteBasis} from "../core/quote-basis.js";
 import {invoiceEvidence} from "../core/invoice-evidence.js";
 import {btn,inp} from "../ui/styles.js";
+import {Drachma} from "../ui/Drachma.jsx";
 
 const catalogService=createCatalogService(backend);
 const categoryService=createCategoryService(backend);
@@ -594,7 +595,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
               <input type="file" multiple accept=".csv,.txt,.tsv,.xlsx,.xls,.pdf,.eml,.html,.htm"
                 onChange={e=>{handleDroppedFiles(e.target.files);e.target.value="";}}
                 style={{fontSize:12}} />
-              {(fileBusy||parsing)&&<div style={{position:"absolute",inset:0,background:"rgba(255,255,255,0.85)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"#003584",fontWeight:700,borderRadius:8}}>{parsing?"Reading item rows…":"Reading file…"}</div>}
+              {(fileBusy||parsing)&&<div style={{position:"absolute",inset:0,background:"rgba(255,255,255,0.85)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"#003584",fontWeight:700,borderRadius:8}}><Drachma label={parsing?"Reading item rows…":"Reading file…"}/></div>}
             </div>
             {fileGroups.length>0&&(
               <div style={{marginTop:8}}>
@@ -683,7 +684,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           {saveReview&&<div style={{color:"#B71C1C",fontSize:12,marginBottom:8}}>{saveReview}</div>}
           <div style={{display:"flex",gap:8}}>
             <button onClick={()=>setStep(1)} style={{...btn("#EEE","#555"),flex:1}}>← Back</button>
-            {(saveReview||unsafeDocuments.length||(mode==="invoice"&&(missingInvoiceDates.length||needsReview.length||invoiceConflicts.length)))?<button onClick={doSave} disabled={loading||!allRows.length||unsafeDocuments.length>0||(mode==="invoice"&&(needsReview.length>0||missingInvoiceDates.length>0||invoiceConflicts.length>0))||invoiceLoad==="loading"} style={{...btn("#003584"),flex:2}}>Continue after resolving issues</button>:<div role="status" style={{flex:2,padding:10,textAlign:"center",color:"#003584",fontWeight:700}}>Processing automatically…</div>}
+            {(saveReview||unsafeDocuments.length||(mode==="invoice"&&(missingInvoiceDates.length||needsReview.length||invoiceConflicts.length)))?<button onClick={doSave} disabled={loading||!allRows.length||unsafeDocuments.length>0||(mode==="invoice"&&(needsReview.length>0||missingInvoiceDates.length>0||invoiceConflicts.length>0))||invoiceLoad==="loading"} style={{...btn("#003584"),flex:2}}>Continue after resolving issues</button>:<div style={{flex:2,display:"flex",justifyContent:"center",padding:4}}><Drachma label="Saving…"/></div>}
           </div>
         </>}
 
