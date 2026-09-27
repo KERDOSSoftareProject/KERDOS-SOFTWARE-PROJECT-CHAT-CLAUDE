@@ -1,4 +1,5 @@
 import {casePriceFromQuote,parsePackSize,pricePerUnit,priceBasisFor,compareProductIdentity,comparePurchasingPack} from "../procurement.js";
+import {mappingVerification} from "../services/catalog.js";
 
 export const CATALOG_COLUMNS=[
   ["itemNumber","KERDOS item #"],["vendor","Vendor"],["category","Category"],
@@ -37,6 +38,48 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category}){
     sellingUnit:field(vi.selling_unit||"",basis?100:vi.selling_unit?0:null,basis?resolved("selling_unit")?"Your saved quoted unit":"Saved quoted unit":"Choose what the quoted price is per"),
     unitCost:{...field(per?.price??null,per?quoteReview?75:100:0,per?`Calculated per ${per.unit}${pack.catchWeight?"; case weight is an estimate":""}`:"Needs a readable pack and a compatible quoted unit"),unit:per?.unit||null},
   };
+}
+
+// Order Guide worthy: every field of the row is solved. Category placed
+// (holding pen doesn't count; a best-guess placement does — the client can
+// still move it), description present, readable pack, a quoted unit that
+// converts to a full-pack price, a current price, and the association
+// itself either exact already or pointing at an item whose name agrees
+// with the vendor wording. Rows like that are placed without a click.
+export function orderGuideReady({item,vendorItem,mapping,vendor,category}){
+  if(!item||!vendorItem||!mapping||!category||category.is_holding_pen)return false;
+  if(vendorItem.price_unavailable||vendorItem.price_source==="invoice")return false;
+  if(vendorItem.import_row?.reviewRequired)return false;
+  const evidence=catalogRowEvidence({item,vendorItem,mapping,vendor,category});
+  if(evidence.unitCost.value==null||evidence.pack.accuracy!==100||evidence.sellingUnit.accuracy!==100||evidence.price.accuracy!==100)return false;
+  return true;
+}
+
+// Rows the app can place in the Order Guide on its own: ready by the rule
+// above and not yet an exact association. Multi-vendor items also need
+// the other vendor's row to agree on identity, brand and pack; single-
+// vendor items only need the row to agree with its own catalog item.
+export function autoPlaceable({catalogItems=[],vendorItems=[],mappings=[],vendors=[],categories=[]}){
+  const ciById=new Map(catalogItems.map(ci=>[ci.id,ci]));
+  const viById=new Map(vendorItems.map(vi=>[vi.id,vi]));
+  const vById=new Map(vendors.map(v=>[v.id,v]));
+  const cById=new Map(categories.map(c=>[c.id,c]));
+  const byCatalog=new Map();
+  for(const m of mappings){const list=byCatalog.get(m.catalog_item_id)||[];list.push(m);byCatalog.set(m.catalog_item_id,list);}
+  const out=[];
+  for(const m of mappings){
+    if(m.comparison_track==="exact"&&m.confidence_score===100)continue;
+    const vi=viById.get(m.vendor_item_id),ci=ciById.get(m.catalog_item_id);
+    if(!vi||!ci)continue;
+    const category=cById.get(ci.category_id);
+    if(!orderGuideReady({item:ci,vendorItem:vi,mapping:m,vendor:vById.get(vi.vendor_id),category}))continue;
+    const peers=(byCatalog.get(m.catalog_item_id)||[]).filter(o=>o.id!==m.id).map(o=>viById.get(o.vendor_item_id)).filter(Boolean);
+    const verification=mappingVerification(vi,ci,peers);
+    if(verification.comparison_track!=="exact")continue;
+    out.push({mappingId:m.id,vendorItemId:vi.id,catalogItemId:ci.id,description:vi.description,packSize:vi.pack_size,
+      verification:{...verification,match_method:peers.length?"rule_based":"manual"},clearCategoryReview:!!ci.category_review});
+  }
+  return out;
 }
 
 // A correction belongs to this vendor's item code. Remember the original

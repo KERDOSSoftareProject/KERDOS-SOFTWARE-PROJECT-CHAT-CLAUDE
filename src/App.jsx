@@ -3,6 +3,7 @@ import { backend } from "./backend/index.js";
 import { createSessionController } from "./session.js";
 import { createDocumentService } from "./services/documents.js";
 import { createCatalogService } from "./services/catalog.js";
+import { autoPlaceable } from "./core/catalog-fields.js";
 import { holdingPen } from "./services/categories.js";
 import { createOrganizationService } from "./services/organization.js";
 import { createVendorService } from "./services/vendors.js";
@@ -295,6 +296,32 @@ export default function App() {
     if(failed)setCatalogRepairError(`${failed} vendor item${failed===1?"":"s"} could not be linked. ${firstError}`);
     try{await loadData();}finally{setBackfilling(false);}
   }
+
+  // Automatic placement. Any row whose fields are all solved goes into the
+  // Order Guide by itself: the association is recorded as exact and a
+  // best-guess category is accepted. Runs after every data load for owners
+  // and managers; each set of rows is attempted once, so a refused write
+  // can't loop.
+  const attemptedAutoPlace=useRef(new Set());
+  const [autoPlacing,setAutoPlacing]=useState(false);
+  useEffect(()=>{
+    if(!org||org.role==="employee"||loading||autoPlacing||backfilling)return;
+    const ready=autoPlaceable({catalogItems,vendorItems,mappings,vendors,categories});
+    if(!ready.length)return;
+    const key=`${org.id}:${ready.map(r=>r.mappingId).sort().join(",")}`;
+    if(attemptedAutoPlace.current.has(key))return;
+    attemptedAutoPlace.current.add(key);
+    setAutoPlacing(true);
+    (async()=>{
+      try{
+        await catalogService.confirmMappings(ready);
+        const guessed=[...new Set(ready.filter(r=>r.clearCategoryReview).map(r=>r.catalogItemId))];
+        if(guessed.length)await catalogService.confirmCategories(guessed);
+        await loadData();
+      }catch(error){console.error("Automatic placement:",error);}
+      finally{setAutoPlacing(false);}
+    })();
+  },[org?.id,org?.role,loading,autoPlacing,backfilling,catalogItems,vendorItems,mappings,vendors,categories]);
 
   useEffect(()=>{
     if(tab!=="catalog"||!org||org.role==="employee"||backfilling||!unmappedCount)return;

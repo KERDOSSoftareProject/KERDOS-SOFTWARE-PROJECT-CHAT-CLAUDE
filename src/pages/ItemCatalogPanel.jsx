@@ -3,7 +3,7 @@ import {createCatalogRowsService} from "../services/catalog-rows.js";
 import {CatalogRows} from "./CatalogRows.jsx";
 import {unitChoices} from "../core/catalog-fields.js";
 import {backend} from "../backend/index.js";
-import {createCatalogService,mappingVerification,readyToConfirm,engineVerifiable,mappingGap,GAP_LABELS} from "../services/catalog.js";
+import {createCatalogService,mappingVerification,mappingGap,GAP_LABELS} from "../services/catalog.js";
 import {createCategoryService} from "../services/categories.js";
 import {bestCatalogMatch,bestPurchasingSuggestion,compareProductIdentity,comparePurchasingPack,parsePackSize,unitsForDimension,suggestCategory,priceBasisFor} from "../procurement.js";
 import {blockReason,orderable} from "../core/ordering.js";
@@ -160,42 +160,19 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
     await act(()=>catalogService.confirmMapping(mappingId,verification));
     setBusyMappingId(null);
   }
-  // Single-vendor listings wait for the client's word. This is that word,
-  // given once for every listing that already passes verification, so a
-  // first import doesn't mean confirming hundreds of products one by one.
-  const readySingleVendor=useMemo(()=>readyToConfirm({mappings,vendorItems,catalogItems}),[mappings,vendorItems,catalogItems]);
-  const [confirmingReady,setConfirmingReady]=useState(false);
-  // Two-vendor matches that now pass every check (after learned wording
-  // or a corrected pack) are the engine's to verify; one click applies
-  // them all and the reason is recorded as engine-selected.
-  const engineReady=useMemo(()=>engineVerifiable({mappings,vendorItems,catalogItems}),[mappings,vendorItems,catalogItems]);
-  // Products the engine placed in a category as a best guess. The client
-  // either accepts the placement (one click, or all at once) or moves it
-  // with the usual category control, which clears the flag.
-  const guessedCategoryItems=useMemo(()=>productList.filter(item=>item.categoryReview&&item.category!==uncategorizedName),[productList,uncategorizedName]);
-  const [acceptingCategories,setAcceptingCategories]=useState(false);
-  async function handleAcceptCategories(){
-    if(!guessedCategoryItems.length)return;
-    if(!window.confirm(`Accept the suggested category for ${guessedCategoryItems.length} product${guessedCategoryItems.length===1?"":"s"}?\n\nEach one stays where KERDOS placed it. You can still move any of them later.`))return;
-    setAcceptingCategories(true);
-    await act(()=>catalogService.confirmCategories(guessedCategoryItems.map(item=>item.catalogItemId)));
-    setAcceptingCategories(false);
-  }
-  const [applyingEngine,setApplyingEngine]=useState(false);
-  async function handleApplyEngine(){
-    if(!engineReady.length)return;
-    setApplyingEngine(true);
-    await act(()=>catalogService.confirmMappings(engineReady));
-    setApplyingEngine(false);
-  }
-  async function handleConfirmReady(){
-    const ready=readySingleVendor;
-    if(!ready.length)return;
-    const preview=ready.slice(0,8).map(r=>`• ${r.description} — ${r.packSize}`).join("\n")+(ready.length>8?`\n…and ${ready.length-8} more`:"");
-    if(!window.confirm(`Confirm ${ready.length} single-vendor product${ready.length===1?"":"s"}?\n\nEach one has a readable pack and matches its catalog item. Confirming makes their prices eligible for ordering.\n\n${preview}`))return;
-    setConfirmingReady(true);
-    await act(()=>catalogService.confirmMappings(ready));
-    setConfirmingReady(false);
+  // Vendor rows with a price but no stated unit. Most sheets quote per
+  // case and simply don't say so; one click applies that to all of them.
+  const unstatedBasisRows=useMemo(()=>vendorItems.filter(vi=>vi.organization_id===orgId&&!vi.price_basis&&!vi.selling_unit&&Number(vi.price)>0&&vi.price_source!=="invoice"),[vendorItems,orgId]);
+  const [settingBasis,setSettingBasis]=useState(false);
+  async function handleSetCaseBasis(){
+    if(!unstatedBasisRows.length)return;
+    const byVendor=new Map();
+    for(const vi of unstatedBasisRows){const name=vendors.find(v=>v.id===vi.vendor_id)?.name||"Vendor";byVendor.set(name,(byVendor.get(name)||0)+1);}
+    const lines=[...byVendor].map(([name,n])=>`• ${name}: ${n}`).join("\n");
+    if(!window.confirm(`Treat the quoted price as the price of one full case for ${unstatedBasisRows.length} product${unstatedBasisRows.length===1?"":"s"} whose sheet didn't say?\n\n${lines}\n\nRows with a readable pack become priced for ordering. Rows without a pack stay unavailable until the pack is set. Rows that state their own unit are not touched.`))return;
+    setSettingBasis(true);
+    await act(()=>catalogService.setCaseBasisWhereUnstated({organizationId:orgId,vendorItems:unstatedBasisRows}));
+    setSettingBasis(false);
   }
   async function handleSavePack(mappingId){
     const mapping=mappings.find(m=>m.id===mappingId);
@@ -427,22 +404,14 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
         <button onClick={()=>{setShowReview(false);setMappedOnly(false);}} style={{...btn(showReview||mappedOnly?"#E8F1FB":"white","#003584",{fontSize:12,padding:"9px 14px",fontWeight:800})}}>All products ({productList.length})</button>
         <button onClick={()=>{setShowReview(false);setMappedOnly(true);}} style={{...btn(mappedOnly?"#E8F5E9":"white","#2E7D32",{fontSize:12,padding:"9px 14px",fontWeight:800})}}>Mapped ({mappedCount})</button>
         {canManage&&notMappedCount>0&&<button onClick={()=>{setShowReview(true);setMappedOnly(false);}} style={{...btn(showReview?"#E65100":"#FFF3E0",showReview?"white":"#B26A00",{fontSize:12,padding:"9px 14px",fontWeight:800})}}>Not mapped ({notMappedCount})</button>}
-        {canManage&&guessedCategoryItems.length>0&&<button disabled={acceptingCategories} onClick={handleAcceptCategories} title="Products KERDOS placed in a category as a best guess" style={{...btn("#FFF8E1","#8D6E00",{fontSize:12,padding:"9px 14px",fontWeight:800,marginLeft:"auto"})}}>{acceptingCategories?"Accepting…":`Accept ${guessedCategoryItems.length} suggested categor${guessedCategoryItems.length===1?"y":"ies"}`}</button>}
-        {canManage&&engineReady.length>0&&<button disabled={applyingEngine} onClick={handleApplyEngine} title="Products another vendor already carries in the same exact pack; every check passes" style={{...btn("#E8F1FB","#0D4385",{fontSize:12,padding:"9px 14px",fontWeight:800,marginLeft:guessedCategoryItems.length?0:"auto"})}}>{applyingEngine?"Applying…":`Apply ${engineReady.length} engine-verified match${engineReady.length===1?"":"es"}`}</button>}
-        {canManage&&readySingleVendor.length>0&&<button disabled={confirmingReady} onClick={handleConfirmReady} title="Single-vendor products with a readable pack whose description matches the catalog item" style={{...btn("#E8F5E9","#2E7D32",{fontSize:12,padding:"9px 14px",fontWeight:800,marginLeft:(engineReady.length||guessedCategoryItems.length)?0:"auto",opacity:confirmingReady?0.6:1})}}>{confirmingReady?"Confirming…":`Confirm ${readySingleVendor.length} ready single-vendor product${readySingleVendor.length===1?"":"s"}`}</button>}
+        {canManage&&unstatedBasisRows.length>0&&<button disabled={settingBasis} onClick={handleSetCaseBasis} title="Rows with a price but no stated unit" style={{...btn("#EDE7F6","#4527A0",{fontSize:12,padding:"9px 14px",fontWeight:800,marginLeft:"auto"})}}>{settingBasis?"Setting…":`Quoted per case: ${unstatedBasisRows.length} row${unstatedBasisRows.length===1?"":"s"} without a unit`}</button>}
       </div>
 
-      <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:14}}>
-        <button onClick={()=>{setShowReview(false);setMappedOnly(false);setCategoryFilter(MULTI_VENDOR_FILTER);}} style={{background:"white",border:"1px solid #C5DBF4",borderRadius:9,padding:"11px 14px",cursor:"pointer",textAlign:"left",minWidth:220}}>
-          <b style={{display:"block",fontSize:20,color:"#0D4385"}}>{multiVendorItems.length}</b><span style={{fontSize:12,color:"#405A76"}}>Products linked to 2+ vendors</span>
-        </button>
+      {categoryCorrections.size>0&&<div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:14}}>
         {categoryCorrections.size>0&&<button onClick={()=>{setShowReview(false);setMappedOnly(false);setCategoryFilter(CATEGORY_REVIEW_FILTER);}} style={{background:"#FFF8E1",border:"1px solid #E8D79B",borderRadius:9,padding:"11px 14px",cursor:"pointer",textAlign:"left",minWidth:220}}>
           <b style={{display:"block",fontSize:20,color:"#8D6E00"}}>{categoryCorrections.size}</b><span style={{fontSize:12,color:"#405A76"}}>Older category placements to review</span>
         </button>}
-        <div style={{background:"#EBF8F1",border:"1px solid #B9E3CB",borderRadius:9,padding:"11px 14px",minWidth:220}}>
-          <b style={{display:"block",fontSize:20,color:"#23764C"}}>{comparableItems.length}</b><span style={{fontSize:12,color:"#405A76"}}>With matching packs and current quotes</span>
-        </div>
-      </div>
+      </div>}
 
       {canManage&&showReview&&totalCount>0&&(
         <div style={{marginBottom:24,paddingBottom:4}}>
@@ -535,11 +504,11 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
           Full List
         </button>
         {uncategorizedItems.length>0&&<button onClick={()=>{setCategoryFilter(uncategorizedName);setShowReview(false);}} style={chipStyle(categoryFilter===uncategorizedName)}>
-          Choose category ({uncategorizedItems.length})
+          Needs a category ({uncategorizedItems.length})
         </button>}
-        <button onClick={()=>setCategoryFilter(categoryFilter===MULTI_VENDOR_FILTER?"":MULTI_VENDOR_FILTER)} style={chipStyle(categoryFilter===MULTI_VENDOR_FILTER)}>
+        {multiVendorItems.length>0&&<button onClick={()=>setCategoryFilter(categoryFilter===MULTI_VENDOR_FILTER?"":MULTI_VENDOR_FILTER)} style={chipStyle(categoryFilter===MULTI_VENDOR_FILTER)}>
           Multiple Vendors ({multiVendorItems.length})
-        </button>
+        </button>}
         {categoryList.filter(c=>c!==uncategorizedName).map(c=>{
           const isSelected=categoryFilter===c;
           return (

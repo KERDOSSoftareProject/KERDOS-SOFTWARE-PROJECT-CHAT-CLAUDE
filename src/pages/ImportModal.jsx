@@ -23,7 +23,11 @@ const importService=createImportService(backend);
 const r2=value=>Math.round(value*100)/100;
 
 export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vocabulary=[],vendorItems=[],mappings=[],onClose,onDone,onFinished,initialVendorId,initialMode}) {
-  const [vendorId,setVendorId]=useState(initialVendorId||vendors[0]?.id||"");
+  // The vendor is a choice, never a default: the box opens on "Select
+  // vendor" unless you arrived from a specific vendor's page. Nothing can
+  // be dropped in until a vendor is chosen, so a sheet can't land under
+  // the wrong name.
+  const [vendorId,setVendorId]=useState(()=>initialVendorId&&vendors.some(v=>v.id===initialVendorId)?initialVendorId:"");
   const mode=initialMode||"pricelist";
   const [pastedText,setPastedText]=useState("");
   const [fileGroups,setFileGroups]=useState([]); // [{id,file,name,text}] — one entry per dragged/selected file
@@ -67,7 +71,9 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
   async function handleDroppedFiles(files){
     const fileArr=Array.from(files||[]);
     if(!fileArr.length||fileBusy||parsing) return;
+    if(!vendorId){setParseError("Choose the vendor first, so the sheet is filed under the right name.");return;}
     setFileBusy(true);
+    const shownAt=Date.now();
     try{
       const newGroups=await Promise.all(fileArr.map(async file=>{
         const text=await fileToText(file);
@@ -79,6 +85,10 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
     }catch(err){
       setParseError(`Could not read the file: ${err.message||String(err)}`);
     }
+    // The coin stays up for at least a moment even on a tiny file, so the
+    // person sees KERDOS working rather than a flicker.
+    const remaining=900-(Date.now()-shownAt);
+    if(remaining>0)await new Promise(resolve=>setTimeout(resolve,remaining));
     setFileBusy(false);
   }
 
@@ -568,7 +578,8 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
         {step===1&&<>
           <div style={{marginBottom:14}}>
             <div style={{fontSize:12,fontWeight:600,color:"#666",marginBottom:4}}>Vendor</div>
-            <select style={inp} value={vendorId} onChange={e=>setVendorId(e.target.value)}>
+            <select style={{...inp,color:vendorId?undefined:"#888"}} value={vendorId} onChange={e=>setVendorId(e.target.value)}>
+              <option value="">Select vendor…</option>
               {vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
             </select>
           </div>
@@ -591,8 +602,8 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
               onDrop={e=>{e.preventDefault();setDragOver(false);handleDroppedFiles(e.dataTransfer.files);}}
               style={{position:"relative",border:dragOver?"2px dashed #003584":"2px dashed #DDD",borderRadius:8,padding:16,textAlign:"center",background:dragOver?"#F0F6FF":"#FAFAFA"}}
             >
-              <div style={{fontSize:13,color:"#888",marginBottom:8}}>Drop files here — any number at once</div>
-              <input type="file" multiple accept=".csv,.txt,.tsv,.xlsx,.xls,.pdf,.eml,.html,.htm"
+              <div style={{fontSize:13,color:"#888",marginBottom:8}}>{vendorId?"Drop files here — any number at once":"Choose a vendor above, then drop the file here"}</div>
+              <input type="file" multiple accept=".csv,.txt,.tsv,.xlsx,.xls,.pdf,.eml,.html,.htm" disabled={!vendorId}
                 onChange={e=>{handleDroppedFiles(e.target.files);e.target.value="";}}
                 style={{fontSize:12}} />
               {(fileBusy||parsing)&&<div style={{position:"absolute",inset:0,background:"rgba(255,255,255,0.85)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"#003584",fontWeight:700,borderRadius:8}}><Drachma label={parsing?"Reading item rows…":"Reading file…"}/></div>}

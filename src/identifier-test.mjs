@@ -5,6 +5,7 @@ import {parseDocument} from "./ingestion.js";
 import {identifierMatch,mappingGap,createCatalogService,engineVerifiable} from "./services/catalog.js";
 import {suggestCategory} from "./procurement.js";
 import {createCategoryService} from "./services/categories.js";
+import {autoPlaceable,orderGuideReady} from "./core/catalog-fields.js";
 import {configureCategoryProfile} from "./knowledge/category-profiles.js";
 
 let passed=0;
@@ -203,4 +204,53 @@ await test("moving an item clears the review flag; confirming keeps it in place"
   assert.equal(updates[0].category_review,false);assert.equal(updates[0].category_id,"meat");
   assert.deepEqual(updates[1],{id:"i2",category_review:false,category_reason:null});
 });
+
+// --- one decision for rows whose sheet never said what the price is for ---
+await test("setCaseBasisWhereUnstated prices readable packs and leaves stated units alone",async()=>{
+  const writes=[];
+  const query=()=>({update:v=>{const chain={eq:(col,id)=>{if(col==="id")chain._id=id;return chain;},then:res=>{writes.push({id:chain._id,...v});return Promise.resolve({data:null,error:null}).then(res);}};return chain;}});
+  const service=createCatalogService({records:{query}});
+  const rows=[
+    {id:"a",organization_id:"o",price:33.99,pack_size:null,price_basis:null,selling_unit:null},
+    {id:"b",organization_id:"o",price:38.4,pack_size:"6/1 LB",price_basis:null,selling_unit:null},
+    {id:"c",organization_id:"o",price:12,pack_size:"4/10 LB",price_basis:"measure",selling_unit:"LB"},
+    {id:"d",organization_id:"o",price:0,pack_size:"1 CS",price_basis:null,selling_unit:null},
+  ];
+  const n=await service.setCaseBasisWhereUnstated({organizationId:"o",vendorItems:rows});
+  assert.equal(n,2);
+  assert.deepEqual(writes,[{id:"a",price_basis:"case",selling_unit:"CS",price_unavailable:true},{id:"b",price_basis:"case",selling_unit:"CS",price_unavailable:false}]);
+});
+
+// --- automatic placement: a row whose fields are all solved goes to the Order Guide ---
+{
+  const vendors=[{id:"A",name:"Carbonella"},{id:"B",name:"Mina"}];
+  const categories=[{id:"prod",name:"Produce",is_holding_pen:false},{id:"pen",name:"Uncategorized",is_holding_pen:true}];
+  const items=[{id:"c1",name:"TOMATOES 5X6",category_id:"prod",category_review:true},{id:"c2",name:"LETTUCE ROMAINE",category_id:"pen"},{id:"c3",name:"ONIONS YELLOW",category_id:"prod"}];
+  const vis=[
+    {id:"v1",vendor_id:"A",description:"TOMATOES 5X6",pack_size:"1/25 LB",price:33.99,price_basis:"case",selling_unit:"CS",price_unavailable:false},
+    {id:"v2",vendor_id:"A",description:"LETTUCE ROMAINE",pack_size:"24 CT",price:30,price_basis:"case",selling_unit:"CS",price_unavailable:false},
+    {id:"v3",vendor_id:"A",description:"ONIONS YELLOW",pack_size:null,price:20,price_basis:"case",selling_unit:"CS",price_unavailable:true},
+    {id:"v4",vendor_id:"B",description:"TOMATOES 5X6",pack_size:"1/25 LB",price:31,price_basis:null,selling_unit:null,price_unavailable:true},
+  ];
+  const maps=[
+    {id:"m1",catalog_item_id:"c1",vendor_item_id:"v1",comparison_track:"review",confidence_score:null},
+    {id:"m2",catalog_item_id:"c2",vendor_item_id:"v2",comparison_track:"review",confidence_score:null},
+    {id:"m3",catalog_item_id:"c3",vendor_item_id:"v3",comparison_track:"review",confidence_score:null},
+    {id:"m4",catalog_item_id:"c1",vendor_item_id:"v4",comparison_track:"review",confidence_score:null},
+  ];
+  await test("a fully solved single-vendor row is placed and its guessed category accepted",()=>{
+    const ready=autoPlaceable({catalogItems:items,vendorItems:vis,mappings:maps,vendors,categories});
+    const m1=ready.find(r=>r.mappingId==="m1");
+    assert.ok(m1);assert.equal(m1.verification.comparison_track,"exact");assert.equal(m1.verification.confidence_score,100);assert.equal(m1.clearCategoryReview,true);
+  });
+  await test("a row still in Uncategorized is not placed",()=>assert.ok(!autoPlaceable({catalogItems:items,vendorItems:vis,mappings:maps,vendors,categories}).some(r=>r.mappingId==="m2")));
+  await test("a row with no pack or no unit is not placed",()=>{
+    const ready=autoPlaceable({catalogItems:items,vendorItems:vis,mappings:maps,vendors,categories});
+    assert.ok(!ready.some(r=>r.mappingId==="m3"));assert.ok(!ready.some(r=>r.mappingId==="m4"));
+  });
+  await test("orderGuideReady says why a row is not ready",()=>{
+    assert.equal(orderGuideReady({item:items[2],vendorItem:vis[2],mapping:maps[2],vendor:vendors[0],category:categories[0]}),false);
+    assert.equal(orderGuideReady({item:items[0],vendorItem:vis[0],mapping:maps[0],vendor:vendors[0],category:categories[0]}),true);
+  });
+}
 console.log(`${passed} passed, 0 failed`);
