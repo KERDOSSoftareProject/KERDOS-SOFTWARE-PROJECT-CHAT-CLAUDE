@@ -2,23 +2,26 @@ import {useState} from "react";
 import {backend} from "../backend/index.js";
 import {createCatalogRowsService} from "../services/catalog-rows.js";
 import {CATALOG_COLUMNS,catalogRowEvidence,unitChoices} from "../core/catalog-fields.js";
-import {createCatalogService} from "../services/catalog.js";
 import {parsePackSize} from "../procurement.js";
 import {formatMoney} from "../localization.js";
 import {vendorListingLabel} from "../core/vendor-listing.js";
 import {btn,inp} from "../ui/styles.js";
 
 const service=createCatalogRowsService(backend);
-const catalogService=createCatalogService(backend);
 const cellStyle={padding:8,borderBottom:"1px solid #DEE7F0",verticalAlign:"top"};
 const inputStyle={...inp,fontSize:12,padding:6,width:"100%",minWidth:85,boxSizing:"border-box"};
-function Evidence({field}){return <small title={field.reason} style={{display:"block",marginTop:4,color:field.accuracy===100?"#38704E":"#8D5900"}}>{field.accuracy==null?"Not stated":`${field.accuracy}%`}</small>;}
+// A percentage only where there is a value; an empty cell is simply empty.
+function Evidence({field}){
+  if(field.accuracy==null||field.value==null||field.value==="")return <small style={{display:"block",marginTop:4,color:"#8D5900"}}>Empty</small>;
+  const color=field.accuracy>=90?"#38704E":field.accuracy>=70?"#8D5900":"#B03A2E";
+  return <small title={field.reason} style={{display:"block",marginTop:4,color}}>{field.accuracy}%</small>;
+}
 function packLabel(value){
   const pack=parsePackSize(value);
   if(!pack?.parsed)return `${value} · needs pack details`;
   return `${pack.caseQty===1&&pack.unit==="EA"&&pack.unitQty===1?"Each / individual item":"Case / full pack"} · ${pack.caseQty} × ${pack.unitQty} ${pack.unit}${pack.catchWeight?" (average weight)":""}`;
 }
-function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary,packOptions,canManage,onUpdated,onDetails,onConfirm}){
+function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary,packOptions,canManage,onUpdated,onDetails,peers=[]}){
   const [draft,setDraft]=useState({});
   const [nameDraft,setNameDraft]=useState(null);
   const [base,setBase]=useState(null);
@@ -32,7 +35,7 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
   const current={...(base||vendorItem),...draft};
   const categoryId=draft.category_id??item.category_id;
   const category=categories.find(c=>c.id===categoryId);
-  const evidence=catalogRowEvidence({item:{...item,category_review:'category_id' in draft?!!category?.is_holding_pen:item.category_review},vendorItem:current,mapping,vendor,category});
+  const evidence=catalogRowEvidence({item:{...item,category_review:'category_id' in draft?!!category?.is_holding_pen:item.category_review},vendorItem:current,mapping,vendor,category,peers,categories});
   const units=unitChoices(vocabulary),packUnits=unitChoices(vocabulary,true);
   const nameDirty=nameDraft!=null&&nameDraft.trim()!==(item.name||"");
   const dirty=Object.keys(draft).length>0||nameDirty;
@@ -46,8 +49,10 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
   async function save(){
     setBusy(true);setError("");
     try{
-      if(Object.keys(draft).length)await service.save({organizationId:orgId,vendorItem:base||vendorItem,mapping,patch:draft});
-      if(nameDirty)await catalogService.renameItem(item.id,nameDraft.trim());
+      // One write: the row's fields and the client's item name land
+      // together or not at all.
+      const patch={...draft,...(nameDirty?{item_name:nameDraft.trim()}:{})};
+      await service.save({organizationId:orgId,vendorItem:base||vendorItem,mapping,patch});
       setDraft({});setNameDraft(null);setBase(null);setPackParts(null);setCustomPack(false);setPackMode("");setSaved(true);await onUpdated();
     }
     catch(err){setError(err.message||String(err));}
@@ -98,13 +103,13 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
         {canManage&&<button disabled={busy} onClick={()=>{if(window.confirm("Keep the saved product, brand, pack and quoted unit, and accept this incoming amount on that basis?"))edit("price",vendorItem.import_row.row?.price??"");}} style={{...btn("#FFF","#875200",{fontSize:11,marginLeft:8,marginTop:6})}}>Keep saved fields; review new price</button>}
       </div>}
       <div style={{fontSize:12}}>Source: {vendorItem.import_row?.row?.sourceLine||"Original source is available under Price Sheets."}</div>
-      <div style={{fontSize:11,marginTop:6}}>Percentages show what has been read or confirmed. They are status indicators, not a guarantee that the vendor supplied correct information.</div>
+      <div style={{fontSize:11,marginTop:6}}>Percentages show how well each value holds up against the rest of the row, the vendor's history and your other vendors. A blank cell has no percentage; it is simply empty.</div>
       <ul style={{fontSize:12}}>{CATALOG_COLUMNS.map(([key,label])=><li key={key}><b>{label}:</b> {evidence[key].reason}</li>)}</ul>
       <button disabled={dirty||busy} onClick={onDetails} style={{...btn("#E8F1FB","#003584",{fontSize:11})}}>Vendor comparison and association details</button>
     </td></tr>}
   </>;
 }
-export function CatalogRows({orgId,items,catalogItems,vendorItems,mappings,vendors,categories,vocabulary,canManage,onUpdated,onDetails,onConfirm}){
+export function CatalogRows({orgId,items,catalogItems,vendorItems,mappings,vendors,categories,vocabulary,canManage,onUpdated,onDetails}){
   const [sort,setSort]=useState({key:"product",direction:1});
   const packOptions=[...new Set(vendorItems.map(vi=>String(vi.pack_size||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
   const catalog=new Map(catalogItems.map(i=>[i.id,i])),viById=new Map(vendorItems.map(v=>[v.id,v])),vendorById=new Map(vendors.map(v=>[v.id,v]));
@@ -112,7 +117,9 @@ export function CatalogRows({orgId,items,catalogItems,vendorItems,mappings,vendo
   const rows=mappings.filter(m=>visible.has(m.catalog_item_id)).flatMap(mapping=>{
     const item=catalog.get(mapping.catalog_item_id),vendorItem=viById.get(mapping.vendor_item_id);if(!item||!vendorItem)return [];
     const vendor=vendorById.get(vendorItem.vendor_id),category=categories.find(c=>c.id===item.category_id);
-    return [{mapping,item,vendorItem,vendor,evidence:catalogRowEvidence({item,vendorItem,vendor,mapping,category})}];
+    // The other vendors' rows on this item, for cross-vendor checks.
+    const peers=mappings.filter(o=>o.catalog_item_id===mapping.catalog_item_id&&o.id!==mapping.id).map(o=>viById.get(o.vendor_item_id)).filter(Boolean);
+    return [{mapping,item,vendorItem,vendor,peers,evidence:catalogRowEvidence({item,vendorItem,vendor,mapping,category,peers,categories})}];
   }).sort((a,b)=>{
     const av=a.evidence[sort.key].value,bv=b.evidence[sort.key].value;
     if(av==null)return bv==null?0:1;if(bv==null)return -1;
@@ -122,7 +129,7 @@ export function CatalogRows({orgId,items,catalogItems,vendorItems,mappings,vendo
   return <div style={{overflowX:"auto",borderRadius:10,background:"white",marginBottom:16}}>
     <div style={{padding:12,fontSize:12}}>Correct any cell, then save its row. Missing fields can be completed later.</div>
     <table style={{borderCollapse:"collapse",width:"100%",minWidth:1250,fontSize:12}}><thead><tr>{CATALOG_COLUMNS.map(([key,label])=><th key={key} style={{...cellStyle,textAlign:"left",background:"#E8F0FA"}} aria-sort={sort.key===key?sort.direction===1?"ascending":"descending":"none"}><button style={{border:0,background:"none",fontWeight:700,cursor:"pointer"}} onClick={()=>setSort(s=>({key,direction:s.key===key?-s.direction:1}))}>{label}{sort.key===key?sort.direction===1?" ↑":" ↓":""}</button></th>)}<th style={cellStyle}>Actions</th></tr></thead>
-      <tbody>{rows.map(row=><EditableRow key={row.vendorItem.id} {...row} orgId={orgId} categories={categories} vocabulary={vocabulary} packOptions={packOptions} canManage={canManage} onUpdated={onUpdated} onConfirm={onConfirm} onDetails={()=>onDetails(row.item.id)} />)}
+      <tbody>{rows.map(row=><EditableRow key={row.vendorItem.id} {...row} orgId={orgId} categories={categories} vocabulary={vocabulary} packOptions={packOptions} canManage={canManage} onUpdated={onUpdated} onDetails={()=>onDetails(row.item.id)} />)}
       {items.filter(i=>!linked.has(i.catalogItemId)).map(i=><tr key={i.catalogItemId}><td style={cellStyle}>#{i.masterItemNumber}</td><td colSpan={8} style={cellStyle}>{i.name} · No vendor listing linked yet.</td><td><button onClick={()=>onDetails(i.catalogItemId)}>Details</button></td></tr>)}
       </tbody>
     </table>

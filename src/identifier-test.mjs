@@ -225,7 +225,7 @@ await test("setCaseBasisWhereUnstated prices readable packs and leaves stated un
 {
   const vendors=[{id:"A",name:"Carbonella"},{id:"B",name:"Mina"}];
   const categories=[{id:"prod",name:"Produce",is_holding_pen:false},{id:"pen",name:"Uncategorized",is_holding_pen:true}];
-  const items=[{id:"c1",name:"TOMATOES 5X6",category_id:"prod",category_review:true},{id:"c2",name:"LETTUCE ROMAINE",category_id:"pen"},{id:"c3",name:"ONIONS YELLOW",category_id:"prod"}];
+  const items=[{id:"c1",name:"TOMATOES 5X6",category_id:"prod",category_review:false},{id:"c2",name:"LETTUCE ROMAINE",category_id:"pen"},{id:"c3",name:"ONIONS YELLOW",category_id:"prod"}];
   const vis=[
     {id:"v1",vendor_id:"A",description:"TOMATOES 5X6",pack_size:"1/25 LB",price:33.99,price_basis:"case",selling_unit:"CS",price_unavailable:false},
     {id:"v2",vendor_id:"A",description:"LETTUCE ROMAINE",pack_size:"24 CT",price:30,price_basis:"case",selling_unit:"CS",price_unavailable:false},
@@ -238,10 +238,14 @@ await test("setCaseBasisWhereUnstated prices readable packs and leaves stated un
     {id:"m3",catalog_item_id:"c3",vendor_item_id:"v3",comparison_track:"review",confidence_score:null},
     {id:"m4",catalog_item_id:"c1",vendor_item_id:"v4",comparison_track:"review",confidence_score:null},
   ];
-  await test("a fully solved single-vendor row is placed and its guessed category accepted",()=>{
+  await test("a fully solved single-vendor row is placed",()=>{
     const ready=autoPlaceable({catalogItems:items,vendorItems:vis,mappings:maps,vendors,categories});
     const m1=ready.find(r=>r.mappingId==="m1");
-    assert.ok(m1);assert.equal(m1.verification.comparison_track,"exact");assert.equal(m1.verification.confidence_score,100);assert.equal(m1.clearCategoryReview,true);
+    assert.ok(m1);assert.equal(m1.verification.comparison_track,"exact");assert.equal(m1.verification.confidence_score,100);
+  });
+  await test("a best-guess category (70%) holds a row back until the client picks the category",()=>{
+    const guessed=items.map(i=>i.id==="c1"?{...i,category_review:true,category_reason:"Best guess"}:i);
+    assert.ok(!autoPlaceable({catalogItems:guessed,vendorItems:vis,mappings:maps,vendors,categories}).some(r=>r.mappingId==="m1"));
   });
   await test("a row still in Uncategorized is not placed",()=>assert.ok(!autoPlaceable({catalogItems:items,vendorItems:vis,mappings:maps,vendors,categories}).some(r=>r.mappingId==="m2")));
   await test("a row with no pack or no unit is not placed",()=>{

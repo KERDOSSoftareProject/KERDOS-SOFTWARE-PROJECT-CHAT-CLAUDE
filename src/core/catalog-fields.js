@@ -1,4 +1,4 @@
-import {casePriceFromQuote,parsePackSize,pricePerUnit,priceBasisFor,compareProductIdentity,comparePurchasingPack} from "../procurement.js";
+import {casePriceFromQuote,parsePackSize,pricePerUnit,priceBasisFor,compareProductIdentity,comparePurchasingPack,suggestCategory} from "../procurement.js";
 import {mappingVerification} from "../services/catalog.js";
 
 export const CATALOG_COLUMNS=[
@@ -18,28 +18,143 @@ export function unitChoices(vocabulary=[],pack=false){
     .map(([value,label])=>({value,label}));
 }
 const field=(value,accuracy,reason)=>({value,accuracy,reason});
-export function catalogRowEvidence({item,vendorItem,mapping,vendor,category}){
+
+// ---- Accuracy ----------------------------------------------------------
+// The percentage on a cell is how likely its value is to be RIGHT, whoever
+// put it there. Missing cells have no percentage. A source statement or
+// manual entry alone is 90, and an independent matching vendor can raise
+// an identity field to 100. Contradictions lower confidence regardless
+// of who entered the value. These are rule-based estimates, not measured
+// error rates.
+const STATED=90,DERIVED=90,GUESSED=70,DOUBTFUL=60;
+const empty=(value)=>value==null||value==="";
+
+export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peers=[],categories=[]}){
   const vi=vendorItem,pack=parsePackSize(vi.pack_size),basis=priceBasisFor(vi.selling_unit);
   const amount=vi.price==null||vi.price===""?null:Number(vi.price);
   const hasPrice=Number.isFinite(amount)&&amount>0;
-  const quoteReview=!!vi.import_row?.reviewRequired&&!!vi.price_unavailable;
+  const row=vi.import_row?.row||{};
+  const changes=vi.import_row?.reviewRequired?(vi.import_row?.changes||[]).map(c=>c.field):[];
   const casePrice=hasPrice&&basis?casePriceFromQuote(amount,basis.basis,basis.unit||vi.selling_unit,vi.pack_size):null;
   const per=casePrice!=null&&pack?.parsed?pricePerUnit(casePrice,vi.pack_size):null;
   const manual=vi.field_resolutions||{};
-  const resolved=(key)=>Object.hasOwn(manual,key);
+  const byClient=(key)=>Object.hasOwn(manual,key);
+  const otherVendors=peers.filter(p=>p.vendor_id&&p.vendor_id!==vi.vendor_id);
+  const source=(key,rawKey)=>manual[key]?.sourceValue??row[rawKey];
+  // A second vendor on the same catalog item is not automatically an
+  // independent witness. Require a matching trade identifier first.
+  const provenPeers=otherVendors.filter(p=>
+    (vi.gtin&&p.gtin&&vi.gtin===p.gtin)||
+    (vi.manufacturer_code&&p.manufacturer_code&&vi.manufacturer_code===p.manufacturer_code&&vi.brand&&p.brand&&vi.brand.toLowerCase()===p.brand.toLowerCase()));
+
+  // Pack: where it came from, then whether it agrees with the quoted unit
+  // and with the other vendors on this item.
+  let packAcc=null,packWhy="";
+  if(!empty(vi.pack_size)){
+    if(!pack?.parsed){packAcc=DOUBTFUL;packWhy="Not a complete pack KERDOS can read";}
+    else{
+      packAcc=byClient("pack_size")?STATED:row.packSource==="description"?DERIVED:row.packSource==="column"||!row.packSource?STATED:DERIVED;
+      packWhy=byClient("pack_size")?"Set by you":row.packSource==="description"?"Read from the end of the description":row.packSource==="invoice"?"Filled from the vendor's invoice":"Read from the sheet";
+      if(basis?.basis==="measure"&&pack.dimension!=="unknown"&&casePrice==null){packAcc=Math.min(packAcc,DOUBTFUL);packWhy+="; doesn't fit a price quoted per "+(basis.unit||vi.selling_unit);}
+      const disagree=otherVendors.find(p=>p.pack_size&&parsePackSize(p.pack_size)?.parsed&&comparePurchasingPack(vi.pack_size,p.pack_size).status!=="same");
+      if(disagree){packAcc=Math.min(packAcc,GUESSED);packWhy+=`; another vendor lists ${disagree.pack_size}`;}
+      else if(provenPeers.length&&provenPeers.every(p=>comparePurchasingPack(vi.pack_size,p.pack_size).status==="same")){
+        packAcc=100;packWhy+="; corroborated by another vendor";
+      }
+      const sourcePack=source("pack_size","packSize");
+      if(byClient("pack_size")&&sourcePack&&comparePurchasingPack(vi.pack_size,sourcePack).status!=="same"){
+        packAcc=Math.min(packAcc,GUESSED);packWhy+="; differs from the original source";
+      }
+      if(changes.includes("packSize")){packAcc=Math.min(packAcc,GUESSED);packWhy+="; changed on the newest sheet";}
+    }
+  }
+
+  // Quoted unit: stated on the sheet, chosen for the whole sheet, or set here.
+  let unitAcc=null,unitWhy="";
+  if(!empty(vi.selling_unit)){
+    if(!basis){unitAcc=DOUBTFUL;unitWhy="Not a unit KERDOS recognises";}
+    else{
+      unitAcc=byClient("selling_unit")?STATED:row.sellingUnitSource==="sheet"?DERIVED:STATED;
+      unitWhy=byClient("selling_unit")?"Set by you":row.sellingUnitSource==="sheet"?"Applied to the whole sheet at import":"Stated on the sheet";
+      if(basis.basis==="measure"&&pack?.parsed&&casePrice==null){unitAcc=Math.min(unitAcc,DOUBTFUL);unitWhy+="; the pack isn't measured in "+(basis.unit||vi.selling_unit);}
+      const sourceUnit=source("selling_unit","sellingUnit");
+      if(byClient("selling_unit")&&sourceUnit&&JSON.stringify(priceBasisFor(sourceUnit))!==JSON.stringify(basis)){
+        unitAcc=Math.min(unitAcc,GUESSED);unitWhy+="; differs from the original source";
+      }
+    }
+  }
+
+  // Price: the number as quoted, checked against the vendor's own last quote.
+  let priceAcc=null,priceWhy="";
+  if(hasPrice){
+    priceAcc=byClient("price")?STATED:STATED;priceWhy=byClient("price")?"Set by you":"As quoted on the sheet";
+    if(changes.includes("price")){priceAcc=GUESSED;priceWhy+="; differs from this vendor's last quote";}
+    if(byClient("price")&&row.price!=null&&Number(row.price)!==amount){
+      priceAcc=Math.min(priceAcc,GUESSED);priceWhy+="; differs from the original quoted amount";
+    }
+    if(per&&(per.price<0.01||per.price>10000)){priceAcc=Math.min(priceAcc,DOUBTFUL);priceWhy+=`; works out to ${per.price} per ${per.unit}, which looks wrong`;}
+  }
+
+  // Category: confident placement, best guess, or set by the client.
+  let catAcc=null,catWhy="";
+  if(category&&!category.is_holding_pen){
+    catAcc=item.category_review?GUESSED:item.category_reason?DERIVED:STATED;
+    catWhy=item.category_review?(item.category_reason||"Best guess"):item.category_reason?item.category_reason:"Set or accepted";
+    const independent=categories.length?suggestCategory(vi.description,categories,[]):null;
+    if(independent?.confidence==="confident"&&independent.category?.id!==category.id){
+      catAcc=Math.min(catAcc,GUESSED);
+      catWhy+=`; description points to ${independent.category.name}; check the source and category`;
+    }
+  }
+
+  // Brand: printed in a labeled column, pulled from an unlabeled cell, or typed.
+  let brandAcc=null,brandWhy="";
+  if(!empty(vi.brand)){
+    brandAcc=byClient("brand")?STATED:row.brandSource==="details"?GUESSED:STATED;
+    brandWhy=byClient("brand")?"Set by you":row.brandSource==="details"?"Taken from an unlabeled cell; it matched a brand you already carry":"Printed on the sheet";
+    const clash=otherVendors.find(p=>p.brand&&p.brand.trim().toLowerCase()!==vi.brand.trim().toLowerCase());
+    if(clash){brandAcc=Math.min(brandAcc,GUESSED);brandWhy+=`; another vendor lists ${clash.brand}`;}
+    else if(provenPeers.length&&provenPeers.every(p=>p.brand&&p.brand.trim().toLowerCase()===vi.brand.trim().toLowerCase())){
+      brandAcc=100;brandWhy+="; corroborated by another vendor";
+    }
+    const sourceBrand=source("brand","brand");
+    if(byClient("brand")&&sourceBrand&&sourceBrand.trim().toLowerCase()!==vi.brand.trim().toLowerCase()){
+      brandAcc=Math.min(brandAcc,GUESSED);brandWhy+="; differs from the original source";
+    }
+  }
+
+  // Description: the vendor's own words are the vendor's own words.
+  const descriptionCorroborated=provenPeers.length>0&&provenPeers.every(p=>p.description&&compareProductIdentity(vi.description,p.description).status==="same");
+  const originalDescription=source("description","description");
+  const descriptionConflict=byClient("description")&&originalDescription&&compareProductIdentity(vi.description,originalDescription).status!=="same";
+  const descAcc=empty(vi.description)?null:descriptionConflict?GUESSED:descriptionCorroborated?100:STATED;
+  const descWhy=descriptionConflict?"Edited description differs from original source; verify the product":descriptionCorroborated?"Product identity corroborated by a matching trade identifier":byClient("description")?"Cleaned up by you; verify against source":"As the vendor wrote it";
+
+  // Item name: yours once you've typed it; until then it is only the vendor's wording.
+  const named=!empty(item.name)&&item.name!==vi.description;
+  const nameAcc=empty(item.name)?null:named?STATED:GUESSED;
+  const nameWhy=named?"Your name for this product":"Still the vendor's wording; rename it when you like";
+
+  // Association: proven by identifier or a second vendor, exact, or under review.
+  const exact=mapping?.comparison_track==="exact"&&mapping?.confidence_score===100;
+  const numAcc=item.master_item_number==null?null:exact?descriptionCorroborated&&packAcc===100?100:STATED:mapping?.confidence_score!=null?Math.max(DOUBTFUL,Math.min(GUESSED,mapping.confidence_score)):GUESSED;
+  const numWhy=exact?"Association verified":"Association still being checked";
+
+  // Unit cost only exists when pack, unit and price all hold up; it is as
+  // sure as the least sure of the three.
+  const costAcc=per?Math.min(packAcc??0,unitAcc??0,priceAcc??0):null;
+
   return {
-    itemNumber:field(item.master_item_number,mapping?.comparison_track==="exact"?100:75,mapping?.comparison_track==="exact"?"Vendor association confirmed":"Number assigned; association needs confirmation"),
-    vendor:field(vendor?.name||"",vendor?100:0,"Vendor selected at import"),
-    category:field(category?.name||"Uncategorized",!category||category.is_holding_pen?0:item.category_review?75:100,item.category_reason||"Saved category"),
-    // Item name is the client's own word for the product ("Tomatoes");
-    // vendor description is what this vendor calls it ("5X6 TOMATOES").
-    itemName:field(item.name||"",item.name?100:0,item.name&&item.name!==vi.description?"Your name for this product":"Named from the vendor's wording until you rename it"),
-    product:field(vi.description,vi.description?100:0,resolved("description")?"Your saved description":"Description read from source; association checked separately"),
-    brand:field(vi.brand||"",vi.brand?100:resolved("brand")?100:null,resolved("brand")?"Your saved brand choice":"Brand as printed; blank when absent"),
-    pack:field(vi.pack_size||"",pack?.parsed?100:vi.pack_size?75:0,pack?.parsed?`${pack.caseQty} inner item(s); ${pack.total} ${pack.unit}${pack.catchWeight?" (estimated weight)":""}`:"Pack needs clarification"),
-    price:field(hasPrice?amount:null,hasPrice?quoteReview?75:100:0,"Quoted number; quoted unit is evaluated separately"),
-    sellingUnit:field(vi.selling_unit||"",basis?100:vi.selling_unit?0:null,basis?resolved("selling_unit")?"Your saved quoted unit":"Saved quoted unit":"Choose what the quoted price is per"),
-    unitCost:{...field(per?.price??null,per?quoteReview?75:100:0,per?`Calculated per ${per.unit}${pack.catchWeight?"; case weight is an estimate":""}`:"Needs a readable pack and a compatible quoted unit"),unit:per?.unit||null},
+    itemNumber:field(item.master_item_number,numAcc,numWhy),
+    vendor:field(vendor?.name||"",vendor?STATED:null,"Vendor selected at import"),
+    category:field(category?.name||"Uncategorized",catAcc,catWhy||"No category yet"),
+    itemName:field(item.name||"",nameAcc,nameWhy),
+    product:field(vi.description,descAcc,descWhy),
+    brand:field(vi.brand||"",brandAcc,brandWhy||"Blank when absent"),
+    pack:field(vi.pack_size||"",packAcc,packWhy||"No pack yet"),
+    price:field(hasPrice?amount:null,priceAcc,priceWhy||"No price"),
+    sellingUnit:field(vi.selling_unit||"",unitAcc,unitWhy||"Choose what the quoted price is per"),
+    unitCost:{...field(per?.price??null,costAcc,per?`Calculated per ${per.unit}${pack?.catchWeight?"; case weight is an estimate":""}`:"Needs a readable pack and a compatible quoted unit"),unit:per?.unit||null},
   };
 }
 
@@ -49,12 +164,14 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category}){
 // converts to a full-pack price, a current price, and the association
 // itself either exact already or pointing at an item whose name agrees
 // with the vendor wording. Rows like that are placed without a click.
-export function orderGuideReady({item,vendorItem,mapping,vendor,category}){
+export function orderGuideReady({item,vendorItem,mapping,vendor,category,peers=[],categories=[]}){
   if(!item||!vendorItem||!mapping||!category||category.is_holding_pen)return false;
   if(vendorItem.price_unavailable||vendorItem.price_source==="invoice")return false;
   if(vendorItem.import_row?.reviewRequired)return false;
-  const evidence=catalogRowEvidence({item,vendorItem,mapping,vendor,category});
-  if(evidence.unitCost.value==null||evidence.pack.accuracy!==100||evidence.sellingUnit.accuracy!==100||evidence.price.accuracy!==100)return false;
+  const evidence=catalogRowEvidence({item,vendorItem,mapping,vendor,category,peers,categories});
+  if(evidence.unitCost.value==null)return false;
+  // Every required cell must be at least "worked out from strong evidence".
+  for(const key of ["category","product","pack","sellingUnit","price"])if((evidence[key].accuracy??0)<DERIVED)return false;
   return true;
 }
 
@@ -75,8 +192,8 @@ export function autoPlaceable({catalogItems=[],vendorItems=[],mappings=[],vendor
     const vi=viById.get(m.vendor_item_id),ci=ciById.get(m.catalog_item_id);
     if(!vi||!ci)continue;
     const category=cById.get(ci.category_id);
-    if(!orderGuideReady({item:ci,vendorItem:vi,mapping:m,vendor:vById.get(vi.vendor_id),category}))continue;
     const peers=(byCatalog.get(m.catalog_item_id)||[]).filter(o=>o.id!==m.id).map(o=>viById.get(o.vendor_item_id)).filter(Boolean);
+    if(!orderGuideReady({item:ci,vendorItem:vi,mapping:m,vendor:vById.get(vi.vendor_id),category,peers,categories}))continue;
     const verification=mappingVerification(vi,ci,peers);
     if(verification.comparison_track!=="exact")continue;
     out.push({mappingId:m.id,vendorItemId:vi.id,catalogItemId:ci.id,description:vi.description,packSize:vi.pack_size,

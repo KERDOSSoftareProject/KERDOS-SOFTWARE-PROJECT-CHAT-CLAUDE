@@ -184,8 +184,14 @@ export default function App() {
     return ()=>window.removeEventListener("online",reconnect);
   },[session,org?.id]);
 
+  // The first load, and a switch of organization, show the loading
+  // screen. Every later refresh (after a save, an import, automatic
+  // placement) updates the data in place: the page stays put, nothing
+  // flashes, and unsaved edits in other rows are untouched.
+  const loadedOnce=useRef(false);
   async function loadData(requestedOrganizationId=null){
-    setLoading(true);
+    const silent=loadedOnce.current&&!requestedOrganizationId;
+    if(!silent)setLoading(true);
     const membershipKey=`memberships:${session.user.id}`;
     let mem, usingLocal=null;
     try{
@@ -246,6 +252,7 @@ export default function App() {
     setPriceHistory(snapshot.priceHistory);
     setImportDocuments(snapshot.importDocuments||[]);
     setPriceHistoryHasMore(snapshot.priceHistory.length===2000);
+    loadedOnce.current=true;
     setLoading(false);
   }
 

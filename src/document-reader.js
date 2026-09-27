@@ -85,7 +85,13 @@ export async function fileToText(file){
   if(name.endsWith(".html")||name.endsWith(".htm"))return htmlToText(await file.text());
   if(name.endsWith(".xlsx")||name.endsWith(".xls")){
     const XLSX=await import("xlsx"),workbook=XLSX.read(await file.arrayBuffer(),{type:"array"});
-    return XLSX.utils.sheet_to_csv(workbook.Sheets[workbook.SheetNames[0]]);
+    // Every worksheet is read, not just the first: vendors often keep one
+    // tab per category. Empty tabs are skipped; each tab keeps its own
+    // header row, which the parser recognises again when it meets it.
+    return workbook.SheetNames
+      .map(name=>XLSX.utils.sheet_to_csv(workbook.Sheets[name]))
+      .filter(csv=>csv.replace(/[\s,]/g,"").length>0)
+      .join("\n");
   }
   if(name.endsWith(".pdf"))return extractPdfText(file);
   return file.text();

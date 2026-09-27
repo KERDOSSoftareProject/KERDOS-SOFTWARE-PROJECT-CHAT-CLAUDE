@@ -86,6 +86,7 @@ export function createSupabaseBackend({url,anonKey}) {
           p_manufacturer_code:quote.manufacturerCode||null,
           p_import_row:quote.importRow||null,
           p_field_resolutions:quote.fieldResolutions||null,
+          p_brand:quote.brand||null,
         }),"Apply price quotation");
       },
     },

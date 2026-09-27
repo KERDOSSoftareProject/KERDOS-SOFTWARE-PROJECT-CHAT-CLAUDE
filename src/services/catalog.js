@@ -25,38 +25,13 @@ async function run(promise,operation){
   return data;
 }
 
-// Single-vendor listings never auto-verify; the client confirms them. This
-// finds the ones that are ready for that confirmation in one action: still
-// unverified, the only vendor on their catalog item, and passing the same
-// verification a one-at-a-time confirm would run (readable pack, product
-// identity agrees with the catalog item). Anything else stays in review.
-export function readyToConfirm({mappings=[],vendorItems=[],catalogItems=[]}){
-  const viById=new Map(vendorItems.map(vi=>[vi.id,vi]));
-  const ciById=new Map(catalogItems.map(ci=>[ci.id,ci]));
-  const byCatalog=new Map();
-  for(const m of mappings){const list=byCatalog.get(m.catalog_item_id)||[];list.push(m);byCatalog.set(m.catalog_item_id,list);}
-  const ready=[];
-  for(const m of mappings){
-    if(m.comparison_track==="exact"&&m.confidence_score===100)continue;
-    const vendorItem=viById.get(m.vendor_item_id),catalogItem=ciById.get(m.catalog_item_id);
-    if(!vendorItem||!catalogItem)continue;
-    const siblings=(byCatalog.get(m.catalog_item_id)||[]).filter(other=>other.id!==m.id);
-    const otherVendors=siblings.map(other=>viById.get(other.vendor_item_id)?.vendor_id).filter(id=>id&&id!==vendorItem.vendor_id);
-    if(otherVendors.length)continue;
-    const verification=mappingVerification(vendorItem,catalogItem,[]);
-    if(verification.comparison_track!=="exact")continue;
-    ready.push({mappingId:m.id,vendorItemId:vendorItem.id,catalogItemId:catalogItem.id,description:vendorItem.description,packSize:vendorItem.pack_size,verification});
-  }
-  return ready;
-}
-
 // Why an association is not at 100%, as one fixed code per mapping. The
 // codes are what makes the Not mapped list workable: grouped by code, one
 // parser fix or one bulk confirm clears a whole group instead of one row.
 export const GAP_LABELS={
   "pack-missing":"Pack size missing",
   "pack-unreadable":"Pack size can't be read",
-  "single-vendor-ready":"Single vendor — ready to confirm",
+  "single-vendor-ready":"Single vendor — fields still to complete",
   "single-vendor-detail":"Single vendor — wording differs from catalog item",
   "brand-conflict":"Brand differs from linked vendor",
   "pack-conflict":"Pack differs from linked vendor",

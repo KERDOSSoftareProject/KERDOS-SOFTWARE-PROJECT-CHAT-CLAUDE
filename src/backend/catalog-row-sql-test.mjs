@@ -8,7 +8,7 @@ await db.exec(`create schema auth; create role authenticated;
 create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
 create table organization_members(organization_id uuid,user_id uuid,role text);
 create table vendors(id uuid,organization_id uuid);
-create table import_documents(id uuid,organization_id uuid,vendor_id uuid);
+create table import_documents(id uuid primary key default gen_random_uuid(),organization_id uuid,vendor_id uuid,document_kind text,fingerprint text,original_text text,status text);
 create table catalog_categories(id uuid,organization_id uuid,is_holding_pen boolean default false);
 create table catalog_items(id uuid,organization_id uuid,name text,category_id uuid,master_item_number int);
 create table item_mappings(id uuid,organization_id uuid,vendor_item_id uuid,catalog_item_id uuid,comparison_track text,confidence_score numeric,match_method text);
@@ -24,6 +24,8 @@ await db.exec(fs.readFileSync(root+'/knowledge/migration_009_price_basis.sql','u
 await db.exec(fs.readFileSync(root+'/knowledge/migration_010_catalog_rows.sql','utf8'));
 await db.exec(fs.readFileSync(root+'/knowledge/migration_010_catalog_rows.sql','utf8'));
 await db.exec(fs.readFileSync(root+'/knowledge/migration_014_item_name.sql','utf8'));
+await db.exec(fs.readFileSync(root+'/knowledge/migration_015_recoverable_imports.sql','utf8'));
+await db.exec(fs.readFileSync(root+'/knowledge/migration_015_recoverable_imports.sql','utf8'));
 const quote=await db.query(`select kerdos_apply_price_quote(null,$1,$2,'001001','Bacon','1/15 LB',3.83,true,now(),null,null,'Source',null,null,null,null,null,null,$3::jsonb,'{}') as id`,[org,vendor,JSON.stringify({row:{description:'BCN',price:3.83,packSize:'1/15 LB'}})]);
 const vi=quote.rows[0].id;
 await db.query(`insert into item_mappings values($1,$2,$3,$4,'review',75,'rule_based')`,[mapping,org,vi,item]);
@@ -57,7 +59,26 @@ const revisionNow=Number((await db.query('select row_revision from vendor_items'
 result=await save(revisionNow,{description:'BACON LAYOUT 30 LB HATFIELD'});
 assert.equal((await db.query('select name from catalog_items')).rows[0].name,'Bacon','client item name is never overwritten by vendor wording');
 assert.equal((await db.query('select description from vendor_items')).rows[0].description,'BACON LAYOUT 30 LB HATFIELD');
+// Migration 015: item name and row fields land in one write; a description
+// fix in the same patch never undoes the name given in that patch.
+const rev15=Number((await db.query('select row_revision from vendor_items')).rows[0].row_revision);
+result=await save(rev15,{item_name:'Pork Bacon',description:'BACON LAYOUT 30 LB HATFIELD PREMIUM'});
+assert.equal((await db.query('select name from catalog_items')).rows[0].name,'Pork Bacon','item name saved in the same write as the row');
+assert.equal((await db.query('select description from vendor_items')).rows[0].description,'BACON LAYOUT 30 LB HATFIELD PREMIUM');
+await assert.rejects(save(rev15+1,{item_name:'  '}),/item name/);
+// Migration 015: the same quote from the same document is recorded once, and the brand rides on the quote.
+const histBefore=Number((await db.query('select count(*) from price_history')).rows[0].count);
+const docId=(await db.query(`insert into import_documents(organization_id,vendor_id,document_kind,fingerprint,original_text,status) values ($1,$2,'pricelist','fp-resume','x','processing') returning id`,[org,vendor])).rows[0].id;
+for(let i=0;i<2;i++)await db.query(`select kerdos_apply_price_quote($1,$2,$3,'001001','BACON LAYOUT 30 LB HATFIELD PREMIUM','1/15 LB',4.10,false,now(),null,null,'Resumed',null,$4,'LB','measure',null,null,null,null,'Hatfield')`,[vi,org,vendor,docId]);
+assert.equal(Number((await db.query('select count(*) from price_history')).rows[0].count),histBefore+1,'a resumed import does not duplicate price history');
+for(const rowKey of ['row:0','row:1'])for(let attempt=0;attempt<2;attempt++)
+  await db.query(`select kerdos_apply_price_quote($1,$2,$3,'001001','BACON LAYOUT 30 LB HATFIELD PREMIUM','1/15 LB',4.20,false,now(),null,null,'Resumed',null,$4,'LB','measure',null,null,$5::jsonb,null,'Hatfield')`,
+    [vi,org,vendor,docId,JSON.stringify({rowKey})]);
+assert.equal(Number((await db.query('select count(*) from price_history where source_document_id=$1 and price=4.20',[docId])).rows[0].count),2,
+  'two distinct source rows survive, while retries do not duplicate either one');
+assert.equal((await db.query('select brand from vendor_items')).rows[0].brand,'Hatfield','brand saved with the quote');
+assert.deepEqual((await db.query('select completed_keys from import_documents where id=$1',[docId])).rows[0].completed_keys,[]);
 await db.exec(`update organization_members set role='employee';`);
-await assert.rejects(save(revisionNow+1,{price:9}),/Owner or manager/);
+await assert.rejects(save(Number((await db.query('select row_revision from vendor_items')).rows[0].row_revision),{price:9}),/Owner or manager/);
 console.log('Database check passed: repeat migration, partial fields, quote calculation readiness, atomic rollback, stale edits, preserved item number, price update without duplication, and role/organization checks.');
 await db.close();

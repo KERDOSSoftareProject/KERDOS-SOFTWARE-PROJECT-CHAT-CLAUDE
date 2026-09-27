@@ -221,24 +221,37 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
         let existingDoc;
         try{existingDoc=await importService.findPriceDocument({organizationId:orgId,vendorId,fingerprint});}
         catch(err){failedRows+=group.rows.length;saveError=(saveError?saveError+" ":"")+`${group.name}: ${err.message}`;continue;}
-        if(existingDoc){saveError=(saveError?saveError+" ":"")+`${group.name}: previously imported (${existingDoc.status}); repeated upload blocked to avoid duplicate pricing. Review existing import before retrying.`;continue;}
-        if(group.file){
-          const uploaded=await documents.uploadOriginal(orgId,vendorId,group.file);
-          if(uploaded.error){failedRows+=group.rows.length;saveError=(saveError?saveError+" ":"")+`Could not preserve the original ${group.name}: ${uploaded.error.message}. Prices from that file were not applied.`;continue;}
-          sourceFilePath=uploaded.path;
+        // A file that finished is not re-run (use Delete & re-import). A
+        // file that stopped part-way resumes: rows already recorded as
+        // complete are skipped, the rest are saved, and every write below
+        // is safe to repeat.
+        if(existingDoc&&existingDoc.status==="complete"){saveError=(saveError?saveError+" ":"")+`${group.name}: already imported in full. Use Delete & re-import in Price Sheets to load it again.`;continue;}
+        const completedKeys=new Set(Array.isArray(existingDoc?.completed_keys)?existingDoc.completed_keys:[]);
+        let sourceDocumentId=existingDoc?.id||null;
+        if(!existingDoc){
+          if(group.file){
+            const uploaded=await documents.uploadOriginal(orgId,vendorId,group.file);
+            if(uploaded.error){failedRows+=group.rows.length;saveError=(saveError?saveError+" ":"")+`Could not preserve the original ${group.name}: ${uploaded.error.message}. Prices from that file were not applied.`;continue;}
+            sourceFilePath=uploaded.path;
+          }
+          let storedDoc;
+          try{storedDoc=await importService.createPriceDocument({organization_id:orgId,vendor_id:vendorId,document_kind:"pricelist",fingerprint,original_text:group.text,file_name:group.name,file_path:sourceFilePath,status:"processing"});}
+          catch(err){failedRows+=group.rows.length;saveError=(saveError?saveError+" ":"")+`${group.name}: ${err.message}`;continue;}
+          sourceDocumentId=storedDoc.id;
         }
-        let storedDoc;
-        try{storedDoc=await importService.createPriceDocument({organization_id:orgId,vendor_id:vendorId,document_kind:"pricelist",fingerprint,original_text:group.text,file_name:group.name,file_path:sourceFilePath,status:"processing"});}
-        catch(err){failedRows+=group.rows.length;saveError=(saveError?saveError+" ":"")+`${group.name}: ${err.message}`;continue;}
-        const sourceDocumentId=storedDoc.id;
+        // The original file fingerprint fixes row order. The ordinal is
+        // unique even when a vendor repeats an item code or description.
+        const progressKey=index=>`row:${index}`;
         const failuresBeforeGroup=failedRows;
         const basisBeforeGroup=basisReview;
-      for(const sourceRow of group.rows){
+      for(const [rowIndex,sourceRow] of group.rows.entries()){
+        const completedKey=progressKey(rowIndex);
+        if(completedKeys.has(completedKey))continue;
         let row=sourceRow;
         // A price sheet never waits on a person. A row with parser issues or
         // an invoice disagreement is saved with those notes attached, so
         // Item Catalog shows exactly what to finish; nothing is held back.
-        const rowKey=`${group.id}:${group.rows.indexOf(sourceRow)}`;
+        const rowKey=`${group.id}:${rowIndex}`;
         const rowIssues=[...(sourceRow.issues||[]),...(!acceptedInvoiceConflicts.has(rowKey)?(invoiceClues.get(rowKey)?.conflicts||[]):[])];
         const rowNeedsReview=!!rowIssues.length&&!acceptedIssues.has(rowKey);
         try{
@@ -289,22 +302,18 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
         vendorItemId=needsBasis&&ex?ex.id:await backend.pricing.applyQuote({
           vendorItemId:ex?.id||null,organizationId:orgId,vendorId,
           vendorItemCode:row.code,description:row.description,
-          sellingUnit:resolved?.sellingUnit||null,priceBasis:basis?.basis||null,
+          sellingUnit:resolved?.sellingUnit||null,priceBasis:basis?.basis||null,brand:row.brand||null,
           gtin:row.gtin||null,manufacturerCode:row.manufacturerCode||null,
           packSize:row.packSize||ex?.pack_size||null,price:row.price,
           priceUnavailable:!!row.priceUnavailable||needsBasis,effectiveDate:importBatchTime,
           quoteValidUntil:group.quoteValidUntil,sourceFilePath,
           sourceFileName:group.name,sourceLine:row.sourceLine||null,sourceDocumentId,
-          importRow:{row:sourceRow,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:rowNeedsReview,conflicts:rowNeedsReview?rowIssues:[],changes:row.changes||[]},
+          importRow:{row:sourceRow,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:rowNeedsReview,conflicts:rowNeedsReview?rowIssues:[],changes:row.changes||[]},
           fieldResolutions:importResolutions(sourceRow,ex||{}),
         });
         if(needsBasis&&ex){
           const {error}=await backend.records.query("vendor_items").update({import_row:{row:sourceRow,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,changes:row.changes||[],conflicts:rowNeedsReview?rowIssues:row.conflicts?.length?row.conflicts:["Incoming quoted unit is unresolved"]}}).eq("id",ex.id).eq("organization_id",orgId);
           if(error)throw new Error(`Could not save the incoming quote for review: ${error.message}`);
-        }
-        if(row.brand){
-          const {error:brandError}=await backend.records.query("vendor_items").update({brand:row.brand}).eq("id",vendorItemId).eq("organization_id",orgId);
-          if(brandError)throw new Error(`The quoted price was saved but its brand could not be recorded: ${brandError.message}. Review this row before linking it.`);
         }
         if(ex&&!needsBasis) updated++; else if(!ex) created++;
         if(needsBasis)basisReview++;
@@ -353,6 +362,12 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
             await applySelectedCategory(existingMapping.catalog_item_id,row.categoryId);
           }
         }
+        if(!vendorItemId||!await importService.mapping(orgId,vendorItemId))
+          throw new Error("The price was saved, but its catalog link is incomplete. This row can be resumed.");
+        // A row is complete only after both the listing and catalog link
+        // exist. Checkpoint each row before moving to the next one.
+        await importService.recordProgress(sourceDocumentId,[...completedKeys,completedKey]);
+        completedKeys.add(completedKey);
         }catch(err){
           // Report the first failure verbatim and count the rest; a row
           // that failed is never counted as updated or created.
@@ -361,7 +376,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
         }
       }
         const finalStatus=failedRows===failuresBeforeGroup&&basisReview===basisBeforeGroup?"complete":"partial";
-        try{await importService.finalizeDocument(sourceDocumentId,finalStatus);}
+        try{await importService.finalizeDocument(sourceDocumentId,finalStatus,[...completedKeys]);}
         catch(err){saveError=(saveError?saveError+" ":"")+`${group.name}: ${err.message}`;}
       }
       if(failedRows>1) saveError+=` (and ${failedRows-1} more row${failedRows===2?"":"s"} failed the same way)`;

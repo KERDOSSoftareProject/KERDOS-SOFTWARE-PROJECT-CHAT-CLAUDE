@@ -13,7 +13,7 @@ const migrations=[
   "migration_010_catalog_rows.sql",
   "migration_011_document_deletion.sql",
   "migration_012_vendor_nvim.sql",
-  "migration_013_invoice_mapping.sql","migration_014_item_name.sql",
+  "migration_013_invoice_mapping.sql","migration_014_item_name.sql","migration_015_recoverable_imports.sql",
 ];
 const sections=migrations.map(file=>[
   "-- ============================================================",
@@ -24,7 +24,7 @@ const sections=migrations.map(file=>[
 ].join("\n"));
 const output=[
   "-- KERDOS DATABASE UPDATE",
-  "-- Generated from knowledge/migration_003 through migration_014 (008 is unused and intentionally excluded).",
+  "-- Generated from knowledge/migration_003 through migration_015 (008 is unused and intentionally excluded).",
   "-- Do not hand-edit this combined file; update the individual migration and regenerate.",
   "",
   "begin;",

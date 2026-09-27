@@ -3,11 +3,12 @@ import {priceBasisFor,casePriceFromQuote,parsePackSize} from "../procurement.js"
 export function prepareCatalogCorrection({organizationId,vendorItem,mapping,patch}){
   if(!vendorItem?.id||!mapping?.id||vendorItem.organization_id!==organizationId||mapping.organization_id!==organizationId||mapping.vendor_item_id!==vendorItem.id)
     throw new Error("Choose a linked item from this organization.");
-  const allowed=new Set(["description","brand","pack_size","price","selling_unit","category_id"]);
+  const allowed=new Set(["description","brand","pack_size","price","selling_unit","category_id","item_name"]);
   if(Object.keys(patch).some(key=>!allowed.has(key)))throw new Error("Unsupported catalog field.");
   const cleaned={...patch};
-  for(const key of ["description","brand","pack_size","selling_unit"])if(key in cleaned)cleaned[key]=String(cleaned[key]??"").trim();
+  for(const key of ["description","brand","pack_size","selling_unit","item_name"])if(key in cleaned)cleaned[key]=String(cleaned[key]??"").trim();
   if("description" in cleaned&&!cleaned.description)throw new Error("Enter a product description.");
+  if("item_name" in cleaned&&!cleaned.item_name)throw new Error("Enter an item name.");
   if("price" in cleaned){
     cleaned.price=cleaned.price===""||cleaned.price==null?null:Number(cleaned.price);
     if(cleaned.price!=null&&(!Number.isFinite(cleaned.price)||cleaned.price<=0))throw new Error("Enter a positive quoted price, or leave it blank.");

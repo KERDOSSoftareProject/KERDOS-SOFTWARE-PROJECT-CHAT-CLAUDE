@@ -420,7 +420,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
             <p style={{fontSize:12,color:"rgba(255,255,255,0.85)",margin:"0 0 10px"}}>Check where each vendor product belongs. Moving a vendor price here changes only that vendor product.</p>
             <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
               {gapCounts.map(g=>(
-                <button key={g.code} onClick={()=>setGapFilter(gapFilter===g.code?"":g.code)} title={g.code==="single-vendor-ready"?"These can all be confirmed at once with the green button above":undefined}
+                <button key={g.code} onClick={()=>setGapFilter(gapFilter===g.code?"":g.code)} title={g.code==="single-vendor-ready"?"Placed automatically once its fields are complete":undefined}
                   style={{...btn(gapFilter===g.code?"white":"rgba(255,255,255,0.15)",gapFilter===g.code?"#B26A00":"white",{fontSize:11,padding:"6px 10px",fontWeight:800,border:"1px solid rgba(255,255,255,0.4)"})}}>
                   {g.label} · {g.count}
                 </button>
@@ -430,7 +430,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
             {visibleReviewMatches.map(m=>(
               <div key={m.mappingId} style={{background:"white",borderRadius:8,padding:"10px 12px",marginBottom:6,boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
                 <div style={{fontSize:11,color:"#666",marginBottom:3}}>Vendor product · {m.vendorName}</div>
-                {m.oneVendor&&<div style={{fontSize:11,color:"#9C5A00",fontWeight:800,marginBottom:4}}>Found on one vendor list · manual confirmation required</div>}
+                {m.oneVendor&&<div style={{fontSize:11,color:"#9C5A00",fontWeight:800,marginBottom:4}}>Found on one vendor list · places itself once its fields are complete</div>}
                 <div style={{fontWeight:700,fontSize:13}}>{m.vendorDescription}</div>
                 <div style={{fontSize:11,color:"#555",marginTop:3}}>Pack: <b>{m.packSize||"Not provided"}</b>{m.brand?` · Brand: ${m.brand}`:""}</div>
                 <div style={{fontSize:12,color:"#555",marginTop:5,marginBottom:8}}>Currently under <b>{m.catalogName}</b> <span style={{color:"#B26A00"}}>· {m.confidence>0?`${m.confidence}% wording similarity; verify details`:"Awaiting verification"}</span></div>
@@ -569,7 +569,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
         <div style={{background:"white",borderRadius:10,padding:20,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
           <p style={{color:"#888",fontSize:13,margin:0}}>No items match that search.</p>
         </div>
-      ):rowView?<CatalogRows orgId={orgId} items={groupedItems.flatMap(g=>g.items)} catalogItems={catalogItems} vendorItems={vendorItems} mappings={mappings} vendors={vendors} categories={categories} vocabulary={vocabulary} canManage={canManage} onUpdated={onUpdated} onConfirm={handleConfirm} onDetails={id=>{setRowView(false);setMapPanelOpenFor(id);}} />:groupedItems.map(group=>(
+      ):rowView?<CatalogRows orgId={orgId} items={groupedItems.flatMap(g=>g.items)} catalogItems={catalogItems} vendorItems={vendorItems} mappings={mappings} vendors={vendors} categories={categories} vocabulary={vocabulary} canManage={canManage} onUpdated={onUpdated} onDetails={id=>{setRowView(false);setMapPanelOpenFor(id);}} />:groupedItems.map(group=>(
         <div key={group.category} style={{marginBottom:20}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,paddingLeft:2}}>
             {canManage&&<input type="checkbox"
@@ -607,7 +607,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                         Review category: suggested {categoryCorrections.get(item.catalogItemId).category.name} · open item to change
                       </div>}
                       {item.categoryReview&&<div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginTop:4}}>
-                        <span style={{fontSize:10,fontWeight:800,color:"#8D6E00",background:"#FFF8E1",borderRadius:5,padding:"2px 7px"}} title={item.categoryReason||""}>Category suggested — confirm or move</span>
+                        <span style={{fontSize:10,fontWeight:800,color:"#8D6E00",background:"#FFF8E1",borderRadius:5,padding:"2px 7px"}} title={item.categoryReason||""}>Category is KERDOS's best guess — pick the category to confirm</span>
                         {canManage&&<button onClick={()=>act(()=>catalogService.confirmCategory(item.catalogItemId))} style={{border:0,background:"none",color:"#2E7D32",cursor:"pointer",fontSize:11,fontWeight:700,padding:0}}>Looks right</button>}
                       </div>}
                     </div>

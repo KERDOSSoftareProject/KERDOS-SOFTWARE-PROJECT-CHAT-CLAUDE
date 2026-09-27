@@ -5,9 +5,12 @@ async function run(promise,operation){const {data,error}=await promise;if(error)
 export function createImportService(backend){
   const table=backend.records.query;
   return {
-    findPriceDocument({organizationId,vendorId,fingerprint}){return run(table("import_documents").select("id,status").eq("organization_id",organizationId).eq("vendor_id",vendorId).eq("document_kind","pricelist").eq("fingerprint",fingerprint).maybeSingle(),"Could not verify whether the file was already imported");},
+    findPriceDocument({organizationId,vendorId,fingerprint}){return run(table("import_documents").select("id,status,completed_keys").eq("organization_id",organizationId).eq("vendor_id",vendorId).eq("document_kind","pricelist").eq("fingerprint",fingerprint).maybeSingle(),"Could not verify whether the file was already imported");},
     createPriceDocument(row){return run(table("import_documents").insert(row).select("id").single(),"Could not preserve the source document");},
-    finalizeDocument(documentId,status){return run(table("import_documents").update({status}).eq("id",documentId),"Could not finalize the source record");},
+    finalizeDocument(documentId,status,completedKeys){return run(table("import_documents").update(completedKeys?{status,completed_keys:completedKeys}:{status}).eq("id",documentId),"Could not finalize the source record");},
+    // Progress is written as rows complete, so an interrupted import can
+    // pick up where it stopped instead of starting over.
+    recordProgress(documentId,completedKeys){return run(table("import_documents").update({completed_keys:completedKeys,status:"processing"}).eq("id",documentId),"Could not record import progress");},
     findVendorItem({organizationId,vendorId,code}){
       return run(table("vendor_items").select("*").eq("organization_id",organizationId)
         .eq("vendor_id",vendorId).eq("vendor_item_code",code).maybeSingle(),"Could not look up the item");
