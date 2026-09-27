@@ -1,4 +1,4 @@
-import {parseDocument,findDate,findInvoiceNumber,findQuoteValidity} from './ingestion.js';
+import {unmangleExcelDatePack,normalizeColumnPack,parseDocument,findDate,findInvoiceNumber,findQuoteValidity} from './ingestion.js';
 import {pdfTextLines} from './core/pdf-layout.js';
 import assert from 'node:assert/strict';
 let passed=0,failed=0;
@@ -63,4 +63,16 @@ assert.deepEqual(pdfTextLines([pdfWords(60,100,'Product'),pdfWords(260,100,'Pric
 t('service rate preserves three decimals',serviceInvoice.rows[0]?.price,0.099);
 t('service invoice keeps free lines',serviceInvoice.rows[1]?.amount,0);
 t('service invoice ignores subtotal',serviceInvoice.rows.length,2);
+
+// Packs a spreadsheet mangled into dates come back as outer/inner counts;
+// packaging words and bare counts in a pack column are read as packs.
+const dateCases={"2025-12-10 00:00:00":"12/10","2025-06-10":"6/10","12/10/2025":"12/10","10-Dec":"12/10","Dec-10":"12/10","1950-12-01 00:00:00":"12/1","4/5-LB":"4/5-LB","40-LB":"40-LB"};
+for(const [input,expected] of Object.entries(dateCases))t(`excel date pack ${input}`,unmangleExcelDatePack(input),expected);
+t("packaging word alone is one of that packaging",normalizeColumnPack("CASE"),"1 CASE");
+t("bare count in a pack column is a count",normalizeColumnPack("1000"),"1000 CT");
+t("a real pack is left alone",normalizeColumnPack("24/15.5"),"24/15.5");
+const mangled=parseDocument('Item#,Pack & Size:,Type:,Brand:,Description:,Sell\n#1,2025-12-10 00:00:00,CSE,MISC,GYRO BREAD 7 INCH,30.25\n#2,CASE,CSE,FRESH,CUCUMBER,22.50\n#3,1000,BOX,VB,VB-16FCW PAPER CONT 16OZ,61.00');
+t("mangled date row keeps a usable pack",mangled.rows[0]?.packSize,"12/10");
+t("produce sold by the case has a pack",mangled.rows[1]?.packSize,"1 CASE");
+t("count-only pack reads as a count",mangled.rows[2]?.packSize,"1000 CT");
 console.log(`${passed} passed, ${failed} failed`);process.exit(failed?1:0);

@@ -13,7 +13,7 @@ try{
     rollupOptions:{output:{entryFileNames:"document-pages.mjs"}},
   }});
   const {PriceSheetsPage}=await import(pathToFileURL(join(temporary,"document-pages.mjs")));
-  const file={id:"document-1",vendor_id:"v1",document_kind:"pricelist",created_at:"2026-09-26",file_name:"Vendor prices.xlsx",file_path:"org/vendor/source.xlsx",status:"partial"};
+  const file={id:"document-1",vendor_id:"v1",document_kind:"pricelist",created_at:"2026-09-26",file_name:"Vendor prices.xlsx",file_path:"org/vendor/source.xlsx",status:"partial",completed_keys:["row:0","row:1"]};
   const corrections=Array.from({length:3},(_,n)=>({id:`change-${n}`,vendor_item_id:"item-1",source_file_name:"Catalog field correction",effective_date:`2026-09-26T10:0${n}:00Z`,price:25+n}));
   const base={vendors:[{id:"v1",name:"Supplier A"},{id:"v2",name:"Supplier B"}],vendorFilter:"v1",vendorColors:new Map(),formatDate:value=>value,role:"owner",
     importDocuments:[file],priceHistory:corrections,vendorItems:[{id:"item-1",vendor_id:"v1",description:"Edited product"}],unavailableCount:55,expiredCount:5};
@@ -22,7 +22,8 @@ try{
   let html=render({expandedId:file.id});
   assert.match(html,/Vendor prices.xlsx/);
   assert.match(html,/1 source file/);
-  assert.match(html,/Import incomplete/);
+  assert.match(html,/Import marked incomplete/);
+  assert.match(html,/2 rows checkpointed/);
   assert.match(html,/Open original file/);
   for(const unwanted of ["Catalog field correction","Edited product","price row","need attention","25.00"])
     assert.ok(!html.includes(unwanted),`${unwanted} must not appear as an imported document or activity`);

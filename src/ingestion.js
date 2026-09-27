@@ -1,6 +1,7 @@
 // ════════════════════════════════════════════════════════════════════
 import {applySourceUnits,documentQuoteUnit} from "./core/source-units.js";
 import {measurement,normalizeGtin,normalizeManufacturerCode,packFromDescription,parsePackSize} from "./procurement.js";
+import {readHeaderLayout,applyLayoutAnswers,checkRowCells} from "./core/sheet-layout.js";
 // KERDOS INGESTION MODULE
 // ════════════════════════════════════════════════════════════════════
 //
@@ -366,6 +367,42 @@ function isNoPricePlaceholder(str) {
   return NO_PRICE_MARKERS.has(s);
 }
 
+// Spreadsheets turn a pack like "12/10" or "6/10" into a date before the
+// file ever reaches KERDOS ("2025-12-10", "12/10/2025", "10-Dec"). When the
+// pack column holds a date, the vendor almost certainly wrote outer/inner
+// counts. The month and day are read back as that pack; the year is the
+// spreadsheet's invention and is dropped. Anything that is not a date is
+// returned untouched.
+export function unmangleExcelDatePack(value){
+  const text=String(value||"").trim();
+  if(!text) return text;
+  let m=text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$/);           // 2025-12-10 00:00:00
+  if(m) return `${Number(m[2])}/${Number(m[3])}`;
+  m=text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);                                        // 12/10/2025
+  if(m) return `${Number(m[1])}/${Number(m[2])}`;
+  const months={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+  m=text.match(/^(\d{1,2})-([A-Za-z]{3})(?:-\d{2,4})?$/);                                        // 10-Dec, 10-Dec-25
+  if(m&&months[m[2].toLowerCase()]) return `${months[m[2].toLowerCase()]}/${Number(m[1])}`;
+  m=text.match(/^([A-Za-z]{3})-(\d{1,2})(?:-\d{2,4})?$/);                                        // Dec-10
+  if(m&&months[m[1].toLowerCase()]) return `${months[m[1].toLowerCase()]}/${Number(m[2])}`;
+  return text;
+}
+
+// Two things a pack column often holds that are packs in the vendor's
+// mind but not in KERDOS's grammar. A packaging word alone ("CASE",
+// "BOX", "BAG") means one of that packaging with the contents unstated,
+// which is exactly how produce and bulk goods are sold: it becomes
+// "1 CASE". A bare whole number ("1000", "2500") in a pack column is a
+// count of units: it becomes "1000 CT". Anything else is left as written.
+const PACKAGING_ONLY=/^(case|cs|cse|box|bx|bag|bg|tub|pail|bucket|bkt|crate|crt|carton|ctn|flat|sack|drum|pallet|tray|sleeve|bundle|bdl|roll|rl|jug|can|jar|bottle|btl|piece|pc|pce|each|ea)\.?$/i;
+export function normalizeColumnPack(value){
+  const text=String(value||"").trim();
+  if(!text) return text;
+  if(PACKAGING_ONLY.test(text)) return `1 ${text.replace(/\.$/,"").toUpperCase()}`;
+  if(/^\d{2,}$/.test(text)) return `${Number(text)} CT`;
+  return text;
+}
+
 function extractRow(cells, columnMap, priceHeader="") {
   const get = role => (columnMap[role] !== undefined ? cells[columnMap[role]] : undefined);
 
@@ -400,7 +437,7 @@ function extractRow(cells, columnMap, priceHeader="") {
   const manufacturerCode = normalizeManufacturerCode(get("mfrCode"));
   // The pack column wins; when it is empty, a pack written at the end of
   // the description is used and its origin recorded for review.
-  const columnPack = (get("packSize") || "").trim() || null;
+  const columnPack = normalizeColumnPack(unmangleExcelDatePack((get("packSize") || "").trim())) || null;
   const descriptionPack = columnPack ? null : packFromDescription(description);
   const packSize = columnPack || descriptionPack;
   const packSource = columnPack ? "column" : descriptionPack ? "description" : null;
@@ -949,7 +986,7 @@ function extractLabeledFields(line) {
 //   skipped: [ { line, reason }, ... ]   // for transparency in the review UI
 // }
 
-function parseDocumentRows(text) {
+function parseDocumentRows(text, options={}) {
   const rawLines = text.split("\n").map(l => l.trimEnd()).filter(l => l.trim().length > 0);
 
   const serviceInvoice=parseServiceInvoice(rawLines,text);
@@ -1048,11 +1085,14 @@ function parseDocumentRows(text) {
   // it's clearly labeled), then use the actual column data to fill in
   // any role the header didn't clearly name — covers both "no header
   // at all" and "header exists but is mislabeled" (e.g. "Column2").
-  let columnMap = fillMissingRolesFromData(
-    headerFound ? mapColumnsFromHeader(grid[headerIndex].cells) : {},
-    grid,
-    dataStart
-  );
+  // Header first. The engine's own reading of the header row, then the
+  // client's remembered answers for this vendor's layout on top of it,
+  // and only then the data-shape guesses for whatever is still unnamed.
+  const headerCells=headerFound?grid[headerIndex].cells:[];
+  const engineMap=headerFound?mapColumnsFromHeader(headerCells):{};
+  const answered=applyLayoutAnswers(engineMap,options.layoutAnswers||{});
+  let columnMap = fillMissingRolesFromData(answered, grid, dataStart);
+  const layout=headerFound?readHeaderLayout({headerCells,columnMap:answered,remembered:options.layoutAnswers||{}}):{headers:[],unknown:[],fingerprint:""};
   let priceHeader=headerFound?grid[headerIndex].cells[columnMap.price]:"";
   const rows = [];
   const skipped = [];
@@ -1076,17 +1116,21 @@ function parseDocumentRows(text) {
       skipped.push({ line, reason: "couldn't find a valid price or description" });
       continue;
     }
+    // Every cell against its column's meaning. A failing cell is flagged
+    // on the row with the reason; the row is kept.
+    const cellIssues=checkRowCells(cells,columnMap);
+    if(Object.keys(cellIssues).length)row.cellIssues=cellIssues;
 
     rows.push(row);
   }
 
   const documentKind=detectDocumentKind(text);
-  return { mode: "tabular", headerFound, columnMap, rows:reviewUncertainRows(rows,documentKind), skipped, documentKind,quoteValidUntil:findQuoteValidity(text) };
+  return { mode: "tabular", headerFound, columnMap, layout, rows:reviewUncertainRows(rows,documentKind), skipped, documentKind,quoteValidUntil:findQuoteValidity(text) };
 }
 
 
-function parseDocument(text){
-  const result=parseDocumentRows(text);
+function parseDocument(text, options={}){
+  const result=parseDocumentRows(text, options);
   const documentUnit=documentQuoteUnit(text);
   return {...result,rows:result.rows.map(row=>applySourceUnits(row,{documentUnit}))};
 }
