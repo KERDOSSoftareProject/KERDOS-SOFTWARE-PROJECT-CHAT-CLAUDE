@@ -1,5 +1,6 @@
 import {brandsMatch,casePriceFromQuote,compareProductIdentity,comparePurchasingPack,parsePackSize} from "../procurement.js";
-import {knownItemChanges,rememberImportRow} from "./catalog-fields.js";
+import {knownItemChanges} from "./catalog-fields.js";
+import {prepareImportRow} from "./import-row.js";
 import {resolveQuoteBasis} from "./quote-basis.js";
 
 const sameText=(a,b)=>String(a||"").trim().toLowerCase().replace(/\s+/g," ")===String(b||"").trim().toLowerCase().replace(/\s+/g," ");
@@ -8,13 +9,13 @@ const sameText=(a,b)=>String(a||"").trim().toLowerCase().replace(/\s+/g," ")===S
 // incomplete row is reviewable data, not a failed database write. The caller
 // retains its listing and catalog association, and stages the incoming quote
 // without overwriting the accepted quote when requiresReview is true.
-export function preparePriceImport(source,prior=null,mapping=null,issues=[]){
+export function preparePriceImport(source,prior=null,mapping=null,issues=[],invoices=[]){
   let row=source;
   const reasons=[...issues];
   let changes=[];
   if(prior&&(source.code?String(source.code)!==String(prior.vendor_item_code):!!prior.vendor_item_code))
     throw new Error("The incoming vendor item code does not belong to this saved listing.");
-  try{row=rememberImportRow(source,prior,mapping);}
+  try{row=prepareImportRow(source,{prior,mapping,invoices});}
   catch(error){reasons.push(error.message);changes=knownItemChanges(source,prior);}
   changes=row.changes||changes;
   reasons.push(...(row.conflicts||[]));

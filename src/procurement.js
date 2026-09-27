@@ -1,6 +1,6 @@
 // KERDOS deterministic procurement primitives.
 // Pure functions only: no UI, database, client, vendor, or industry assumptions.
-import {categoryContext,configureCategoryProfile,industryProductContext,industryVocabulary} from "./knowledge/category-profiles.js";
+import {categoryContext,packContext,configureCategoryProfile,industryProductContext,industryVocabulary} from "./knowledge/category-profiles.js";
 import {compileDictionary} from "./core/term-dictionary.js";
 
 // One named place for the auto-link cutoff instead of the same magic
@@ -250,6 +250,8 @@ function parsePackSize(raw) {
       levels:outerQty>1?[{quantity:outerQty,type:"PACKAGE"},{quantity:1,type:unit}]:[{quantity:1,type:unit}],
       eachStr:`1 ${unit}`,caseStr:outerQty>1?`${outerQty}/1 ${unit}`:`1 ${unit}`};
   }
+  const context=packContext(working);
+  working=context.working;
   // A dash between a quantity and a unit is punctuation, not a missing
   // measurement. Keep number/number case structure and trailing qualifiers.
   const clean=working.replace(/[×x]/g,"x").replace(/(\d)\s*[-]\s*(?=\d)/g,"$1/")
@@ -286,7 +288,7 @@ function parsePackSize(raw) {
   if (!measure) return null;
   const total=outerQty*innerQty;
   return {
-    raw:source,parsed:true,caseQty:outerQty,unitQty:innerQty,unit:measure.unit,total,catchWeight,
+    raw:source,parsed:true,caseQty:outerQty,unitQty:innerQty,unit:measure.unit,total,catchWeight,qualifiers:context.qualifiers,
     dimension:measure.dimension,baseUnit:measure.baseUnit,baseTotal:round(outerQty*measure.baseQuantity),
     levels: outerQty>1 ? [{quantity:outerQty,type:"PACKAGE"},{quantity:innerQty,type:measure.unit}] : [{quantity:innerQty,type:measure.unit}],
     eachStr:`${innerQty} ${measure.unit}`,caseStr:outerQty>1?`${outerQty}/${innerQty} ${measure.unit}`:`${innerQty} ${measure.unit}`,
@@ -607,6 +609,8 @@ function comparePurchasingPack(incoming,existing){
     return {status:"different",reason:`Pack size differs: ${incoming} versus ${existing}`};
   if(a.caseQty!==b.caseQty||Math.abs(a.unitQty*measurement(1,a.unit).baseQuantity-b.unitQty*measurement(1,b.unit).baseQuantity)>0.001)
     return {status:"review",reason:`Case configuration differs: ${incoming} versus ${existing}`};
+  if(JSON.stringify(a.qualifiers||[])!==JSON.stringify(b.qualifiers||[]))
+    return {status:"review",reason:`Pack qualifiers differ: ${incoming} versus ${existing}`};
   if(!!a.catchWeight!==!!b.catchWeight)
     return {status:"review",reason:`One pack is catch-weight and the other fixed-weight: ${incoming} versus ${existing}`};
   return {status:"same",reason:"Pack sizes agree"};

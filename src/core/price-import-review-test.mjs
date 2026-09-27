@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {configureProcurement,parsePackSize,packsEquivalent,pricePerUnit,priceBasisFor} from "../procurement.js";
 import {parseDocument} from "../ingestion.js";
 import {preparePriceImport} from "./price-import-review.js";
+import {explainImportRow} from "./import-evidence.js";
 
 // Synthetic cases only. No client/vendor fixture, prices or item list ships.
 for(const industry of [null,"Restaurant","Building Supply"]){
@@ -57,4 +58,11 @@ assert.equal(preparePriceImport({...source,packSize:null}).requiresReview,true,"
 const changedUnavailable=preparePriceImport({...source,packSize:"24 LB",priceUnavailable:true},prior,exact);
 assert.equal(changedUnavailable.requiresReview,true,"unavailable price doesn't bypass changed identity review");
 assert.throws(()=>preparePriceImport({...source,code:"001"},prior,exact),/code/);
+const preview=explainImportRow({...source,packSize:"BOX"},{vendor:{id:"vendor",name:"Example supplier"},
+  vendorItems:[{...corrected,vendor_id:"vendor"}],mappings:[pending]});
+assert.ok(preview.conflicts.some(reason=>/changed from the known source/.test(reason)),"preview retains the same review reasons as persistence instead of crashing");
+assert.equal(preview.qualification.ready,false);
+const invoiceRow={code:"A-001",description:"Material Alpha",price:36,sellingUnit:"CASE"};
+const invoiceProof=[{id:"invoice",row:{code:"A-001",description:"Material Alpha",packSize:"18 LB"}}];
+assert.equal(preparePriceImport(invoiceRow,null,null,[],invoiceProof).row.packSize,"18 LB","new quote handling retains invoice pack evidence");
 console.log("Universal pack syntax and repeated price import review tests passed.");

@@ -1,62 +1,61 @@
-// Industry-neutral explanation of one extracted row. Percentages are
-// deterministic evidence tiers, not empirically calibrated probabilities.
-import {suggestCategory,parsePackSize,casePriceFromQuote,pricePerUnit,bestPurchasingMatch,compareProductIdentity,comparePurchasingPack,commonPurchasingPack,productKnowledge} from "../procurement.js";
-import {rememberImportRow} from "./catalog-fields.js";
-import {resolveQuoteBasis} from "./quote-basis.js";
+// The import preview uses exactly the field rules used after persistence.
+import {suggestCategory,priceBasisFor,bestPurchasingMatch,commonPurchasingPack,productKnowledge} from "../procurement.js";
+import {catalogRowEvidence,importResolutions,orderGuideAssessment} from "./catalog-fields.js";
+import {preparePriceImport} from "./price-import-review.js";
 import {quoteContext} from "../knowledge/category-profiles.js";
 import {findUncodedVendorListing,vendorListingLabel} from "./vendor-listing.js";
+import {enrichFromInvoices,invoiceEvidence} from "./invoice-evidence.js";
 
-const field=(value,accuracy,reason,source="document")=>({value,accuracy,reason,source});
-export function explainImportRow(row,{vendor=null,categories=[],catalogItems=[],vendorItems=[],mappings=[],documentRows=[]}={}){
-  const vendorListings=vendorItems.filter(vi=>vi.vendor_id===vendor?.id);
-  const prior=(row.selectedVendorItemId?vendorListings.find(vi=>vi.id===row.selectedVendorItemId):null)
-    ||(row.code?vendorListings.find(vi=>String(vi.vendor_item_code)===String(row.code)):null)
-    ||findUncodedVendorListing(row,vendorListings).item;
+export function explainImportRow(source,{vendor=null,categories=[],catalogItems=[],vendorItems=[],mappings=[],documentRows=[],invoices=[]}={}){
+  const listings=vendorItems.filter(vi=>vi.vendor_id===vendor?.id);
+  const enriched=enrichFromInvoices(source,invoices);
+  const prior=(source.selectedVendorItemId?listings.find(vi=>vi.id===source.selectedVendorItemId):null)
+    ||(source.code?listings.find(vi=>String(vi.vendor_item_code)===String(source.code)):null)
+    ||findUncodedVendorListing(enriched,listings).item;
   const savedMapping=prior?mappings.find(m=>m.vendor_item_id===prior.id):null;
   const savedItem=savedMapping?catalogItems.find(c=>c.id===savedMapping.catalog_item_id):null;
-  if(savedMapping?.comparison_track==="exact"&&savedMapping.confidence_score===100){
-    row=rememberImportRow(row,prior,savedMapping);
+  const prepared=preparePriceImport(source,prior,savedMapping,[...(source.issues||[]),...invoiceEvidence(source,invoices).conflicts],invoices);
+  const row=prepared.row;
+  const selectedCategory=source.categoryId?categories.find(c=>c.id===source.categoryId&&!c.is_holding_pen):savedItem?categories.find(c=>c.id===savedItem.category_id):null;
+  const placement=selectedCategory?{category:selectedCategory,confidence:savedItem?.category_review&&!source.categoryId?"guess":"confident",reason:savedItem?.category_reason||"Category selected for this row"}:suggestCategory(row.description,categories,catalogItems);
+  const category=placement?.category||null;
+  const item=savedItem?{...savedItem,...(source.categoryId?{category_id:source.categoryId,category_review:false,category_reason:"Category selected for this row"}:{})}:
+    {id:"preview-item",name:row.description,category_id:category?.id,category_review:placement?.confidence!=="confident",category_reason:placement?.reason};
+  const mapping=savedMapping||{id:"preview-mapping",catalog_item_id:item.id,comparison_track:"new"};
+  const conflicts=prepared.reasons;
+  const vi={...prior,id:prior?.id||"preview-listing",vendor_id:vendor?.id,description:row.description,brand:row.brand,
+    pack_size:row.packSize,selling_unit:row.sellingUnit,price_basis:priceBasisFor(row.sellingUnit)?.basis||null,price:row.price,
+    gtin:row.gtin,manufacturer_code:row.manufacturerCode,price_unavailable:!!row.priceUnavailable,
+    price_source:"pricelist",price_expired_at:null,price_quote_valid_until:null,
+    field_resolutions:importResolutions(source,prior||{}),
+    import_row:{row:{...source,...source.originalFields},evidence:row,reviewRequired:!!conflicts.length||!!row.priceNeedsReview,changes:row.changes||[]}};
+  const byId=new Map(vendorItems.map(entry=>[entry.id,entry]));
+  const peers=savedItem?mappings.filter(entry=>entry.catalog_item_id===savedItem.id&&entry.vendor_item_id!==prior?.id).map(entry=>byId.get(entry.vendor_item_id)).filter(Boolean):[];
+  const input={item,vendorItem:vi,mapping,vendor,category,peers,categories};
+  const evidence=catalogRowEvidence(input);
+  for(const field of Object.values(evidence))if(field.value==="")field.value=null;
+  evidence.vendor.value=vendor?.name?`${vendor.name} · ${row.code?`Vendor #${row.code}`:vendorListingLabel(prior)||"NVIM assigned on save"}`:null;
+  evidence.category.source=selectedCategory?"manual selection":"category profile";
+  evidence.price.source=source.manualFields?.includes("price")||source.priceEdited?"manual correction":"document";
+  evidence.sellingUnit.source=row.sellingUnitSource==="remembered"?"confirmed vendor item":row.sellingUnitSource==="manual"?"manual selection":row.sellingUnitSource||"document";
+  const basis=priceBasisFor(row.sellingUnit);
+  const proposed=!basis?quoteContext(row,documentRows):null;
+  evidence.priceBasis={value:basis?.basis||null,accuracy:evidence.sellingUnit.accuracy,reason:evidence.sellingUnit.reason,source:evidence.sellingUnit.source};
+  // A plausible unit is a suggestion, never a calculated or qualified quote.
+  if(proposed){
+    evidence.sellingUnit.reason+=`. Suggested ${proposed.sellingUnit}: ${proposed.reason} Needs evidence.`;
+    evidence.unitSuggestion={...proposed,accuracy:70};
   }
-  const description=String(row.description||"").trim();
-  const brand=String(row.brand||"").trim();
-  const selectedCategory=row.categoryId?categories.find(c=>c.id===row.categoryId&&!c.is_holding_pen):savedItem?categories.find(c=>c.id===savedItem.category_id):null;
-  const category=selectedCategory?{category:selectedCategory,confidence:"confirmed",reason:"Category selected for this row"}:description?suggestCategory(description,categories,catalogItems):null;
-  const pack=parsePackSize(row.packSize);
-  const resolved=resolveQuoteBasis(row,prior);
-  const proposed=!resolved?quoteContext(row,documentRows):null;
-  const basis=resolved?.basis||proposed?.basis||null;
-  const amount=Number(row.price);
-  const priced=!row.priceUnavailable&&row.price!==null&&row.price!==""&&Number.isFinite(amount)&&amount>0;
-  const knownBasis=!!basis;
-  const casePrice=priced&&knownBasis&&!row.priceNeedsReview?casePriceFromQuote(amount,basis.basis,basis.unit||resolved?.sellingUnit||proposed?.sellingUnit,row.packSize):null;
-  const perUnit=casePrice!=null&&pack?.parsed?pricePerUnit(casePrice,row.packSize):null;
-  const linkedById=new Map(vendorItems.map(v=>[v.id,v]));
-  const candidates=row.knownVendorItem?[]:catalogItems.map(item=>{
-    const peers=mappings.filter(m=>m.catalog_item_id===item.id).map(m=>linkedById.get(m.vendor_item_id)).filter(Boolean);
-    return {...item,pack_size:commonPurchasingPack(peers.map(p=>p.pack_size)),peers};
-  });
-  const suggestion=!row.knownVendorItem&&description?bestPurchasingMatch(description,row.packSize,candidates):null;
-  const candidate=suggestion?.catalogItem;
-  const peers=candidate?.peers||[];
-  const compatible=peers.length>0&&peers.every(p=>compareProductIdentity(description,p.description).status==="same"&&
-    comparePurchasingPack(row.packSize,p.pack_size).status==="same"&&(!brand||!p.brand||brand.toLowerCase()===p.brand.toLowerCase()));
-  const matchAccuracy=candidate?(compatible&&suggestion.track==="exact"?100:75):0;
-  const number=savedItem?.master_item_number??candidate?.master_item_number??null;
-  return {
-    itemNumber:field(number,savedItem?(savedMapping.comparison_track==="exact"?100:75):matchAccuracy,savedItem?"Existing vendor item number linked to this KERDOS number":number?matchAccuracy===100?"Existing item is consistent with the linked product and pack":"Possible existing item; check all defining details":"New KERDOS item number will be assigned on import","catalog"),
-    vendor:field(vendor?.name?`${vendor.name} · ${row.code?`Vendor #${row.code}`:vendorListingLabel(prior)||"NVIM assigned on save"}`:null,vendor?.name?100:0,vendor?.name?"Vendor selected; KERDOS assigns NVIM only if the vendor supplied no item code":"Vendor not selected","selection"),
-    category:field(category?.category?.name||null,["confident","confirmed"].includes(category?.confidence)?100:category?75:0,category?.reason||"No category evidence; place for review",selectedCategory?"manual selection":"category profile"),
-    product:field(description||null,description?100:0,description?"Description extracted; product identity requires comparison with other listings":"Description missing"),
-    brand:field(brand||null,brand?100:null,brand?"Brand stated on source":"Brand not provided; left blank"),
-    pack:field(row.packSize||null,pack?.parsed?100:row.packSize?75:0,pack?.parsed?`Parsed ${pack.caseQty} inner unit(s), ${pack.total} ${pack.unit} per case`:row.packSize?"Pack text exists but cannot be completely parsed":"Pack not provided"),
-    price:field(priced?amount:null,priced?100:0,priced?row.priceEdited?"Quoted amount corrected in this row; original source remains available":"Quoted amount extracted; its meaning depends on the selling unit":"No usable quote",row.priceEdited?"manual correction":"document"),
-    sellingUnit:field(resolved?.sellingUnit||proposed?.sellingUnit||null,resolved?100:proposed?.accuracy||null,proposed?`Suggested from context: ${proposed.reason} Confirm before ordering.`:resolved?.source==="confirmed vendor item"?"Reused a confirmed unit for this vendor item and pack":row.sellingUnit?row.sellingUnitSource==="invoice"?"Billed unit taken from a prior invoice; check that the price sheet quotes on this basis":row.sellingUnitSource==="manual"?"Unit selected for this row":"Unit stated in source":"No selling unit stated",proposed?"industry inference":resolved?.source||"document"),
-    unitCost:{...field(perUnit?perUnit.price:null,perUnit?proposed?.accuracy||100:priced?75:0,perUnit?proposed?`Estimated only: ${proposed.reason} Confirm the quoted unit before ordering.`:`Calculated from ${basis.basis} quote and ${pack.total} ${pack.unit} per case`:!knownBasis?"Selling unit unknown or absent; cannot calculate unit cost":!pack?.parsed?"Complete pack needed to calculate unit cost":"No usable quote", "calculation"),unit:perUnit?.unit||null},
-    priceBasis:field(basis?.basis||null,basis?proposed?.accuracy||100:row.sellingUnit?0:null,proposed?`Likely ${proposed.sellingUnit}; ${proposed.reason} Confirm before ordering.`:basis?resolved.source==="document"?`Source selling unit: ${row.sellingUnit}`:resolved.source==="invoice evidence"?`Billed unit from prior invoice: ${row.sellingUnit}; verify the quoted unit`: `Inherited confirmed unit ${resolved.sellingUnit} from this vendor item`:row.sellingUnit?`Unrecognized selling unit: ${row.sellingUnit}`:"Selling unit not stated",proposed?"industry inference":"document"),
-    knownItem:!!row.knownVendorItem,
-    conflicts:row.conflicts||[],
-    changes:row.changes||[],
-    terminology:productKnowledge(description),
-    source:row.sourceLine||description,
-  };
+  if(!basis)evidence.unitCost.reason="Selling unit unknown or absent; cannot calculate unit cost";
+  if(!savedItem){
+    const candidates=catalogItems.map(candidate=>{
+      const packs=mappings.filter(entry=>entry.catalog_item_id===candidate.id).map(entry=>byId.get(entry.vendor_item_id)?.pack_size);
+      return {...candidate,pack_size:commonPurchasingPack(packs)};
+    });
+    const possible=bestPurchasingMatch(row.description,row.packSize,candidates);
+    evidence.itemNumber={value:possible?.catalogItem?.master_item_number??null,accuracy:possible?70:null,
+      reason:possible?"Possible existing item; association is checked when saved":"New KERDOS item number will be assigned on import"};
+  }
+  return {...evidence,qualification:orderGuideAssessment(input),knownItem:!!row.knownVendorItem,conflicts,
+    changes:row.changes||[],terminology:productKnowledge(row.description),source:source.sourceLine||source.description};
 }
