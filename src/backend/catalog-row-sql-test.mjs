@@ -23,6 +23,7 @@ const root=fileURLToPath(new URL('../../',import.meta.url));
 await db.exec(fs.readFileSync(root+'/knowledge/migration_009_price_basis.sql','utf8'));
 await db.exec(fs.readFileSync(root+'/knowledge/migration_010_catalog_rows.sql','utf8'));
 await db.exec(fs.readFileSync(root+'/knowledge/migration_010_catalog_rows.sql','utf8'));
+await db.exec(fs.readFileSync(root+'/knowledge/migration_014_item_name.sql','utf8'));
 const quote=await db.query(`select kerdos_apply_price_quote(null,$1,$2,'001001','Bacon','1/15 LB',3.83,true,now(),null,null,'Source',null,null,null,null,null,null,$3::jsonb,'{}') as id`,[org,vendor,JSON.stringify({row:{description:'BCN',price:3.83,packSize:'1/15 LB'}})]);
 const vi=quote.rows[0].id;
 await db.query(`insert into item_mappings values($1,$2,$3,$4,'review',75,'rule_based')`,[mapping,org,vi,item]);
@@ -50,7 +51,13 @@ assert.equal((await db.query('select count(*) from vendor_items')).rows[0].count
 assert.equal((await db.query('select description from vendor_items')).rows[0].description,'Bacon frozen');
 assert.equal(Number((await db.query('select price from vendor_items')).rows[0].price),3);
 assert.equal((await db.query('select field_resolutions from vendor_items')).rows[0].field_resolutions.brand.value,'Brand A');
+// Migration 014: a name the client set survives a later description correction.
+await db.query(`update catalog_items set name='Bacon'`);
+const revisionNow=Number((await db.query('select row_revision from vendor_items')).rows[0].row_revision);
+result=await save(revisionNow,{description:'BACON LAYOUT 30 LB HATFIELD'});
+assert.equal((await db.query('select name from catalog_items')).rows[0].name,'Bacon','client item name is never overwritten by vendor wording');
+assert.equal((await db.query('select description from vendor_items')).rows[0].description,'BACON LAYOUT 30 LB HATFIELD');
 await db.exec(`update organization_members set role='employee';`);
-await assert.rejects(save(5,{price:9}),/Owner or manager/);
+await assert.rejects(save(revisionNow+1,{price:9}),/Owner or manager/);
 console.log('Database check passed: repeat migration, partial fields, quote calculation readiness, atomic rollback, stale edits, preserved item number, price update without duplication, and role/organization checks.');
 await db.close();

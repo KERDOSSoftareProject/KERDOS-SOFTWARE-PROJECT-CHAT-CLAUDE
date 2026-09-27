@@ -3,7 +3,7 @@ import {mappingVerification} from "../services/catalog.js";
 
 export const CATALOG_COLUMNS=[
   ["itemNumber","KERDOS item #"],["vendor","Vendor"],["category","Category"],
-  ["product","Product"],["brand","Brand"],["pack","Pack"],
+  ["itemName","Item name"],["product","Vendor description"],["brand","Brand"],["pack","Pack"],
   ["price","Quoted price"],["sellingUnit","Quoted per"],["unitCost","Unit cost"],
 ];
 const BASE_UNITS=[["CASE","Case / full pack"],["EACH","Each / inner item"],["LB","Pounds (LB)"],["OZ","Ounces, weight (OZ)"],
@@ -31,6 +31,9 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category}){
     itemNumber:field(item.master_item_number,mapping?.comparison_track==="exact"?100:75,mapping?.comparison_track==="exact"?"Vendor association confirmed":"Number assigned; association needs confirmation"),
     vendor:field(vendor?.name||"",vendor?100:0,"Vendor selected at import"),
     category:field(category?.name||"Uncategorized",!category||category.is_holding_pen?0:item.category_review?75:100,item.category_reason||"Saved category"),
+    // Item name is the client's own word for the product ("Tomatoes");
+    // vendor description is what this vendor calls it ("5X6 TOMATOES").
+    itemName:field(item.name||"",item.name?100:0,item.name&&item.name!==vi.description?"Your name for this product":"Named from the vendor's wording until you rename it"),
     product:field(vi.description,vi.description?100:0,resolved("description")?"Your saved description":"Description read from source; association checked separately"),
     brand:field(vi.brand||"",vi.brand?100:resolved("brand")?100:null,resolved("brand")?"Your saved brand choice":"Brand as printed; blank when absent"),
     pack:field(vi.pack_size||"",pack?.parsed?100:vi.pack_size?75:0,pack?.parsed?`${pack.caseQty} inner item(s); ${pack.total} ${pack.unit}${pack.catchWeight?" (estimated weight)":""}`:"Pack needs clarification"),

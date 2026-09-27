@@ -2,12 +2,14 @@ import {useState} from "react";
 import {backend} from "../backend/index.js";
 import {createCatalogRowsService} from "../services/catalog-rows.js";
 import {CATALOG_COLUMNS,catalogRowEvidence,unitChoices} from "../core/catalog-fields.js";
+import {createCatalogService} from "../services/catalog.js";
 import {parsePackSize} from "../procurement.js";
 import {formatMoney} from "../localization.js";
 import {vendorListingLabel} from "../core/vendor-listing.js";
 import {btn,inp} from "../ui/styles.js";
 
 const service=createCatalogRowsService(backend);
+const catalogService=createCatalogService(backend);
 const cellStyle={padding:8,borderBottom:"1px solid #DEE7F0",verticalAlign:"top"};
 const inputStyle={...inp,fontSize:12,padding:6,width:"100%",minWidth:85,boxSizing:"border-box"};
 function Evidence({field}){return <small title={field.reason} style={{display:"block",marginTop:4,color:field.accuracy===100?"#38704E":"#8D5900"}}>{field.accuracy==null?"Not stated":`${field.accuracy}%`}</small>;}
@@ -18,6 +20,7 @@ function packLabel(value){
 }
 function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary,packOptions,canManage,onUpdated,onDetails,onConfirm}){
   const [draft,setDraft]=useState({});
+  const [nameDraft,setNameDraft]=useState(null);
   const [base,setBase]=useState(null);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
@@ -31,9 +34,8 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
   const category=categories.find(c=>c.id===categoryId);
   const evidence=catalogRowEvidence({item:{...item,category_review:'category_id' in draft?!!category?.is_holding_pen:item.category_review},vendorItem:current,mapping,vendor,category});
   const units=unitChoices(vocabulary),packUnits=unitChoices(vocabulary,true);
-  const dirty=Object.keys(draft).length>0;
-  const readyForGuide=!dirty&&!busy&&evidence.unitCost.value!=null&&evidence.category.accuracy===100&&
-    !vendorItem.price_unavailable&&vendorItem.price_source!=="invoice";
+  const nameDirty=nameDraft!=null&&nameDraft.trim()!==(item.name||"");
+  const dirty=Object.keys(draft).length>0||nameDirty;
   function edit(key,value){setBase(b=>b||vendorItem);setDraft(d=>({...d,[key]:value}));setSaved(false);setError("");}
   function openPackEditor(mode=""){
     const parsed=parsePackSize(current.pack_size);
@@ -43,7 +45,11 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
   }
   async function save(){
     setBusy(true);setError("");
-    try{await service.save({organizationId:orgId,vendorItem:base||vendorItem,mapping,patch:draft});setDraft({});setBase(null);setPackParts(null);setCustomPack(false);setPackMode("");setSaved(true);await onUpdated();}
+    try{
+      if(Object.keys(draft).length)await service.save({organizationId:orgId,vendorItem:base||vendorItem,mapping,patch:draft});
+      if(nameDirty)await catalogService.renameItem(item.id,nameDraft.trim());
+      setDraft({});setNameDraft(null);setBase(null);setPackParts(null);setCustomPack(false);setPackMode("");setSaved(true);await onUpdated();
+    }
     catch(err){setError(err.message||String(err));}
     finally{setBusy(false);}
   }
@@ -60,18 +66,17 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
         else if(key==="vendor")content=<><b>{f.value}</b><small style={{display:"block"}}>{vendorItem.vendor_item_code?`Vendor #${vendorItem.vendor_item_code}`:vendorListingLabel(vendorItem)||"NVIM pending"}</small></>;
         else if(key==="category")content=<select aria-label={`Category for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:130}} disabled={!canManage||busy} value={categoryId||""} onChange={e=>edit("category_id",e.target.value)}><option value="" disabled>Choose category</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>;
         else if(key==="pack")content=<><select aria-label={`Pack for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:175}} disabled={!canManage||busy} value={packMode||current.pack_size||""} onChange={e=>{const value=e.target.value;if(value==="__case__"||value==="__each__"||value==="__custom__")openPackEditor(value);else{setPackMode("");edit("pack_size",value);}}}><option value="">Select pack type and size</option><option value="__case__">Case / full pack — set quantities…</option><option value="__each__">Each / individual item — set size…</option><optgroup label="Previously seen pack sizes">{current.pack_size&&!packOptions.includes(current.pack_size)&&<option value={current.pack_size}>{packLabel(current.pack_size)}</option>}{packOptions.map(pack=><option key={pack} value={pack}>{packLabel(pack)}</option>)}</optgroup><option value="__custom__">Other — enter a custom pack…</option></select><small style={{display:"block"}}>Saved pack: {current.pack_size||"not set"}</small>{canManage&&<button style={{border:0,background:"none",color:"#245785",cursor:"pointer",fontSize:11}} onClick={()=>openPackEditor(packMode)}>Set pack quantities</button>}{customPack&&<input aria-label={`Custom pack for ${vendorItem.vendor_item_code}`} style={{...inputStyle,marginTop:4}} disabled={busy} value={current.pack_size||""} placeholder="e.g. 4/10 LB" onChange={e=>edit("pack_size",e.target.value)}/>}</>;
+        else if(key==="itemName")content=<input aria-label={`Item name for ${item.master_item_number}`} style={{...inputStyle,minWidth:180,fontWeight:700}} disabled={!canManage||busy} value={nameDraft??item.name??""} placeholder="Your name for this product" onChange={e=>setNameDraft(e.target.value)} />;
         else if(fields[key])content=<input aria-label={`${key} for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:key==="product"?220:95}} disabled={!canManage||busy} type={key==="price"?"number":"text"} step={key==="price"?"any":undefined} min={key==="price"?"0":undefined} value={current[fields[key]]??""} placeholder={key==="brand"?"Blank if absent":""} onChange={e=>edit(fields[key],e.target.value)} />;
         else if(key==="sellingUnit")content=<select aria-label={`Quoted per for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:140}} disabled={!canManage||busy} value={current.selling_unit||""} onChange={e=>edit("selling_unit",e.target.value)}><option value="">Select unit</option>{current.selling_unit&&!units.some(u=>u.value===current.selling_unit)&&<option value={current.selling_unit}>{current.selling_unit}</option>}{units.map(u=><option key={u.value} value={u.value}>{u.label}</option>)}</select>;
-        else content=f.value==null?<small style={{color:"#8D5900"}}>Enter price, pack and quoted unit to calculate</small>:<><b>{formatMoney(f.value)}</b><small style={{display:"block"}}>per {f.unit}{dirty?" · preview":""}</small></>;
+        else content=f.value==null?<span style={{color:"#8D5900",fontWeight:700}}>Undetermined</span>:<><b>{formatMoney(f.value)}</b><small style={{display:"block"}}>per {f.unit}{dirty?" · preview":""}</small></>;
         const sourceKey={product:"description",pack:"packSize",sellingUnit:"sellingUnit"}[key]||key;
         const change=vendorItem.import_row?.reviewRequired&&vendorItem.import_row?.changes?.find(c=>c.field===sourceKey);
         return <td key={key} style={{...cellStyle,background:change?"#FFF3E0":undefined}}>{content}<Evidence field={f}/>{change&&<small style={{display:"block",color:"#9B4400"}} title={change.reason}>Changed on new sheet</small>}</td>;
       })}
       <td style={{...cellStyle,minWidth:115}}>
         {canManage&&<button disabled={!dirty||busy} onClick={save} style={{...btn("#003584","white",{fontSize:11,padding:6})}}>{busy?"Applying…":"Apply changes"}</button>}
-        {dirty&&<button disabled={busy} onClick={()=>{setDraft({});setBase(null);setPackParts(null);setCustomPack(false);setPackMode("");setError("");}} style={{border:0,background:"none",cursor:"pointer",fontSize:11}}>Undo edits</button>}
-        {canManage&&mapping.comparison_track!=="exact"&&<button disabled={!readyForGuide} onClick={()=>onConfirm(mapping.id)} style={{...btn("#E8F5E9","#276742",{display:"block",fontSize:11,padding:6,marginTop:5})}}>Add to Order Guide</button>}
-        {canManage&&mapping.comparison_track!=="exact"&&!readyForGuide&&<small style={{display:"block",color:"#8D5900"}}>Apply changes and resolve the quoted unit, pack, category and price first.</small>}
+        {dirty&&<button disabled={busy} onClick={()=>{setDraft({});setNameDraft(null);setBase(null);setPackParts(null);setCustomPack(false);setPackMode("");setError("");}} style={{border:0,background:"none",cursor:"pointer",fontSize:11}}>Undo edits</button>}
         <button onClick={()=>setDetails(!details)} style={{display:"block",marginTop:6,border:0,background:"none",cursor:"pointer",color:"#245785"}}>Details</button>
         {vendorItem.import_row?.reviewRequired&&<small style={{display:"block",color:"#9B4400"}}>New quote needs review</small>}
         {saved&&<small role="status" style={{color:"#276742"}}>Saved</small>}
