@@ -1,4 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
+import {applySourceUnits,documentQuoteUnit} from "./core/source-units.js";
 import {measurement,normalizeGtin,normalizeManufacturerCode,packFromDescription,parsePackSize} from "./procurement.js";
 // KERDOS INGESTION MODULE
 // ════════════════════════════════════════════════════════════════════
@@ -39,7 +40,7 @@ const COLUMN_ROLES = {
   brand:       ["brand", "manufacturer", "make"],
   gtin:        ["upc", "gtin", "ean", "barcode", "bar code", "upc code", "upc/ean"],
   mfrCode:     ["mfr #", "mfg #", "mfr no", "mfg no", "mfr item", "mfg item", "manufacturer item", "manufacturer no", "manufacturer #", "manufacturer part", "mfr part", "part no", "part number", "model"],
-  sellingUnit: ["type", "selling unit", "order unit"],
+  sellingUnit: ["type", "selling unit", "order unit", "quoted per", "price unit", "price uom", "pricing unit", "pricing basis", "price basis", "unit of sale"],
   qty:         ["qty", "quantity", "count"],
   packSize:    ["unit", "size", "pack", "uom", "pack size"],
   price:       ["price", "unit price", "cost", "unit cost", "rate"],
@@ -194,7 +195,8 @@ function splitRow(line, delimiterName) {
 }
 
 function cleanCell(cell) {
-  return cell.trim().replace(/^"|"$/g, "");
+  const value=cell.trim();
+  return value.startsWith('"')&&value.endsWith('"')?value.slice(1,-1).replace(/""/g,'"'):value;
 }
 
 
@@ -364,7 +366,7 @@ function isNoPricePlaceholder(str) {
   return NO_PRICE_MARKERS.has(s);
 }
 
-function extractRow(cells, columnMap) {
+function extractRow(cells, columnMap, priceHeader="") {
   const get = role => (columnMap[role] !== undefined ? cells[columnMap[role]] : undefined);
 
   const priceRaw = get("price");
@@ -416,13 +418,13 @@ function extractRow(cells, columnMap) {
   let rowCode=code;
   let codeSource=code?"column":null;
   if(!rowCode){
-    const codeLike=details.find(detail=>/^[A-Z0-9][A-Z0-9\-\/\.]{2,15}$/i.test(detail)&&/\d/.test(detail)&&!parsePackSize(detail)?.parsed);
+    const codeLike=details.find(detail=>/^[A-Z0-9][A-Z0-9\-\/\.]{2,15}$/i.test(detail)&&/\d/.test(detail)&&!/^\d+(?:\.\d+)?[/-]\d+(?:\.\d+)?$/.test(detail)&&!parsePackSize(detail)?.parsed);
     if(codeLike){rowCode=codeLike;codeSource="details";details=details.filter(detail=>detail!==codeLike);}
   }
   const fullDescription=[description,...details.filter(detail=>!description.toLowerCase().includes(detail.toLowerCase()))].join(" ").trim();
   const issues=[];
 
-  return {
+  return applySourceUnits({
     code: rowCode,
     codeSource,
     brand,
@@ -439,7 +441,7 @@ function extractRow(cells, columnMap) {
     priceUnavailable,
     sourceLine:cells.join("\t"),
     issues,
-  };
+  },{priceCell:priceRaw,priceHeader});
 }
 
 
@@ -947,7 +949,7 @@ function extractLabeledFields(line) {
 //   skipped: [ { line, reason }, ... ]   // for transparency in the review UI
 // }
 
-function parseDocument(text) {
+function parseDocumentRows(text) {
   const rawLines = text.split("\n").map(l => l.trimEnd()).filter(l => l.trim().length > 0);
 
   const serviceInvoice=parseServiceInvoice(rawLines,text);
@@ -1046,11 +1048,12 @@ function parseDocument(text) {
   // it's clearly labeled), then use the actual column data to fill in
   // any role the header didn't clearly name — covers both "no header
   // at all" and "header exists but is mislabeled" (e.g. "Column2").
-  const columnMap = fillMissingRolesFromData(
+  let columnMap = fillMissingRolesFromData(
     headerFound ? mapColumnsFromHeader(grid[headerIndex].cells) : {},
     grid,
     dataStart
   );
+  let priceHeader=headerFound?grid[headerIndex].cells[columnMap.price]:"";
   const rows = [];
   const skipped = [];
 
@@ -1062,7 +1065,13 @@ function parseDocument(text) {
       continue;
     }
 
-    const row = extractRow(cells, columnMap);
+    // Repeated table headers can change the quoted unit. Do not leak a
+    // preceding worksheet's price header into the next table.
+    const header=mapColumnsFromHeader(cells);
+    if(header.description!==undefined&&header.price!==undefined&&parseMoneyLenient(cells[header.price])===null){
+      columnMap=header;priceHeader=cells[header.price];continue;
+    }
+    const row = extractRow(cells, columnMap, priceHeader);
     if (!row) {
       skipped.push({ line, reason: "couldn't find a valid price or description" });
       continue;
@@ -1075,6 +1084,12 @@ function parseDocument(text) {
   return { mode: "tabular", headerFound, columnMap, rows:reviewUncertainRows(rows,documentKind), skipped, documentKind,quoteValidUntil:findQuoteValidity(text) };
 }
 
+
+function parseDocument(text){
+  const result=parseDocumentRows(text);
+  const documentUnit=documentQuoteUnit(text);
+  return {...result,rows:result.rows.map(row=>applySourceUnits(row,{documentUnit}))};
+}
 
 // Exported for use elsewhere in the app.
 export { parseDocument, findDate, findInvoiceNumber, detectDocumentKind, findQuoteValidity };

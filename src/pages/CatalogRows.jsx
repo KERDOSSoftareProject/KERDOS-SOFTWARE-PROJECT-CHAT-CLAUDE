@@ -1,8 +1,8 @@
-import {useState} from "react";
+import {useState,useMemo} from "react";
 import {backend} from "../backend/index.js";
 import {createCatalogRowsService} from "../services/catalog-rows.js";
-import {CATALOG_COLUMNS,catalogRowEvidence,unitChoices} from "../core/catalog-fields.js";
-import {parsePackSize} from "../procurement.js";
+import {CATALOG_COLUMNS,catalogRowEvidence,unitChoices,orderGuideAssessment,qualificationSummary,BLOCKER_LABELS} from "../core/catalog-fields.js";
+import {parsePackSize,priceBasisFor,casePriceFromQuote} from "../procurement.js";
 import {formatMoney} from "../localization.js";
 import {vendorListingLabel} from "../core/vendor-listing.js";
 import {btn,inp} from "../ui/styles.js";
@@ -21,7 +21,7 @@ function packLabel(value){
   if(!pack?.parsed)return `${value} · needs pack details`;
   return `${pack.caseQty===1&&pack.unit==="EA"&&pack.unitQty===1?"Each / individual item":"Case / full pack"} · ${pack.caseQty} × ${pack.unitQty} ${pack.unit}${pack.catchWeight?" (average weight)":""}`;
 }
-function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary,packOptions,canManage,onUpdated,onDetails,peers=[]}){
+function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary,packOptions,canManage,onUpdated,onDetails,peers=[],settings={}}){
   const [draft,setDraft]=useState({});
   const [nameDraft,setNameDraft]=useState(null);
   const [base,setBase]=useState(null);
@@ -32,10 +32,22 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
   const [packParts,setPackParts]=useState(null);
   const [customPack,setCustomPack]=useState(false);
   const [packMode,setPackMode]=useState("");
-  const current={...(base||vendorItem),...draft};
+  const original=base||vendorItem;
+  const resolutions={...original.field_resolutions};
+  const sourceKeys={pack_size:"packSize",selling_unit:"sellingUnit"};
+  for(const key of Object.keys(draft))if(!["category_id","item_name"].includes(key))resolutions[key]={value:draft[key],
+    sourceValue:resolutions[key]?.sourceValue??original.import_row?.row?.[sourceKeys[key]||key]??original[key]};
+  const current={...original,...draft,field_resolutions:resolutions};
+  if(["price","pack_size","selling_unit"].some(key=>Object.hasOwn(draft,key))){
+    const basis=priceBasisFor(current.selling_unit);
+    current.price_basis=basis?.basis||null;
+    current.price_unavailable=!(basis&&Number(current.price)>0&&parsePackSize(current.pack_size)?.parsed&&casePriceFromQuote(current.price,basis.basis,basis.unit||current.selling_unit,current.pack_size)!=null);
+  }
   const categoryId=draft.category_id??item.category_id;
   const category=categories.find(c=>c.id===categoryId);
-  const evidence=catalogRowEvidence({item:{...item,category_review:'category_id' in draft?!!category?.is_holding_pen:item.category_review},vendorItem:current,mapping,vendor,category,peers,categories});
+  const evidenceItem={...item,category_id:categoryId,category_review:'category_id' in draft?!!category?.is_holding_pen:item.category_review};
+  const evidence=catalogRowEvidence({item:evidenceItem,vendorItem:current,mapping,vendor,category,peers,categories});
+  const assessment=orderGuideAssessment({item:evidenceItem,vendorItem:current,mapping,vendor,category,peers,categories,settings});
   const units=unitChoices(vocabulary),packUnits=unitChoices(vocabulary,true);
   const nameDirty=nameDraft!=null&&nameDraft.trim()!==(item.name||"");
   const dirty=Object.keys(draft).length>0||nameDirty;
@@ -88,7 +100,8 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
         {error&&<div role="alert" style={{fontSize:11,color:"#A32B20",whiteSpace:"normal"}}>{error}</div>}
       </td>
     </tr>
-    {details&&<tr><td colSpan={10} style={{...cellStyle,background:"#F2F6FA"}}>
+    {details&&<tr><td colSpan={11} style={{...cellStyle,background:"#F2F6FA"}}>
+      <div style={{fontWeight:700,marginBottom:10}}>{assessment.ready?"Meets Order Guide field requirements":"Waiting on: "+assessment.blockers.map(code=>BLOCKER_LABELS[code]).join("; ")}{dirty?" (unsaved preview)":""}</div>
       {packParts&&<div style={{display:"flex",gap:12,alignItems:"end",marginBottom:10}}>
         <label>{packMode==="__each__"?"Items in this pack":"Inner items per case"}<input type="number" min="1" aria-label="Items in pack" style={inputStyle} value={packParts.count} onChange={e=>packEdit("count",e.target.value)} /></label>
         <label>Size of each<input type="number" min="0" step="any" aria-label="Size of each" style={inputStyle} value={packParts.size} onChange={e=>packEdit("size",e.target.value)} /></label>
@@ -109,7 +122,8 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
     </td></tr>}
   </>;
 }
-export function CatalogRows({orgId,items,catalogItems,vendorItems,mappings,vendors,categories,vocabulary,canManage,onUpdated,onDetails}){
+export function CatalogRows({orgId,items,catalogItems,vendorItems,mappings,vendors,categories,vocabulary,canManage,onUpdated,onDetails,settings={}}){
+  const summary=useMemo(()=>qualificationSummary({catalogItems,vendorItems,mappings,vendors,categories,settings}),[catalogItems,vendorItems,mappings,vendors,categories,settings]);
   const [sort,setSort]=useState({key:"product",direction:1});
   const packOptions=[...new Set(vendorItems.map(vi=>String(vi.pack_size||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
   const catalog=new Map(catalogItems.map(i=>[i.id,i])),viById=new Map(vendorItems.map(v=>[v.id,v])),vendorById=new Map(vendors.map(v=>[v.id,v]));
@@ -127,9 +141,14 @@ export function CatalogRows({orgId,items,catalogItems,vendorItems,mappings,vendo
   });
   const linked=new Set(rows.map(r=>r.item.id));
   return <div style={{overflowX:"auto",borderRadius:10,background:"white",marginBottom:16}}>
-    <div style={{padding:12,fontSize:12}}>Correct any cell, then save its row. Missing fields can be completed later.</div>
+    <div style={{padding:12,fontSize:12}}>Correct any cell, then save its row. Missing fields can be completed later.
+      <details style={{marginTop:8}}><summary>{summary.ready} of {summary.total} vendor rows meet Order Guide requirements · {summary.blocked} need evidence</summary>
+        <p>All required fields need at least 90%, a verified product association and a current quote. A row can have more than one blocker.</p>
+        <ul>{summary.blockers.map(blocker=><li key={blocker.code}>{blocker.label}: {blocker.count}</li>)}</ul>
+      </details>
+    </div>
     <table style={{borderCollapse:"collapse",width:"100%",minWidth:1250,fontSize:12}}><thead><tr>{CATALOG_COLUMNS.map(([key,label])=><th key={key} style={{...cellStyle,textAlign:"left",background:"#E8F0FA"}} aria-sort={sort.key===key?sort.direction===1?"ascending":"descending":"none"}><button style={{border:0,background:"none",fontWeight:700,cursor:"pointer"}} onClick={()=>setSort(s=>({key,direction:s.key===key?-s.direction:1}))}>{label}{sort.key===key?sort.direction===1?" ↑":" ↓":""}</button></th>)}<th style={cellStyle}>Actions</th></tr></thead>
-      <tbody>{rows.map(row=><EditableRow key={row.vendorItem.id} {...row} orgId={orgId} categories={categories} vocabulary={vocabulary} packOptions={packOptions} canManage={canManage} onUpdated={onUpdated} onDetails={()=>onDetails(row.item.id)} />)}
+      <tbody>{rows.map(row=><EditableRow settings={settings} key={row.vendorItem.id} {...row} orgId={orgId} categories={categories} vocabulary={vocabulary} packOptions={packOptions} canManage={canManage} onUpdated={onUpdated} onDetails={()=>onDetails(row.item.id)} />)}
       {items.filter(i=>!linked.has(i.catalogItemId)).map(i=><tr key={i.catalogItemId}><td style={cellStyle}>#{i.masterItemNumber}</td><td colSpan={8} style={cellStyle}>{i.name} · No vendor listing linked yet.</td><td><button onClick={()=>onDetails(i.catalogItemId)}>Details</button></td></tr>)}
       </tbody>
     </table>

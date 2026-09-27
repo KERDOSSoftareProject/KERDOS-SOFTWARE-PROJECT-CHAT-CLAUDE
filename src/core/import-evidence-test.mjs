@@ -7,7 +7,7 @@ assert.match(result.vendor.value,/Supplier A · NVIM assigned on save/);
 assert.equal(result.brand.value,null);
 assert.equal(result.brand.accuracy,null);
 assert.equal(result.pack.value,"4/10 LB");
-assert.equal(result.pack.accuracy,100);
+assert.equal(result.pack.accuracy,90);
 assert.equal(result.price.value,80);
 assert.equal(result.unitCost.value,2);
 assert.equal(result.sellingUnit.value,"CASE");
@@ -25,11 +25,11 @@ assert.equal(noBasis.unitCost.value,null);
 assert.match(noBasis.unitCost.reason,/Selling unit/);
 const noPack=explainImportRow({...row,packSize:null});
 assert.equal(noPack.unitCost.value,null);
-assert.equal(noPack.pack.accuracy,0);
+assert.equal(noPack.pack.accuracy,null);
 const manuallyCategorized=explainImportRow({...row,description:"American cheese",categoryId:"dairy"},{categories:[
   {id:"dairy",name:"Dairy"},{id:"h",name:"Uncategorized",is_holding_pen:true},
 ]});
 assert.equal(manuallyCategorized.category.value,"Dairy");
-assert.equal(manuallyCategorized.category.accuracy,100);
+assert.equal(manuallyCategorized.category.accuracy,90);
 assert.equal(manuallyCategorized.category.source,"manual selection");
 console.log("KERDOS field evidence tests passed");

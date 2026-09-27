@@ -10,6 +10,7 @@ export function orderable(option){
 
 export function blockReason(option){
   if(option.expired)return "Quote expired — refresh needed";
+  if(option.unverified&&option.qualificationReason)return option.qualificationReason;
   if(option.priceUnavailable)return "No current quoted price";
   if(option.invoiceOnly)return "Invoice charge only — quotation required";
   // A price quoted per pound, per gallon or per each can only join the

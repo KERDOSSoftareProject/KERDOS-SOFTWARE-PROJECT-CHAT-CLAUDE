@@ -7,6 +7,18 @@ export function createImportService(backend){
   return {
     findPriceDocument({organizationId,vendorId,fingerprint}){return run(table("import_documents").select("id,status,completed_keys").eq("organization_id",organizationId).eq("vendor_id",vendorId).eq("document_kind","pricelist").eq("fingerprint",fingerprint).maybeSingle(),"Could not verify whether the file was already imported");},
     createPriceDocument(row){return run(table("import_documents").insert(row).select("id").single(),"Could not preserve the source document");},
+    async resumeSources(organizationId,vendorId,documentId){
+      const quotes=[];
+      for(let offset=0;;offset+=500){
+        const batch=await run(table("price_history").select("source_row_key,source_line")
+          .eq("organization_id",organizationId).eq("source_document_id",documentId).order("id").range(offset,offset+499),"Could not verify saved import rows");
+        quotes.push(...batch);if(batch.length<500)break;
+      }
+      const listings=await this.vendorItems(organizationId,vendorId);
+      return [...quotes.map(quote=>({key:quote.source_row_key,sourceLine:quote.source_line})),
+        ...listings.filter(listing=>listing.import_row?.sourceDocumentId===documentId)
+          .map(listing=>({key:listing.import_row.rowKey,sourceLine:listing.import_row.row?.sourceLine}))];
+    },
     finalizeDocument(documentId,status,completedKeys){return run(table("import_documents").update(completedKeys?{status,completed_keys:completedKeys}:{status}).eq("id",documentId),"Could not finalize the source record");},
     // Progress is written as rows complete, so an interrupted import can
     // pick up where it stopped instead of starting over.
@@ -17,7 +29,15 @@ export function createImportService(backend){
     },
     vendorItemById(organizationId,vendorId,itemId){return run(table("vendor_items").select("*")
       .eq("organization_id",organizationId).eq("vendor_id",vendorId).eq("id",itemId).maybeSingle(),"Could not inspect the selected vendor listing");},
-    vendorItems(organizationId,vendorId){return run(table("vendor_items").select("*").eq("organization_id",organizationId).eq("vendor_id",vendorId),"Could not inspect existing vendor products");},
+    async vendorItems(organizationId,vendorId){
+      const listings=[];
+      for(let offset=0;;offset+=500){
+        const batch=await run(table("vendor_items").select("*").eq("organization_id",organizationId).eq("vendor_id",vendorId)
+          .order("id").range(offset,offset+499),"Could not inspect existing vendor products");
+        listings.push(...batch);if(batch.length<500)break;
+      }
+      return listings;
+    },
     mapping(organizationId,vendorItemId){return run(table("item_mappings").select("*").eq("organization_id",organizationId).eq("vendor_item_id",vendorItemId).maybeSingle(),"Could not check the catalog link");},
     createMapping(row){return run(table("item_mappings").insert(row).select("id").single(),"Could not link the item to your catalog");},
     async invoiceSources(organizationId,vendorId){

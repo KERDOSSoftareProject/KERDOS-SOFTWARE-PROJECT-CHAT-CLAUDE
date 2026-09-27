@@ -1,12 +1,15 @@
 import {restaurantCategoryContext} from "./restaurant-category-context.js";
+import {restaurantPackContext} from "./restaurant-pack-context.js";
 import {restaurantQuoteContext} from "./restaurant-quote-context.js";
 
 // Profiles supply industry-specific interpretation; procurement stays generic.
 const profiles=new Map([["restaurant",restaurantCategoryContext]]);
 let activeProfile=null;
 let activeQuoteProfile=null;
+let activePackProfile=null;
 
 export function configureCategoryProfile(industry){
+  activePackProfile=String(industry||"").trim().toLowerCase()==="restaurant"?restaurantPackContext:null;
   activeProfile=profiles.get(String(industry||"").trim().toLowerCase())||null;
   activeQuoteProfile=String(industry||"").trim().toLowerCase()==="restaurant"?restaurantQuoteContext:null;
 }
@@ -18,3 +21,5 @@ export function categoryContext(words,categories){
 export function quoteContext(row,rows){
   return activeQuoteProfile?.(row,rows)||null;
 }
+
+export function packContext(text){return activePackProfile?.(text)||{working:text,qualifiers:[]};}

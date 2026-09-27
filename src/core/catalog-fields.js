@@ -1,4 +1,4 @@
-import {casePriceFromQuote,parsePackSize,pricePerUnit,priceBasisFor,compareProductIdentity,comparePurchasingPack,suggestCategory} from "../procurement.js";
+import {casePriceFromQuote,parsePackSize,pricePerUnit,priceBasisFor,compareProductIdentity,comparePurchasingPack,suggestCategory,quoteStatus,brandsMatch} from "../procurement.js";
 import {mappingVerification} from "../services/catalog.js";
 
 export const CATALOG_COLUMNS=[
@@ -34,6 +34,7 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   const amount=vi.price==null||vi.price===""?null:Number(vi.price);
   const hasPrice=Number.isFinite(amount)&&amount>0;
   const row=vi.import_row?.row||{};
+  const provenance=vi.import_row?.evidence||row;
   const changes=vi.import_row?.reviewRequired?(vi.import_row?.changes||[]).map(c=>c.field):[];
   const casePrice=hasPrice&&basis?casePriceFromQuote(amount,basis.basis,basis.unit||vi.selling_unit,vi.pack_size):null;
   const per=casePrice!=null&&pack?.parsed?pricePerUnit(casePrice,vi.pack_size):null;
@@ -53,8 +54,8 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   if(!empty(vi.pack_size)){
     if(!pack?.parsed){packAcc=DOUBTFUL;packWhy="Not a complete pack KERDOS can read";}
     else{
-      packAcc=byClient("pack_size")?STATED:row.packSource==="description"?DERIVED:row.packSource==="column"||!row.packSource?STATED:DERIVED;
-      packWhy=byClient("pack_size")?"Set by you":row.packSource==="description"?"Read from the end of the description":row.packSource==="invoice"?"Filled from the vendor's invoice":"Read from the sheet";
+      packAcc=byClient("pack_size")?STATED:provenance.packSource==="description"?DERIVED:provenance.packSource==="column"||!provenance.packSource?STATED:DERIVED;
+      packWhy=byClient("pack_size")?"Set by you":provenance.packSource==="description"?"Read from the end of the description":provenance.packSource==="invoice"?"Filled from the vendor's invoice":"Read from the sheet";
       if(basis?.basis==="measure"&&pack.dimension!=="unknown"&&casePrice==null){packAcc=Math.min(packAcc,DOUBTFUL);packWhy+="; doesn't fit a price quoted per "+(basis.unit||vi.selling_unit);}
       const disagree=otherVendors.find(p=>p.pack_size&&parsePackSize(p.pack_size)?.parsed&&comparePurchasingPack(vi.pack_size,p.pack_size).status!=="same");
       if(disagree){packAcc=Math.min(packAcc,GUESSED);packWhy+=`; another vendor lists ${disagree.pack_size}`;}
@@ -74,9 +75,11 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   if(!empty(vi.selling_unit)){
     if(!basis){unitAcc=DOUBTFUL;unitWhy="Not a unit KERDOS recognises";}
     else{
-      unitAcc=byClient("selling_unit")?STATED:row.sellingUnitSource==="sheet"?DERIVED:STATED;
-      unitWhy=byClient("selling_unit")?"Set by you":row.sellingUnitSource==="sheet"?"Applied to the whole sheet at import":"Stated on the sheet";
+      unitAcc=byClient("selling_unit")?STATED:provenance.sellingUnitSource==="sheet"?DERIVED:STATED;
+      unitWhy=provenance.sellingUnitSource==="remembered"?"Reused from this vendor’s verified product and pack":byClient("selling_unit")?"Set by you":provenance.sellingUnitSource==="sheet"?"Applied to the whole sheet at import":"Stated on the sheet";
+      if(!byClient("selling_unit")&&["price cell","price header","document note"].includes(provenance.sellingUnitSource))unitWhy=`Stated in the ${provenance.sellingUnitSource}`;
       if(basis.basis==="measure"&&pack?.parsed&&casePrice==null){unitAcc=Math.min(unitAcc,DOUBTFUL);unitWhy+="; the pack isn't measured in "+(basis.unit||vi.selling_unit);}
+      if(vi.price_basis&&vi.price_basis!==basis.basis){unitAcc=Math.min(unitAcc,DOUBTFUL);unitWhy+="; saved price basis conflicts with quoted unit";}
       const sourceUnit=source("selling_unit","sellingUnit");
       if(byClient("selling_unit")&&sourceUnit&&JSON.stringify(priceBasisFor(sourceUnit))!==JSON.stringify(basis)){
         unitAcc=Math.min(unitAcc,GUESSED);unitWhy+="; differs from the original source";
@@ -89,10 +92,13 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   if(hasPrice){
     priceAcc=byClient("price")?STATED:STATED;priceWhy=byClient("price")?"Set by you":"As quoted on the sheet";
     if(changes.includes("price")){priceAcc=GUESSED;priceWhy+="; differs from this vendor's last quote";}
-    if(byClient("price")&&row.price!=null&&Number(row.price)!==amount){
+    const originalPrice=source("price","price");
+    if(originalPrice!=null&&originalPrice!==""&&Number(originalPrice)!==amount){
       priceAcc=Math.min(priceAcc,GUESSED);priceWhy+="; differs from the original quoted amount";
     }
-    if(per&&(per.price<0.01||per.price>10000)){priceAcc=Math.min(priceAcc,DOUBTFUL);priceWhy+=`; works out to ${per.price} per ${per.unit}, which looks wrong`;}
+    // No universal minimum/maximum market price: cents per fastener and
+    // expensive industrial equipment are both legitimate source quotes.
+    if(per&&(!Number.isFinite(per.price)||per.price<=0)){priceAcc=Math.min(priceAcc,DOUBTFUL);priceWhy+="; unit cost cannot be represented as a positive finite amount";}
   }
 
   // Category: confident placement, best guess, or set by the client.
@@ -101,6 +107,9 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
     catAcc=item.category_review?GUESSED:item.category_reason?DERIVED:STATED;
     catWhy=item.category_review?(item.category_reason||"Best guess"):item.category_reason?item.category_reason:"Set or accepted";
     const independent=categories.length?suggestCategory(vi.description,categories,[]):null;
+    if(item.category_review&&independent?.confidence==="confident"&&independent.category?.id===category.id){
+      catAcc=DERIVED;catWhy=independent.reason;
+    }
     if(independent?.confidence==="confident"&&independent.category?.id!==category.id){
       catAcc=Math.min(catAcc,GUESSED);
       catWhy+=`; description points to ${independent.category.name}; check the source and category`;
@@ -110,8 +119,8 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   // Brand: printed in a labeled column, pulled from an unlabeled cell, or typed.
   let brandAcc=null,brandWhy="";
   if(!empty(vi.brand)){
-    brandAcc=byClient("brand")?STATED:row.brandSource==="details"?GUESSED:STATED;
-    brandWhy=byClient("brand")?"Set by you":row.brandSource==="details"?"Taken from an unlabeled cell; it matched a brand you already carry":"Printed on the sheet";
+    brandAcc=byClient("brand")?STATED:provenance.brandSource==="details"?GUESSED:STATED;
+    brandWhy=byClient("brand")?"Set by you":provenance.brandSource==="details"?"Taken from an unlabeled cell; it matched a brand you already carry":"Printed on the sheet";
     const clash=otherVendors.find(p=>p.brand&&p.brand.trim().toLowerCase()!==vi.brand.trim().toLowerCase());
     if(clash){brandAcc=Math.min(brandAcc,GUESSED);brandWhy+=`; another vendor lists ${clash.brand}`;}
     else if(provenPeers.length&&provenPeers.every(p=>p.brand&&p.brand.trim().toLowerCase()===vi.brand.trim().toLowerCase())){
@@ -164,22 +173,51 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
 // converts to a full-pack price, a current price, and the association
 // itself either exact already or pointing at an item whose name agrees
 // with the vendor wording. Rows like that are placed without a click.
-export function orderGuideReady({item,vendorItem,mapping,vendor,category,peers=[],categories=[]}){
-  if(!item||!vendorItem||!mapping||!category||category.is_holding_pen)return false;
-  if(vendorItem.price_unavailable||vendorItem.price_source==="invoice")return false;
-  if(vendorItem.import_row?.reviewRequired)return false;
+export const REQUIRED_FIELDS=["category","product","pack","sellingUnit","price"];
+export const BLOCKER_LABELS={category:"Category needs evidence",product:"Description needs evidence",pack:"Pack needs details",
+  sellingUnit:"Quoted unit missing or unresolved",price:"Quoted amount needs evidence",unitCost:"Pack and price unit cannot convert",
+  association:"Product association needs verification",quote:"No current quotation",expired:"Quote expired",
+  source:"Source conflict needs review",brand:"Locked brand does not match",link:"Catalog link missing"};
+export function orderGuideAssessment(input){
+  const {item,vendorItem,mapping,vendor,category,peers=[],categories=[],settings={},now}=input;
+  if(!item||!vendorItem||!mapping)return {ready:false,fieldsReady:false,blockers:["link"],evidence:null,verification:null};
   const evidence=catalogRowEvidence({item,vendorItem,mapping,vendor,category,peers,categories});
-  if(evidence.unitCost.value==null)return false;
-  // Every required cell must be at least "worked out from strong evidence".
-  for(const key of ["category","product","pack","sellingUnit","price"])if((evidence[key].accuracy??0)<DERIVED)return false;
-  return true;
+  const blockers=REQUIRED_FIELDS.filter(key=>(evidence[key].accuracy??0)<DERIVED);
+  if(evidence.unitCost.value==null&&!blockers.includes("pack")&&!blockers.includes("sellingUnit")&&!blockers.includes("price"))blockers.push("unitCost");
+  const status=quoteStatus(vendorItem,settings,now);
+  if(status!=="current")blockers.push(status==="expired"?"expired":"quote");
+  if(vendorItem.import_row?.reviewRequired)blockers.push("source");
+  if(item.brand_locked&&!brandsMatch(vendorItem.brand,item.locked_brand))blockers.push("brand");
+  const fieldsReady=blockers.length===0;
+  const approved=mapping.comparison_track==="exact"&&mapping.confidence_score===100;
+  const verification=approved&&!peers.length?mapping:mappingVerification(vendorItem,item,peers);
+  if(verification.comparison_track!=="exact")blockers.push("association");
+  return {ready:blockers.length===0,fieldsReady,blockers,evidence,verification};
+}
+export function orderGuideReady(input){return orderGuideAssessment(input).ready;}
+
+export function qualificationSummary({catalogItems=[],vendorItems=[],mappings=[],vendors=[],categories=[],settings={},now}={}){
+  const ci=new Map(catalogItems.map(row=>[row.id,row])),vi=new Map(vendorItems.map(row=>[row.id,row]));
+  const vendorById=new Map(vendors.map(row=>[row.id,row])),categoryById=new Map(categories.map(row=>[row.id,row]));
+  const rows=mappings.flatMap(mapping=>{
+    const item=ci.get(mapping.catalog_item_id),vendorItem=vi.get(mapping.vendor_item_id);
+    if(!item||!vendorItem)return [];
+    const peers=mappings.filter(other=>other.catalog_item_id===item.id&&other.id!==mapping.id).map(other=>vi.get(other.vendor_item_id)).filter(Boolean);
+    return [{mappingId:mapping.id,vendorItemId:vendorItem.id,...orderGuideAssessment({item,vendorItem,mapping,
+      vendor:vendorById.get(vendorItem.vendor_id),category:categoryById.get(item.category_id),peers,categories,settings,now})}];
+  });
+  const linked=new Set(rows.map(row=>row.vendorItemId));
+  for(const vendorItem of vendorItems)if(!linked.has(vendorItem.id))rows.push({vendorItemId:vendorItem.id,ready:false,blockers:["link"]});
+  const counts={};for(const row of rows)for(const code of row.blockers)counts[code]=(counts[code]||0)+1;
+  return {total:rows.length,ready:rows.filter(row=>row.ready).length,blocked:rows.filter(row=>!row.ready).length,
+    blockers:Object.entries(counts).map(([code,count])=>({code,count,label:BLOCKER_LABELS[code]})).sort((a,b)=>b.count-a.count||a.code.localeCompare(b.code)),rows};
 }
 
 // Rows the app can place in the Order Guide on its own: ready by the rule
 // above and not yet an exact association. Multi-vendor items also need
 // the other vendor's row to agree on identity, brand and pack; single-
 // vendor items only need the row to agree with its own catalog item.
-export function autoPlaceable({catalogItems=[],vendorItems=[],mappings=[],vendors=[],categories=[]}){
+export function autoPlaceable({catalogItems=[],vendorItems=[],mappings=[],vendors=[],categories=[],settings={},now}){
   const ciById=new Map(catalogItems.map(ci=>[ci.id,ci]));
   const viById=new Map(vendorItems.map(vi=>[vi.id,vi]));
   const vById=new Map(vendors.map(v=>[v.id,v]));
@@ -193,11 +231,11 @@ export function autoPlaceable({catalogItems=[],vendorItems=[],mappings=[],vendor
     if(!vi||!ci)continue;
     const category=cById.get(ci.category_id);
     const peers=(byCatalog.get(m.catalog_item_id)||[]).filter(o=>o.id!==m.id).map(o=>viById.get(o.vendor_item_id)).filter(Boolean);
-    if(!orderGuideReady({item:ci,vendorItem:vi,mapping:m,vendor:vById.get(vi.vendor_id),category,peers,categories}))continue;
+    if(!orderGuideReady({item:ci,vendorItem:vi,mapping:m,vendor:vById.get(vi.vendor_id),category,peers,categories,settings,now}))continue;
     const verification=mappingVerification(vi,ci,peers);
     if(verification.comparison_track!=="exact")continue;
     out.push({mappingId:m.id,vendorItemId:vi.id,catalogItemId:ci.id,description:vi.description,packSize:vi.pack_size,
-      verification:{...verification,match_method:peers.length?"rule_based":"manual"},clearCategoryReview:!!ci.category_review});
+      verification:{...verification,match_method:"rule_based"},clearCategoryReview:!!ci.category_review});
   }
   return out;
 }
@@ -212,8 +250,9 @@ export function rememberImportRow(row,prior,mapping=null){
     // and field corrections survive changes in document row order.
     const changes=knownItemChanges(row,prior);
     const conflicts=changes.map(change=>change.reason);
+    const learnedUnit=prior.price_source!=="invoice"&&prior.price_basis&&priceBasisFor(prior.selling_unit)?.basis===prior.price_basis?prior.selling_unit:null;
     return {...row,description:prior.description,brand:prior.brand||"",packSize:prior.pack_size,
-      sellingUnit:prior.selling_unit||row.sellingUnit||"",sellingUnitSource:prior.selling_unit?"remembered":row.sellingUnitSource,
+      sellingUnit:learnedUnit||row.sellingUnit||"",sellingUnitSource:learnedUnit?"remembered":row.sellingUnitSource,
       knownVendorItem:true,priceNeedsReview:conflicts.length>0,conflicts,changes};
   }
   const result={...row};
@@ -234,8 +273,11 @@ export function rememberImportRow(row,prior,mapping=null){
 }
 export function importResolutions(row,prior={},date=new Date().toISOString()){
   const fields={...prior.field_resolutions};
+  // A fresh quote replaces the amount evidence; old price edits are not
+  // permanent product corrections.
+  delete fields.price;
   for(const input of row.manualFields||[]){
-    const key=FIELDS[input]||(input==="sellingUnit"?"selling_unit":null);
+    const key=FIELDS[input]||(input==="sellingUnit"?"selling_unit":input==="price"?"price":null);
     if(key)fields[key]={value:row[input]??"",sourceValue:row.originalFields?.[input]??prior.import_row?.row?.[input]??row[input]??"",confirmedAt:date};
   }
   return fields;

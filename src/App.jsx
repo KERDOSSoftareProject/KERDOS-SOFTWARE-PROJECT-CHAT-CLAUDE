@@ -3,14 +3,14 @@ import { backend } from "./backend/index.js";
 import { createSessionController } from "./session.js";
 import { createDocumentService } from "./services/documents.js";
 import { createCatalogService } from "./services/catalog.js";
-import { autoPlaceable } from "./core/catalog-fields.js";
+import { autoPlaceable,orderGuideAssessment,BLOCKER_LABELS } from "./core/catalog-fields.js";
 import { holdingPen } from "./services/categories.js";
 import { createOrganizationService } from "./services/organization.js";
 import { createVendorService } from "./services/vendors.js";
 import { createOperationsService } from "./services/operations.js";
 import { createImportService } from "./services/imports.js";
 import { loadSnapshot, saveSnapshot } from "./offline-store.js";
-import { configureVocabulary, eachPrice, pricePerUnit, parsePackSize, brandsMatch, quoteStatus, comparePurchasingPack, compareProductIdentity, casePriceFromQuote } from "./procurement.js";
+import { configureVocabulary, priceBasisFor, eachPrice, pricePerUnit, parsePackSize, brandsMatch, quoteStatus, comparePurchasingPack, compareProductIdentity, casePriceFromQuote } from "./procurement.js";
 import { blockReason, orderable, priceForOffer, rankVendorOffers, solveOrder } from "./core/ordering.js";
 import { compareItems, itemMatchesSearch, comparisonReviewCandidates } from "./core/catalog-browse.js";
 import { configureLocale, formatDate, formatMoney } from "./localization.js";
@@ -79,6 +79,8 @@ export default function App() {
   const [purchaseOrders,setPurchaseOrders]=useState([]);
   const [priceHistory,setPriceHistory]=useState([]);
   const [importDocuments,setImportDocuments]=useState([]);
+  const [importDocumentsHasMore,setImportDocumentsHasMore]=useState(false);
+  const [loadingOlderDocuments,setLoadingOlderDocuments]=useState(false);
   const [priceHistoryHasMore,setPriceHistoryHasMore]=useState(false);
   const [loadingOlderPrices,setLoadingOlderPrices]=useState(false);
   const [vocabulary,setVocabulary]=useState([]);
@@ -251,6 +253,7 @@ export default function App() {
     setPurchaseOrders(snapshot.purchaseOrders);
     setPriceHistory(snapshot.priceHistory);
     setImportDocuments(snapshot.importDocuments||[]);
+    setImportDocumentsHasMore((snapshot.importDocuments||[]).length===500);
     setPriceHistoryHasMore(snapshot.priceHistory.length===2000);
     loadedOnce.current=true;
     setLoading(false);
@@ -311,24 +314,26 @@ export default function App() {
   // can't loop.
   const attemptedAutoPlace=useRef(new Set());
   const [autoPlacing,setAutoPlacing]=useState(false);
+  const [autoPlaceError,setAutoPlaceError]=useState("");
+  const [autoPlaceRetry,setAutoPlaceRetry]=useState(0);
   useEffect(()=>{
     if(!org||org.role==="employee"||loading||autoPlacing||backfilling)return;
-    const ready=autoPlaceable({catalogItems,vendorItems,mappings,vendors,categories});
+    const ready=autoPlaceable({catalogItems,vendorItems,mappings,vendors,categories,settings:org.settings});
     if(!ready.length)return;
-    const key=`${org.id}:${ready.map(r=>r.mappingId).sort().join(",")}`;
+    const key=JSON.stringify([org.id,autoPlaceRetry,ready.map(r=>[r.mappingId,vendorItems.find(vi=>vi.id===r.vendorItemId),catalogItems.find(ci=>ci.id===r.catalogItemId)]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
     if(attemptedAutoPlace.current.has(key))return;
     attemptedAutoPlace.current.add(key);
-    setAutoPlacing(true);
+    setAutoPlacing(true);setAutoPlaceError("");
     (async()=>{
       try{
         await catalogService.confirmMappings(ready);
         const guessed=[...new Set(ready.filter(r=>r.clearCategoryReview).map(r=>r.catalogItemId))];
         if(guessed.length)await catalogService.confirmCategories(guessed);
         await loadData();
-      }catch(error){console.error("Automatic placement:",error);}
+      }catch(error){setAutoPlaceError(`Automatic placement could not finish: ${error.message||String(error)}`);}
       finally{setAutoPlacing(false);}
     })();
-  },[org?.id,org?.role,loading,autoPlacing,backfilling,catalogItems,vendorItems,mappings,vendors,categories]);
+  },[org?.id,org?.role,org?.settings,autoPlaceRetry,loading,autoPlacing,backfilling,catalogItems,vendorItems,mappings,vendors,categories]);
 
   useEffect(()=>{
     if(tab!=="catalog"||!org||org.role==="employee"||backfilling||!unmappedCount)return;
@@ -357,11 +362,13 @@ export default function App() {
         const expired=quote==="expired";
         const invoiceOnly=quote==="invoice_only";
         const pack=vi.pack_size;
+        const assessment=orderGuideAssessment({item:ci,vendorItem:vi,mapping:m,vendor:v,category:categories.find(c=>c.id===ci.category_id),
+          peers:ciMappings.filter(other=>other.id!==m.id).map(other=>viMap.get(other.vendor_item_id)).filter(Boolean),categories,settings:org?.settings||{}});
         // Every vendor is ranked on the price of one full pack. A quote
         // recorded per pound/gallon/each is converted through the pack;
         // legacy rows with no recorded basis were always pack prices.
-        const quoteBasis=vi.price_basis||null;
-        const quoteUnit=vi.price_basis==="measure"?(vi.selling_unit||null):null;
+        const quoteBasis=vi.price_basis||priceBasisFor(vi.selling_unit)?.basis||null;
+        const quoteUnit=quoteBasis==="measure"?(vi.selling_unit||null):null;
         const price=casePriceFromQuote(vi.price,quoteBasis,quoteUnit,pack);
         const basisUnconvertible=price==null&&!!quoteBasis&&quoteBasis!=="case";
         const each=quote==="current"&&price!=null?eachPrice(price,pack):null;
@@ -381,7 +388,8 @@ export default function App() {
           expired,
           priceUnavailable:quote==="unavailable",
           invoiceOnly,
-          unverified:m.comparison_track!=="exact"||m.confidence_score!==100||!parsePackSize(pack)?.parsed,
+          unverified:m.comparison_track!=="exact"||m.confidence_score!==100||!assessment.ready,
+          qualificationBlockers:assessment.blockers,qualificationReason:assessment.blockers.map(code=>BLOCKER_LABELS[code]).join("; "),
           brandMismatch,
         };
       }).filter(Boolean).sort((a,b)=>{
@@ -464,33 +472,12 @@ export default function App() {
     }),
   [vendorItems,vMap]);
 
-  // Price Sheets tab's own review data: prices marked unavailable, or
-  // past this org's refresh window. Lives here (not Item Catalog)
-  // because it's specifically about price-sheet data health.
-  const priceUnavailableItems=useMemo(()=>
-    vendorItems.filter(vi=>vi.price_unavailable).map(vi=>{
-      const v=vMap.get(vi.vendor_id);
-      return {id:vi.id, vendorName:v?.name||"—", vendorId:vi.vendor_id, description:vi.description, lastUpdated:vi.last_updated};
-    }),
-  [vendorItems,vMap]);
-
-  const expiredItems=useMemo(()=>{
-    return vendorItems.filter(vi=>quoteStatus(vi,org?.settings||{})==="expired").map(vi=>{
-      const v=vMap.get(vi.vendor_id);
-      return {id:vi.id, vendorName:v?.name||"—", vendorId:vi.vendor_id, description:vi.description, lastUpdated:vi.last_updated};
-    });
-  },[vendorItems,vMap,org?.settings,clockTick]);
-
-  // Item Catalog's nav badge is scoped to catalog MAPPING issues only
-  // (fuzzy vendor-item matches) - invoice-line issues get their own
-  // badge on Invoices, price-sheet health (unavailable/stale) gets its
-  // own badge on Price Sheets. Each tab's badge reflects only what's
-  // actually reviewable on that tab.
+  // Review belongs with catalog items and invoice comparisons. Price Sheets
+  // is an archive of imported documents, so it has no item-activity badge.
   const needsAttentionCount=useMemo(()=>
     mappings.filter(m=>m.comparison_track!=="exact"||m.confidence_score!==100).length,
   [mappings]);
   const invoiceReviewCount=flaggedInvoiceLines.length;
-  const priceSheetReviewCount=priceUnavailableItems.length+expiredItems.length;
 
   const setQty=(key,val)=>setQuantities(p=>({...p,[key]:Math.max(0,val)}));
 
@@ -675,9 +662,6 @@ export default function App() {
   }
 
   async function deletePriceSheet(doc,reimport=false){
-    if(String(doc.id).startsWith("legacy__")){
-      alert("This older price history has no individual source document ID. Its price can be cleared, but this file cannot be safely deleted on its own.");return;
-    }
     if(!window.confirm(`Delete ${doc.fileName}? Its quote history from this sheet will be removed and its current prices cleared. Product mappings and other sheets remain. You can then import the file again.`))return;
     try{
       const result=await operationsService.deletePriceSheet(org.id,doc.id);
@@ -708,6 +692,20 @@ export default function App() {
       setPriceHistoryHasMore(page.length===2000);
     }catch(err){alert(err.message);}
     setLoadingOlderPrices(false);
+  }
+
+  async function loadOlderDocuments(){
+    if(!org?.id||loadingOlderDocuments)return;
+    setLoadingOlderDocuments(true);
+    try{
+      const page=await documents.olderPriceDocuments(org.id,importDocuments.length);
+      setImportDocuments(current=>{
+        const existing=new Set(current.map(doc=>doc.id));
+        return [...current,...page.filter(doc=>!existing.has(doc.id))];
+      });
+      setImportDocumentsHasMore(page.length===500);
+    }catch(err){alert(err.message);}
+    finally{setLoadingOlderDocuments(false);}
   }
 
   async function expireVendorQuotes(vendorId){
@@ -840,7 +838,7 @@ export default function App() {
       <div style={{background:"white",display:"flex",borderBottom:"1px solid #EEE",position:"sticky",top:52,zIndex:100}}>
         {[["order","📋 Order Guide"],
           ["catalog",`🗂️ Item Catalog${needsAttentionCount>0?` (${needsAttentionCount})`:""}`],
-          ["priceSheets",`📊 Price Sheets${priceSheetReviewCount>0?` (${priceSheetReviewCount})`:""}`],
+          ["priceSheets","📊 Price Sheets"],
           ["invoices",`📁 Invoices${invoiceReviewCount>0?` (${invoiceReviewCount})`:""}`],
           ...(org.role==="owner"||org.role==="manager"?[["team","👥 Admin"]]:[])].map(([id,label])=>(
           <button key={id} onClick={()=>id==="order"?openOrderGuide():setTab(id)}
@@ -1359,16 +1357,15 @@ export default function App() {
 
         {tab==="priceSheets"&&(
           <PriceSheetsPage
-            vendors={vendors} vendorItems={vendorItems} priceHistory={priceHistory} importDocuments={importDocuments}
+            vendors={vendors} importDocuments={importDocuments}
             vendorFilter={priceSheetVendorFilter} setVendorFilter={setPriceSheetVendorFilter} vendorColors={vendorColors}
-            formatDate={formatDate} formatMoney={formatMoney} orgSettings={org.settings} role={org.role}
+            formatDate={formatDate} role={org.role}
             onImport={vendorId=>{setSelectedVendorId(vendorId);setImportMode("pricelist");setShowPaste(true);}}
-            onExpireVendor={expireVendorQuotes} onExpireOne={expireOneQuote}
+            onExpireVendor={expireVendorQuotes}
             onDelete={deletePriceSheet} onClear={clearPriceSheet}
             onViewOriginal={viewStoredFile} onViewSource={viewSourceDocument}
             expandedId={expandedPricePeriod} setExpandedId={setExpandedPricePeriod}
-            unavailableCount={priceUnavailableItems.length} expiredCount={expiredItems.length}
-            hasMore={priceHistoryHasMore} loadingMore={loadingOlderPrices} onLoadMore={loadOlderPriceHistory}
+            hasMore={importDocumentsHasMore} loadingMore={loadingOlderDocuments} onLoadMore={loadOlderDocuments}
           />
         )}
 
@@ -1387,6 +1384,8 @@ export default function App() {
               onUpdated={loadData}
               onEditInvoice={setEditingInvoice}
               onDeleteInvoice={deleteInvoice}
+              onExpireOne={expireOneQuote} orgSettings={org.settings}
+              hasMorePrices={priceHistoryHasMore} loadingMorePrices={loadingOlderPrices} onLoadMorePrices={loadOlderPriceHistory}
             />
           );
         })()}
@@ -1399,7 +1398,10 @@ export default function App() {
                 <div role="status" style={{fontWeight:800,color:"#E65100"}}>{backfilling?`Bringing ${unmappedCount} imported item${unmappedCount===1?"":"s"} into the catalog…`:catalogRepairError||`${unmappedCount} imported item${unmappedCount===1?"":"s"} waiting for catalog links`}</div>
               </div>
             )}
-            <ItemCatalogPanel orgId={org.id} role={org.role} productList={productList} vendors={vendors} catalogItems={catalogItems} mappings={mappings}
+            {autoPlaceError&&org.role!=="employee"&&<div role="alert" style={{background:"#FFF3E0",padding:12,marginBottom:12,borderRadius:8}}>
+              {autoPlaceError} <button disabled={autoPlacing} onClick={()=>setAutoPlaceRetry(n=>n+1)} style={btn("#003584")}>Retry automatic placement</button>
+            </div>}
+            <ItemCatalogPanel settings={org.settings} orgId={org.id} role={org.role} productList={productList} vendors={vendors} catalogItems={catalogItems} mappings={mappings}
               vendorItems={vendorItems} categories={categories} vocabulary={vocabulary}
               onUpdated={loadData} />
           </>

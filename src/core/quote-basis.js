@@ -1,4 +1,4 @@
-import {compareProductIdentity,comparePurchasingPack,priceBasisFor} from "../procurement.js";
+import {compareProductIdentity,comparePurchasingPack,priceBasisFor,brandsMatch} from "../procurement.js";
 
 // Reuse a confirmed vendor-specific quote basis for a repeat import only.
 // A null basis on an old record is legacy "case" and is not evidence that
@@ -7,7 +7,14 @@ export function resolveQuoteBasis(row,prior=null){
   const explicit=priceBasisFor(row.sellingUnit);
   if(explicit)return {basis:explicit,sellingUnit:row.sellingUnit,source:row.sellingUnitSource==="remembered"?"confirmed vendor item":row.sellingUnitSource==="manual"?"manual selection":row.sellingUnitSource==="invoice"?"invoice evidence":"document"};
   if(String(row.sellingUnit||"").trim())return null;
-  if(!prior?.price_basis||!prior.selling_unit||!row.code||String(prior.vendor_item_code)!==String(row.code))return null;
+  if(!prior?.price_basis||!prior.selling_unit||prior.price_source==="invoice"||prior.import_row?.reviewRequired)return null;
+  const coded=row.code&&String(prior.vendor_item_code)===String(row.code);
+  // The caller must resolve one unique NVIM first, within this vendor.
+  const uncoded=!row.code&&!prior.vendor_item_code&&!!prior.id&&row.resolvedVendorItemId===prior.id;
+  if(!coded&&!uncoded)return null;
+  if(row.brand&&prior.brand&&!brandsMatch(row.brand,prior.brand))return null;
+  if(row.gtin&&prior.gtin&&row.gtin!==prior.gtin)return null;
+  if(row.manufacturerCode&&prior.manufacturer_code&&row.manufacturerCode!==prior.manufacturer_code)return null;
   if(compareProductIdentity(row.description,prior.description).status!=="same"||
      comparePurchasingPack(row.packSize,prior.pack_size).status!=="same")return null;
   const learned=priceBasisFor(prior.selling_unit);

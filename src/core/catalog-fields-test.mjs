@@ -19,7 +19,7 @@ assert.equal(resolveQuoteBasis(known,prior).sellingUnit,"LB");
 assert.equal(casePriceFromQuote(known.price,"measure","LB",known.packSize),45);
 const evidence=explainImportRow(incoming,{vendor:{id:"vendor1",name:"Vendor One"},catalogItems:[item],categories:[category],vendorItems:[prior],mappings:[mapping]});
 assert.equal(evidence.itemNumber.value,2010);
-assert.equal(evidence.itemNumber.accuracy,100);
+assert.equal(evidence.itemNumber.accuracy,90);
 assert.equal(evidence.product.value,"Bacon frozen");
 assert.equal(evidence.unitCost.value,3);
 assert.equal(evidence.knownItem,true);

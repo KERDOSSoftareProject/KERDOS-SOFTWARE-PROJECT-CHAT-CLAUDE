@@ -1,7 +1,14 @@
-# KERDOS — HANDOFF CONTEXT (as of September 23, 2026)
+> **v5 update, September 27, 2026:** Read `READ_FIRST_NEW_THREAD.md` and
+> `V5_CHANGES_AND_TEST_RESULTS.md` first. v4 deployment was verified; the owner
+> reported revised migration 015 success. This source contains v5, packaged
+> but not deployed by this session. No new migration is required. Older status
+> statements below are historical. Preserve the shared 90% field gate and do
+> not assume missing quotation units from price plausibility.
 
-Read this first. It replaces every older KERDOS context document. The
-source code in this zip is the current, deployed, working version.
+# KERDOS — HANDOFF CONTEXT (as of September 27, 2026)
+
+Read `HANDOFF_TO_CHATGPT_2026-09-27.md` first for the latest state, then
+this for the whole project. This replaces every older context document.
 
 ---
 
@@ -158,81 +165,45 @@ profiles; purchase_order_lines; purchase_orders; vendor_items
   pick and vendor-minimum fill.
 - Category keyword matching is plural-tolerant (prefix comparison).
 
-## 8. What happened today (September 23, 2026)
+## 8. Timeline since September 23
 
-Morning: white window after sign-in, caused by four functions called in
-files that no longer defined them after App.jsx was split. Fixed, deployed
-(green run #41). Lesson: tests and build don't catch undefined names, so
-ESLint `no-undef` now runs inside `npm test`.
+- **Sept 23:** white-screen fix deployed; ENGINE v3 (price basis,
+  identifiers, learning, category placement) built and deployed; 009 run.
+- **Sept 24:** per-tab sign-in; Item Catalog field repair; the onboarding
+  model agreed (rows land in Item Catalog with per-cell status; no
+  number until commit).
+- **Sept 25:** ChatGPT's integrated builds: per-field resolutions on
+  vendor_items (010), New/Mapped/Oversight lanes keyed on the vendor
+  item number, document deletion (011), vendor NVIM numbering (012),
+  invoice mapping (013), editable catalog grid.
+- **Sept 26:** discovered 010 had never been run (all imports failing
+  silently); ran it. Data reset twice for a clean first run. Price-sheet
+  gate removed; automatic Order Guide placement; import UX (Select
+  vendor, sheet basis, success screen, drachma); chrome trimmed.
+- **Sept 27:** Item name vs vendor description (014); every cell
+  writable; "Undetermined" unit cost. Then ChatGPT's six review items
+  built (015): resumable idempotent imports, one-write Apply, all
+  worksheets, dead code removed, accuracy percentages that mean accuracy
+  with a ≥90 placement rule.
 
-Afternoon (ChatGPT, local, not deployed): matching tightened to the
-agreed rule set (exact identity + exact pack + brand agreement; engine
-auto-verifies only with a second vendor), Order Guide accepts only
-100%-verified mappings, Item Catalog reworked into Mapped / Not mapped,
-invoice lines become historical charges, error boundary, ESLint,
-portable backend adapter, PDF layout reader.
+## 9. Settled decisions added Sept 26–27
 
-Afternoon (Claude, local, not deployed; see READ_FIRST.md):
-- Price basis completed end to end: migration 009 adds `selling_unit` and
-  `price_basis` to vendor_items and price_history; imports record the
-  basis from the sheet's selling unit; every quote is converted to the
-  price of one full pack before ranking; a per-pound/per-each quote whose
-  pack can't convert is blocked with a reason instead of ranked wrong;
-  invoice variance is computed on the basis the invoice bills in.
-- Bulk confirm for single-vendor listings that already pass verification,
-  so day one after deploy isn't hundreds of one-at-a-time clicks.
-- Engine-first matching improvements (see READ_FIRST.md §3): GTIN /
-  manufacturer-code capture and identifier-proven identity, pack read
-  from the description tail, pack filled from the vendor's own invoice,
-  one "why not 100%" reason code per mapping with a grouped Not mapped
-  view, an auto-verify rate on every import, abbreviation learning from
-  confirmations (spelling only), catch-weight and #10-can pack parsing,
-  a one-click "apply engine-verified matches" re-check, and best-guess
-  category placement with a review flag (new products no longer land in
-  Uncategorized unless they resemble nothing).
-
-## 9. Deploy order for the pending build
-
-1. Run `KERDOS_DATABASE_UPDATE_CLEAN.sql` in the Supabase SQL editor
-   (it is idempotent; migration 009 is the only new part). The new RPC
-   parameters default to null, so the currently deployed frontend keeps
-   working after the migration.
-2. Upload the source and let the green run deploy it.
-3. In Item Catalog, press "Confirm N ready single-vendor products".
-
-Pending cleanup (harmless): delete `src/data.js`, the three `.zip` files
-and `dist/` at the repo root.
+See `HANDOFF_TO_CHATGPT_2026-09-27.md` §2. In short: no double steps;
+solved rows place themselves; single-vendor is normal; price sheets
+never wait; invoices do; item name is the client's, description is the
+vendor's; every cell writable except the KERDOS number.
 
 ## 10. Open items
 
-1. Per-vendor-format coverage: selling unit, UPC/GTIN and manufacturer
-   columns are read by header name; formats that put them elsewhere (or
-   in PDF layouts) record nothing. Extend per format with a test row each
-   from the real files; the Not mapped reason counts show which gap is
-   biggest.
-2. Learning covers abbreviation-shaped pairs only. Irregular ones
-   ("chix"→"chicken", "xl"→"extra large") still need one Admin vocabulary
-   entry per organization; a per-industry starter list would cover most.
-3. Sole-source rule carve-out (Spiro's decision): an engine-created
-   catalog item with a vendor code and readable pack cannot be pointed
-   at the wrong item; auto-verifying that narrow case would remove most
-   remaining manual confirmations. Not implemented; bulk confirm is the
-   workaround.
-4. Shared vendor knowledge across clients at scale (codes → identity,
-   never prices).
-5. RLS / roles: see ACCESS_POLICY_REVIEW.md. Needs Spiro's decision and a
-   staging database, not more frontend code.
-6. Headless-browser smoke test (sign in, load Order Guide, Item Catalog,
-   a vendor page). The undefined-name check covers the crash class we
-   hit; this would cover runtime data errors.
-7. Future phase: vendor API integration. Noted, not started.
+See `HANDOFF_TO_CHATGPT_2026-09-27.md` §6.
 
 ## 11. Rules for any assistant working on this
 
 - Read the actual code before answering questions about it.
 - Test every change with real runs. Say exactly what you verified.
 - Package deploys as files that drop straight into the repo at the right
-  paths, and say which files are new vs. replaced.
+  paths, and say which files are new vs. replaced. List every migration
+  the build needs.
 - Never propose runtime AI, a Supabase- or GitHub-specific dependency, or
   anything hardcoded for one client or industry.
 - Keep replies short. Spiro has no patience for walkthroughs, and he's

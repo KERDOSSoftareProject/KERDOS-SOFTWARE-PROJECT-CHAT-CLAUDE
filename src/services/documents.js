@@ -20,5 +20,9 @@ export function createDocumentService(backend){
     },
     remove(paths){return backend.documents.remove(paths);},
     source(documentId){return run(table("import_documents").select("original_text,file_path,file_name").eq("id",documentId).single(),"Cannot load original document");},
+    olderPriceDocuments(organizationId,offset,limit=500){
+      return run(table("import_documents").select("*").eq("organization_id",organizationId).eq("document_kind","pricelist")
+        .order("created_at",{ascending:false}).order("id",{ascending:false}).range(offset,offset+limit-1),"Could not load earlier imported documents");
+    },
   };
 }

@@ -3,12 +3,13 @@ import {backend} from "../backend/index.js";
 import {createCatalogService,mappingVerification} from "../services/catalog.js";
 import {createVendorService} from "../services/vendors.js";
 import {currencyCode,formatDate,formatMoney} from "../localization.js";
+import {quoteStatus} from "../procurement.js";
 import {btn,inp} from "../ui/styles.js";
 
 const catalogService=createCatalogService(backend);
 const vendorService=createVendorService(backend);
 
-export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,priceHistory,mappings,catalogItems,orgId,myRole,onViewOriginal,onBack,onUpdated,onEditInvoice,onDeleteInvoice}) {
+export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,priceHistory,mappings,catalogItems,orgId,myRole,onViewOriginal,onBack,onUpdated,onEditInvoice,onDeleteInvoice,onExpireOne,orgSettings,hasMorePrices,loadingMorePrices,onLoadMorePrices}) {
   const [editing,setEditing]=useState(false);
   const [name,setName]=useState(vendor.name);
   const [email,setEmail]=useState(vendor.email||"");
@@ -184,6 +185,7 @@ export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,pric
                       <div style={{display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
                         <span style={{fontWeight:700,fontSize:13}}>{formatMoney(item.price)}</span>
                         {canManage&&<button onClick={()=>{setPriceEditId(item.id);setPriceEditValue(String(item.price||""));}} style={{background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:12}}>✎</button>}
+                        {canManage&&quoteStatus(item,orgSettings||{})==="current"&&<button onClick={()=>onExpireOne(item)} style={{background:"none",border:"none",cursor:"pointer",color:"#E65100",fontSize:11}}>Remove price from Order Guide</button>}
                       </div>
                     )}
                   </div>
@@ -276,6 +278,7 @@ export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,pric
       })}
 
       <div style={{fontSize:11,fontWeight:800,color:"rgba(255,255,255,0.7)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8,marginTop:20}}>Price history by period</div>
+      {hasMorePrices&&<button onClick={onLoadMorePrices} disabled={loadingMorePrices} style={{...btn("white","#003584"),marginBottom:8}}>{loadingMorePrices?"Loading…":"Load earlier price history"}</button>}
       {vendorPricePeriods.length===0?(
         <div style={{background:"white",borderRadius:10,padding:24,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.08)"}}>
           <p style={{color:"#888",fontSize:13,margin:0}}>No price sheets imported for {vendor.name} yet</p>
