@@ -3,7 +3,7 @@ import {backend} from "../backend/index.js";
 import {fileToText} from "../document-reader.js";
 import {findDate,findInvoiceNumber,parseDocument} from "../ingestion.js";
 import {findUncodedVendorListing,vendorListingLabel} from "../core/vendor-listing.js";
-import {bestInvoiceMatch,compareProductIdentity,comparePurchasingPack,MATCH_POLICY,packsEquivalent,parsePackSize,priceBasisFor,quotePriceOnBasis,brandsMatch} from "../procurement.js";
+import {bestInvoiceMatch,compareProductIdentity,comparePurchasingPack,MATCH_POLICY,parsePackSize,priceBasisFor,quotePriceOnBasis,brandsMatch} from "../procurement.js";
 import {createCatalogService,engineVerifiable} from "../services/catalog.js";
 import {createCategoryService} from "../services/categories.js";
 import {createDocumentService} from "../services/documents.js";
@@ -11,10 +11,8 @@ import {createImportService} from "../services/imports.js";
 import {formatMoney} from "../localization.js";
 import {explainImportRow} from "../core/import-evidence.js";
 import {importResolutions,unitChoices} from "../core/catalog-fields.js";
-import {resolveQuoteBasis} from "../core/quote-basis.js";
-import {prepareImportRow} from "../core/import-row.js";
-import {verifyResumeRows} from "../core/import-resume.js";
-import {enrichFromInvoices,invoiceEvidence} from "../core/invoice-evidence.js";
+import {preparePriceImport} from "../core/price-import-review.js";
+import {invoiceEvidence} from "../core/invoice-evidence.js";
 import {btn,inp} from "../ui/styles.js";
 import {Drachma} from "../ui/Drachma.jsx";
 
@@ -59,7 +57,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
     importService.invoiceSources(orgId,vendorId).then(invoices=>{
       if(!active)return;
       setInvoiceSources(invoices.flatMap(invoice=>parseDocument(invoice.raw_text||"").rows.map(row=>({
-        row,id:invoice.id,number:invoice.invoice_number,date:invoice.invoice_date,
+        row,number:invoice.invoice_number,date:invoice.invoice_date,
       }))));
       setInvoiceLoad("ready");
     }).catch(error=>{if(active)setInvoiceLoad(error.message||"Invoice lookup failed");});
@@ -156,7 +154,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
 
   const allRows=parsedGroups.flatMap(g=>g.rows.map(row=>({...row,_source:g.name})));
   const evidenceRows=parsedGroups.flatMap(g=>g.rows.map((row,index)=>({row,group:g,index,key:`${g.id}:${index}`,
-    evidence:explainImportRow(row,{vendor:vendors.find(v=>v.id===vendorId),categories,catalogItems,vendorItems,mappings,documentRows:g.rows,invoices:invoiceSources})})))
+    evidence:explainImportRow(row,{vendor:vendors.find(v=>v.id===vendorId),categories,catalogItems,vendorItems,mappings,documentRows:g.rows})})))
     .sort((a,b)=>{
       const av=a.evidence[sortField]?.value,bv=b.evidence[sortField]?.value;
       if(av==null&&bv==null)return a.index-b.index;
@@ -174,7 +172,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
     // Editing an ambiguous row invalidates a prior approval of its old value.
     setAcceptedIssues(prev=>{const next=new Set(prev);next.delete(`${groupId}:${index}`);return next;});
     setAcceptedInvoiceConflicts(prev=>{const next=new Set(prev);next.delete(`${groupId}:${index}`);return next;});
-    setParsedGroups(groups=>groups.map(g=>g.id!==groupId?g:{...g,rows:g.rows.map((r,i)=>i===index?{...r,...patch,originalFields:r.originalFields||{description:r.description,brand:r.brand,packSize:r.packSize,sellingUnit:r.sellingUnit,price:r.price},manualFields:[...new Set([...(r.manualFields||[]),...Object.keys(patch)])]}:r)}));
+    setParsedGroups(groups=>groups.map(g=>g.id!==groupId?g:{...g,rows:g.rows.map((r,i)=>i===index?{...r,...patch,originalFields:r.originalFields||{description:r.description,brand:r.brand,packSize:r.packSize,sellingUnit:r.sellingUnit},manualFields:[...new Set([...(r.manualFields||[]),...Object.keys(patch)])]}:r)}));
   }
   function approveIssue(groupId,index){setAcceptedIssues(prev=>new Set([...prev,`${groupId}:${index}`]));}
 
@@ -229,10 +227,6 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
         // is safe to repeat.
         if(existingDoc&&existingDoc.status==="complete"){saveError=(saveError?saveError+" ":"")+`${group.name}: already imported in full. Use Delete & re-import in Price Sheets to load it again.`;continue;}
         const completedKeys=new Set(Array.isArray(existingDoc?.completed_keys)?existingDoc.completed_keys:[]);
-        if(existingDoc){
-          try{verifyResumeRows(group.rows,[...completedKeys],await importService.resumeSources(orgId,vendorId,existingDoc.id));}
-          catch(error){failedRows+=group.rows.length;saveError=(saveError?saveError+" ":"")+`${group.name}: ${error.message}`;continue;}
-        }
         let sourceDocumentId=existingDoc?.id||null;
         if(!existingDoc){
           if(group.file){
@@ -253,7 +247,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
       for(const [rowIndex,sourceRow] of group.rows.entries()){
         const completedKey=progressKey(rowIndex);
         if(completedKeys.has(completedKey))continue;
-        let row=enrichFromInvoices(sourceRow,invoiceSources);
+        let row=sourceRow;
         // A price sheet never waits on a person. A row with parser issues or
         // an invoice disagreement is saved with those notes attached, so
         // Item Catalog shows exactly what to finish; nothing is held back.
@@ -285,23 +279,16 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           }
         }
         const priorMapping=ex?await importService.mapping(orgId,ex.id):null;
-        row=prepareImportRow(row,{prior:ex,mapping:priorMapping});
+        const prepared=preparePriceImport(row,ex,priorMapping,rowNeedsReview?rowIssues:[]);
+        row=prepared.row;
         let vendorItemId;
-        if(ex&&!row.knownVendorItem){
-          const identity=compareProductIdentity(row.description,ex.description);
-          if(identity.status!=="same") throw new Error(`Vendor item code or description points to an unverified product (${identity.reason}). Existing price and mapping were preserved.`);
-          if(row.brand&&ex.brand&&!brandsMatch(row.brand,ex.brand))
-            throw new Error(`Vendor brand changed from ${ex.brand} to ${row.brand}; the established association and price were preserved for review.`);
-          if(!row.packSize||!ex.pack_size||!packsEquivalent(row.packSize,ex.pack_size))
-            throw new Error("The pack size is missing or changed for this vendor item; verify the package and purchasing price before updating the quote.");
-        }
         // The provider persists current quote and history in one transaction.
         // It is impossible to update one and lose the other midway through.
         // Preserve an item even when the sheet omits the price unit. Its
         // quoted number remains in the source and on the vendor listing,
         // but is unavailable for ordering until the basis is resolved.
-        const resolved=resolveQuoteBasis(row,ex);
-        const needsBasis=rowNeedsReview||(!row.priceUnavailable&&(!resolved||row.priceNeedsReview));
+        const resolved=prepared.resolved;
+        const needsBasis=prepared.requiresReview;
         const basis=resolved?.basis||null;
         // An unresolvable incoming price must not retire a previously
         // confirmed quote. Its original value stays in the source file.
@@ -314,11 +301,11 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           priceUnavailable:!!row.priceUnavailable||needsBasis,effectiveDate:importBatchTime,
           quoteValidUntil:group.quoteValidUntil,sourceFilePath,
           sourceFileName:group.name,sourceLine:row.sourceLine||null,sourceDocumentId,
-          importRow:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:rowNeedsReview,conflicts:rowNeedsReview?rowIssues:[],changes:row.changes||[]},
+          importRow:{row:sourceRow,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:needsBasis,conflicts:prepared.reasons,changes:row.changes||[]},
           fieldResolutions:importResolutions(sourceRow,ex||{}),
         });
         if(needsBasis&&ex){
-          const {error}=await backend.records.query("vendor_items").update({import_row:{row:sourceRow,rowKey:completedKey,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,changes:row.changes||[],conflicts:rowNeedsReview?rowIssues:row.conflicts?.length?row.conflicts:["Incoming quoted unit is unresolved"]}}).eq("id",ex.id).eq("organization_id",orgId);
+          const {error}=await backend.records.query("vendor_items").update({import_row:{row:sourceRow,rowKey:completedKey,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,changes:row.changes||[],conflicts:prepared.reasons}}).eq("id",ex.id).eq("organization_id",orgId);
           if(error)throw new Error(`Could not save the incoming quote for review: ${error.message}`);
         }
         if(ex&&!needsBasis) updated++; else if(!ex) created++;
@@ -330,7 +317,10 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
         if(vendorItemId){
           const existingMapping=priorMapping||await importService.mapping(orgId,vendorItemId);
           if(!existingMapping){
-            const match=await catalogService.matchOrCreate({organizationId:orgId,vendorId,description:row.description,packSize:row.packSize||ex?.pack_size,brand:row.brand||ex?.brand,gtin:row.gtin||ex?.gtin||null,manufacturerCode:row.manufacturerCode||ex?.manufacturer_code||null,categoryId:row.categoryId||null,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems:workingVendorItems,mappings:workingMappings});
+            // When a reused code carries changed fields, recover any missing
+            // catalog link from the saved listing, never the pending identity.
+            const identity=needsBasis&&ex?{description:ex.description,packSize:ex.pack_size,brand:ex.brand,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code}:row;
+            const match=await catalogService.matchOrCreate({organizationId:orgId,vendorId,description:identity.description,packSize:identity.packSize,brand:identity.brand,gtin:identity.gtin||null,manufacturerCode:identity.manufacturerCode||null,categoryId:needsBasis?null:row.categoryId||null,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems:workingVendorItems,mappings:workingMappings});
             if(match){
               const savedMapping=await importService.createMapping({
                 organization_id:orgId, catalog_item_id:match.catalogItemId, vendor_item_id:vendorItemId,
@@ -338,13 +328,13 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
                 match_method:"rule_based", comparison_track:match.track,
               });
               mapped++;
-              workingVendorItems.push({id:vendorItemId,vendor_id:vendorId,description:row.description,pack_size:row.packSize||ex?.pack_size||null,brand:row.brand||ex?.brand||null,gtin:row.gtin||ex?.gtin||null,manufacturer_code:row.manufacturerCode||ex?.manufacturer_code||null});
+              workingVendorItems.push({id:vendorItemId,vendor_id:vendorId,description:identity.description,pack_size:identity.packSize||null,brand:identity.brand||null,gtin:identity.gtin||null,manufacturer_code:identity.manufacturerCode||null});
               workingMappings.push({id:savedMapping.id,catalog_item_id:match.catalogItemId,vendor_item_id:vendorItemId,comparison_track:match.track,confidence_score:Math.round((match.score??0)*100)});
-              await applySelectedCategory(match.catalogItemId,row.categoryId);
+              if(!needsBasis)await applySelectedCategory(match.catalogItemId,row.categoryId);
               // A second vendor can prove the first listing's identity and
               // pack. Promote only mappings passing the same verification as
               // the Item Catalog's engine-review button.
-              if(match.track==="exact"){
+              if(match.track==="exact"&&!needsBasis){
                 const verified=engineVerifiable({mappings:workingMappings,vendorItems:workingVendorItems,catalogItems:workingCatalogItems})
                   .filter(entry=>entry.catalogItemId===match.catalogItemId);
                 if(verified.length){
@@ -362,7 +352,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
               }
               identified.push({description:row.description,packSize:row.packSize||ex?.pack_size||null,price:row.price,track:match.track,confidence:match.score==null?null:Math.round(match.score*100),reason:match.reason||null});
             }
-          }else if(row.categoryId){
+          }else if(row.categoryId&&!needsBasis){
             // An explicit category correction moves the established catalog
             // item and all its vendor rows, without changing their mapping.
             await applySelectedCategory(existingMapping.catalog_item_id,row.categoryId);
@@ -385,7 +375,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
         try{await importService.finalizeDocument(sourceDocumentId,finalStatus,[...completedKeys]);}
         catch(err){saveError=(saveError?saveError+" ":"")+`${group.name}: ${err.message}`;}
       }
-      if(failedRows>1) saveError+=` (and ${failedRows-1} more row${failedRows===2?"":"s"} failed the same way)`;
+      if(failedRows>1) saveError+=` (${failedRows} rows failed in total; other rows may have different errors.)`;
     } else {
       // Invoice mode: each source document is its own invoice — a dropped
       // batch of 3 invoice PDFs must become 3 separate invoice records,
@@ -666,7 +656,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
             <table style={{borderCollapse:"collapse",width:"100%",minWidth:850,fontSize:11}}><thead><tr>
               {[["itemNumber","KERDOS item #"],["vendor","Vendor"],["category","Category"],["product","Product"],["brand","Brand"],["pack","Pack"],["price","Quoted price"],["sellingUnit","Quoted per"],["unitCost","Unit cost"]].map(([key,label])=><th key={key} style={{textAlign:"left",padding:6,borderBottom:"1px solid #ccd"}}><button onClick={()=>{setSortDirection(sortField===key?-sortDirection:1);setSortField(key);}} style={{background:"none",border:0,cursor:"pointer",fontWeight:700}}>{label} {sortField===key?(sortDirection===1?"↑":"↓"):""}</button></th>)}
               <th>Details</th></tr></thead><tbody>{evidenceRows.map(({evidence,key,row,group,index})=><tr key={key}>{["itemNumber","vendor","category","product","brand","pack","price","sellingUnit","unitCost"].map(name=>{
-                const f=evidence[name];return <td key={name} title={f.reason} style={{padding:6,borderBottom:"1px solid #eee",whiteSpace:"nowrap"}}>{name==="vendor"?<>{f.value}{vendorItems.some(vi=>vi.vendor_id===vendorId&&!vi.vendor_item_code)&&<select aria-label={`Use saved vendor listing for ${row.description}`} value={row.selectedVendorItemId||""} onChange={e=>updateParsedRow(group.id,index,{selectedVendorItemId:e.target.value||null})} style={{...inp,fontSize:10,minWidth:160,padding:3,display:"block"}}><option value="">Match by product and pack</option>{vendorItems.filter(vi=>vi.vendor_id===vendorId&&!vi.vendor_item_code).map(vi=><option key={vi.id} value={vi.id}>{vendorListingLabel(vi)||"Unnumbered"} · {vi.description} · {vi.pack_size||"pack needed"}</option>)}</select>}</>:name==="category"?<select aria-label={`Category for ${row.description}`} value={row.categoryId||""} onChange={e=>updateParsedRow(group.id,index,{categoryId:e.target.value||null})} style={{...inp,fontSize:11,minWidth:115,padding:4}}><option value="">{f.value||"Uncategorized"}{f.accuracy!=null&&f.accuracy<90?" (suggested)":""}</option>{categories.filter(c=>!c.is_holding_pen).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>:name==="price"?<input aria-label={`Quoted price for ${row.description}`} type="number" min="0" step="any" value={row.priceUnavailable?"":row.price??""} onChange={e=>updateParsedRow(group.id,index,{price:e.target.value===""?null:Number(e.target.value),priceUnavailable:e.target.value==="",priceEdited:true})} style={{...inp,fontSize:11,width:86,padding:4}} />:name==="product"?<input aria-label={`Product for ${row.code||row.description}`} disabled={evidence.knownItem} value={evidence.knownItem?evidence.product.value:row.description||""} onChange={e=>updateParsedRow(group.id,index,{description:e.target.value})} style={{...inp,fontSize:11,width:210,padding:4}} />:name==="brand"?<input aria-label={`Brand for ${row.description}`} disabled={evidence.knownItem} value={row.brand||evidence.brand.value||""} placeholder="Blank if absent" onChange={e=>updateParsedRow(group.id,index,{brand:e.target.value})} style={{...inp,fontSize:11,width:110,padding:4}} />:name==="pack"?<input aria-label={`Pack for ${row.description}`} disabled={evidence.knownItem} value={row.packSize||evidence.pack.value||""} placeholder="e.g. 4/10 LB" onChange={e=>updateParsedRow(group.id,index,{packSize:e.target.value})} style={{...inp,fontSize:11,width:105,padding:4}} />:name==="sellingUnit"?<><select aria-label={`Quoted price per unit for ${row.description}`} disabled={evidence.knownItem&&!!f.value} value={f.value||""} onChange={e=>updateParsedRow(group.id,index,{sellingUnit:e.target.value,sellingUnitSource:"manual"})} style={{...inp,fontSize:11,width:105,padding:4}}><option value="">{f.value?`Likely ${f.value}`:"Select unit"}</option>{quotedUnits.map(unit=><option key={unit.value} value={unit.value}>{unit.label}</option>)}</select>{!evidence.knownItem&&!f.value&&evidence.unitSuggestion&&<button title={evidence.unitSuggestion.reason} onClick={()=>updateParsedRow(group.id,index,{sellingUnit:evidence.unitSuggestion.sellingUnit,sellingUnitSource:"manual"})} style={{border:0,background:"#FFF3E0",color:"#875200",fontSize:10,cursor:"pointer"}}>Confirm suggested {evidence.unitSuggestion?.sellingUnit}</button>}</>:f.value==null?name==="itemNumber"?"New number on save":"—":name==="price"||name==="unitCost"?formatMoney(f.value):f.value}{name==="unitCost"&&f.value!=null&&evidence.pack.value&&<small style={{display:"block"}}>per {evidence.unitCost.unit||"unit"}</small>}{f.accuracy!=null&&<small style={{display:"block",color:f.accuracy<90?"#a65b00":"#45735b"}}>{f.accuracy}%</small>}</td>;
+                const f=evidence[name];return <td key={name} title={f.reason} style={{padding:6,borderBottom:"1px solid #eee",whiteSpace:"nowrap"}}>{name==="vendor"?<>{f.value}{vendorItems.some(vi=>vi.vendor_id===vendorId&&!vi.vendor_item_code)&&<select aria-label={`Use saved vendor listing for ${row.description}`} value={row.selectedVendorItemId||""} onChange={e=>updateParsedRow(group.id,index,{selectedVendorItemId:e.target.value||null})} style={{...inp,fontSize:10,minWidth:160,padding:3,display:"block"}}><option value="">Match by product and pack</option>{vendorItems.filter(vi=>vi.vendor_id===vendorId&&!vi.vendor_item_code).map(vi=><option key={vi.id} value={vi.id}>{vendorListingLabel(vi)||"Unnumbered"} · {vi.description} · {vi.pack_size||"pack needed"}</option>)}</select>}</>:name==="category"?<select aria-label={`Category for ${row.description}`} value={row.categoryId||""} onChange={e=>updateParsedRow(group.id,index,{categoryId:e.target.value||null})} style={{...inp,fontSize:11,minWidth:115,padding:4}}><option value="">{f.value||"Uncategorized"}{f.accuracy===75?" (suggested)":""}</option>{categories.filter(c=>!c.is_holding_pen).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>:name==="price"?<input aria-label={`Quoted price for ${row.description}`} type="number" min="0" step="any" value={row.priceUnavailable?"":row.price??""} onChange={e=>updateParsedRow(group.id,index,{price:e.target.value===""?null:Number(e.target.value),priceUnavailable:e.target.value==="",priceEdited:true})} style={{...inp,fontSize:11,width:86,padding:4}} />:name==="product"?<input aria-label={`Product for ${row.code||row.description}`} disabled={evidence.knownItem} value={evidence.knownItem?evidence.product.value:row.description||""} onChange={e=>updateParsedRow(group.id,index,{description:e.target.value})} style={{...inp,fontSize:11,width:210,padding:4}} />:name==="brand"?<input aria-label={`Brand for ${row.description}`} disabled={evidence.knownItem} value={evidence.knownItem?evidence.brand.value||"":row.brand||""} placeholder="Blank if absent" onChange={e=>updateParsedRow(group.id,index,{brand:e.target.value})} style={{...inp,fontSize:11,width:110,padding:4}} />:name==="pack"?<input aria-label={`Pack for ${row.description}`} disabled={evidence.knownItem} value={evidence.knownItem?evidence.pack.value||"":row.packSize||""} placeholder="e.g. 4/10 LB" onChange={e=>updateParsedRow(group.id,index,{packSize:e.target.value})} style={{...inp,fontSize:11,width:105,padding:4}} />:name==="sellingUnit"?<><select aria-label={`Quoted price per unit for ${row.description}`} disabled={evidence.knownItem&&!!f.value} value={evidence.knownItem?f.value||"":row.sellingUnit||""} onChange={e=>updateParsedRow(group.id,index,{sellingUnit:e.target.value,sellingUnitSource:"manual"})} style={{...inp,fontSize:11,width:105,padding:4}}><option value="">{f.value?`Likely ${f.value}`:"Select unit"}</option>{quotedUnits.map(unit=><option key={unit.value} value={unit.value}>{unit.label}</option>)}</select>{!evidence.knownItem&&!row.sellingUnit&&f.value&&<button title={f.reason} onClick={()=>updateParsedRow(group.id,index,{sellingUnit:f.value,sellingUnitSource:"manual"})} style={{border:0,background:"#FFF3E0",color:"#875200",fontSize:10,cursor:"pointer"}}>Use {f.value}</button>}</>:f.value==null?name==="itemNumber"?"New number on save":"—":name==="price"||name==="unitCost"?formatMoney(f.value):f.value}{name==="unitCost"&&f.value!=null&&evidence.pack.value&&<small style={{display:"block"}}>per {evidence.unitCost.unit||"unit"}</small>}{f.accuracy!=null&&<small style={{display:"block",color:f.accuracy<100?"#a65b00":"#45735b"}}>{f.accuracy}%</small>}</td>;
               })}<td><button onClick={()=>setDetailKey(detailKey===key?null:key)}>Details{invoiceClues.get(key)?.conflicts.length?" ⚠":""}</button></td></tr>)}</tbody></table>
             {detailKey&&(()=>{const entry=evidenceRows.find(e=>e.key===detailKey);if(!entry)return null;const clues=invoiceClues.get(detailKey);return <div style={{background:"#f4f6fa",padding:12,marginTop:8,fontSize:12}}><b>{entry.evidence.knownItem?"Known vendor item — saved KERDOS link, updating price":"New or unfinished item — resolve fields"} · {entry.group.name}</b><div style={{marginTop:4}}>Source: {entry.evidence.source}</div>{entry.evidence.conflicts?.length>0&&<div style={{color:"#9B4400"}}>New quote held for review: {entry.evidence.conflicts.join(" ")}</div>}{clues?.matches.length>0&&<div style={{marginTop:7}}>Matched {clues.matches.length} prior invoice line(s) for this vendor.</div>}{Object.entries(clues?.suggestions||{}).map(([field,suggestion])=><div key={field} style={{marginTop:5}}>Invoice {suggestion.source} says {field}: <b>{suggestion.value}</b> <button onClick={()=>updateParsedRow(entry.group.id,entry.index,{[field]:suggestion.value,[`${field}Source`]:"invoice",invoiceSources:{...entry.row.invoiceSources,[field]:suggestion.source},originalFields:entry.row.originalFields||{description:entry.row.description,brand:entry.row.brand,packSize:entry.row.packSize,sellingUnit:entry.row.sellingUnit}})}>Use invoice value</button></div>)}{clues?.conflicts.map((conflict,index)=><div key={index} style={{color:"#9B4400",marginTop:5}}>{conflict}</div>)}{!!clues?.conflicts.length&&<button onClick={()=>setAcceptedInvoiceConflicts(prev=>new Set([...prev,detailKey]))} disabled={acceptedInvoiceConflicts.has(detailKey)} style={{marginTop:6}}>{acceptedInvoiceConflicts.has(detailKey)?"Invoice difference reviewed":"Keep sheet value after review"}</button>}{["itemNumber","vendor","category","product","brand","pack","price","priceBasis","unitCost"].map(name=><div key={name} style={{marginTop:5}}><b>{name}:</b> {entry.evidence[name].value??"blank"} · {entry.evidence[name].accuracy??"not stated"}% — {entry.evidence[name].reason}</div>)}<div style={{marginTop:7}}>Percentages are rule-based evidence levels, not measured error probabilities.</div></div>;})()}
           </div>}
@@ -750,7 +740,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
               {result.identified.some(item=>item.track!=="exact"||item.confidence!==100||!item.packSize)&&<div style={{fontSize:11,color:"#666"}}>Finish mapping these products in Item Catalog before their prices appear in the Order Guide.</div>}
             </div>}
             {result.error&&<div style={{background:"#FFF3E0",color:"#E65100",padding:"10px 12px",borderRadius:8,fontSize:13,marginTop:12,textAlign:"left"}}>{result.error}</div>}
-            {result.basisReview>0&&<div style={{background:"#FFF3E0",color:"#875200",padding:"10px 12px",borderRadius:8,fontSize:13,marginTop:12,textAlign:"left"}}>{result.basisReview} item{result.basisReview===1?"":"s"} placed in your catalog with quoted amount retained, but selling unit unresolved. Their prices cannot enter the Order Guide until corrected in Item Catalog.</div>}
+            {result.basisReview>0&&<div style={{background:"#FFF3E0",color:"#875200",padding:"10px 12px",borderRadius:8,fontSize:13,marginTop:12,textAlign:"left"}}>{result.basisReview} incoming row{result.basisReview===1?"":"s"} saved for review in Item Catalog. Open the row details for the specific field that needs attention. Existing item links and saved quotations are retained; unresolved incoming quotes are not used for ordering.</div>}
             <button onClick={onClose} style={{...btn("#003584"),marginTop:16}}>Done</button>
           </div>
         )}

@@ -1,6 +1,7 @@
 // KERDOS deterministic procurement primitives.
 // Pure functions only: no UI, database, client, vendor, or industry assumptions.
-import {categoryContext,packContext} from "./knowledge/category-profiles.js";
+import {categoryContext,configureCategoryProfile,industryProductContext,industryVocabulary} from "./knowledge/category-profiles.js";
+import {compileDictionary} from "./core/term-dictionary.js";
 
 // One named place for the auto-link cutoff instead of the same magic
 // number repeated at each call site. At or above this score two
@@ -46,7 +47,7 @@ const UNIT_DEFINITIONS = {
   FT:{dimension:"length",base:"MM",factor:304.8,aliases:["ft","foot","feet"]},
   YD:{dimension:"length",base:"MM",factor:914.4,aliases:["yd","yard","yards"]},
   // count -> each
-  EA:{dimension:"count",base:"EA",factor:1,aliases:["ea","each","piece","pieces","pc","pcs"]},
+  EA:{dimension:"count",base:"EA",factor:1,aliases:["ea","each","piece","pieces","pc","pcs","pce","pces"]},
   CT:{dimension:"count",base:"EA",factor:1,aliases:["ct","count"]},
   DOZ:{dimension:"count",base:"EA",factor:12,aliases:["doz","dozen","dz"]},
 };
@@ -60,20 +61,22 @@ const BASE_PACKAGING = [
 // The live vocabulary: base plus whatever configureVocabulary() merged in.
 // One organization is active per session, so this is process state rather
 // than a parameter threaded through every call.
-let STOPWORDS, PACKAGING_ALIASES, UNIT_LOOKUP, SYNONYMS, UNIT_ALTERNATION, MEASURE_RE;
+let STOPWORDS, PACKAGING_ALIASES, UNIT_LOOKUP, SYNONYMS, UNIT_ALTERNATION, MEASURE_RE, customTerms;
 
 function escapeRegExp(text) { return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
-function configureVocabulary(rows=[]) {
+function configureVocabulary(rows=[],includeIndustry=true) {
   STOPWORDS = new Set(BASE_STOPWORDS);
   PACKAGING_ALIASES = new Set(BASE_PACKAGING);
   UNIT_LOOKUP = new Map();
   SYNONYMS = new Map();
+  customTerms=compileDictionary({organization:(rows||[]).filter(r=>r.kind==="synonym"&&r.term&&r.canonical)
+    .map(r=>({term:r.canonical,aliases:[r.term],meaning:"Saved organization vocabulary",kind:"product"}))});
   for (const [code, def] of Object.entries(UNIT_DEFINITIONS)) {
     UNIT_LOOKUP.set(code.toLowerCase(), code);
     for (const alias of def.aliases) UNIT_LOOKUP.set(alias.toLowerCase(), code);
   }
-  for (const r of rows) {
+  for (const r of [...(includeIndustry?industryVocabulary():[]),...(rows||[])]) {
     const term = String(r?.term || "").trim().toLowerCase();
     const canonical = String(r?.canonical || "").trim();
     if (!term) continue;
@@ -105,11 +108,25 @@ function canonicalWord(word) {
 }
 
 function normalizeForMatch(value) {
-  return String(value || "").toLowerCase().replace(/[^a-z0-9\s]/g," ").split(/\s+/)
+  return productKnowledge(value).text.toLowerCase().replace(/[^a-z0-9\s]/g," ").split(/\s+/)
     .map(canonicalWord).map(w => SYNONYMS.get(w) || w).filter(w => w.length > 1 && !STOPWORDS.has(w));
 }
 
-configureVocabulary();
+// Initialize base vocabulary without reading the profile during module cycles.
+configureVocabulary([],false);
+
+function productKnowledge(value){
+  const custom=customTerms(value);
+  const result=industryProductContext(custom.text);
+  return {...result,evidence:[...custom.evidence,...result.evidence]};
+}
+
+// Activate the industry and this organization's additions together, including
+// on refresh/offline restore and when changing organizations.
+function configureProcurement({industry=null,vocabulary=[]}={}){
+  configureCategoryProfile(industry);
+  configureVocabulary(vocabulary);
+}
 
 function wordsMatch(a,b) { return canonicalWord(a) === canonicalWord(b); }
 
@@ -233,9 +250,11 @@ function parsePackSize(raw) {
       levels:outerQty>1?[{quantity:outerQty,type:"PACKAGE"},{quantity:1,type:unit}]:[{quantity:1,type:unit}],
       eachStr:`1 ${unit}`,caseStr:outerQty>1?`${outerQty}/1 ${unit}`:`1 ${unit}`};
   }
-  const context=packContext(working);
-  working=context.working;
-  const clean=working.replace(/[×x]/g,"x").replace(/(\d)\s*[-]\s*(?=\d)/g,"$1/").replace(/#/g," lb ").replace(/\s+/g," ").trim();
+  // A dash between a quantity and a unit is punctuation, not a missing
+  // measurement. Keep number/number case structure and trailing qualifiers.
+  const clean=working.replace(/[×x]/g,"x").replace(/(\d)\s*[-]\s*(?=\d)/g,"$1/")
+    .replace(/(\d)\s*[-‐‑–]\s*(?=[a-z])/g,"$1 ")
+    .replace(/#/g," lb ").replace(/\s+/g," ").trim();
   // Vendor packs routinely omit the leading zero: 200/.5 OZ, 4/.5 GAL.
   const number="((?:\\d+(?:\\.\\d+)?|\\.\\d+))";
   // A known unit (any number of words, longest first) is preferred; an
@@ -245,9 +264,16 @@ function parsePackSize(raw) {
   let outerQty=1, innerQty, unitRaw;
   if (m) { outerQty=Number(m[1]); innerQty=Number(m[2]); unitRaw=m[3]; }
   else {
-    m=clean.match(new RegExp(`^${number}\\s*${unit}\\b`));
-    if (!m) return {raw:source,parsed:false,levels:[],total:null,unit:null,dimension:"unknown"};
-    innerQty=Number(m[1]); unitRaw=m[2];
+    // "8/QT" states eight one-quart units. Only known units/container
+    // words qualify; "8/12" still lacks a unit and must remain unresolved.
+    const shorthand=clean.match(new RegExp(`^${number}\\s*/\\s*${unit}\\s*$`));
+    if(shorthand&&(UNIT_LOOKUP.has(shorthand[2])||PACKAGING_ALIASES.has(shorthand[2]))){
+      m=shorthand;outerQty=Number(m[1]);innerQty=1;unitRaw=m[2];
+    }else{
+      m=clean.match(new RegExp(`^${number}\\s*${unit}\\b`));
+      if (!m) return {raw:source,parsed:false,levels:[],total:null,unit:null,dimension:"unknown"};
+      innerQty=Number(m[1]); unitRaw=m[2];
+    }
   }
   // A readable prefix is not a complete pack specification. Extra case
   // components, variable-weight markers or unfamiliar qualifiers require
@@ -255,11 +281,12 @@ function parsePackSize(raw) {
   const remainder=clean.slice(m[0].length).replace(/^[\s.,]+|[\s.,]+$/g,"").trim();
   if(remainder&&!PACKAGING_ALIASES.has(remainder))
     return {raw:source,parsed:false,levels:[],total:null,unit:null,dimension:"unknown"};
+  if(!Number.isFinite(outerQty)||outerQty<=0)return null;
   const measure=measurement(innerQty,unitRaw);
   if (!measure) return null;
   const total=outerQty*innerQty;
   return {
-    raw:source,parsed:true,caseQty:outerQty,unitQty:innerQty,unit:measure.unit,total,catchWeight,qualifiers:context.qualifiers,
+    raw:source,parsed:true,caseQty:outerQty,unitQty:innerQty,unit:measure.unit,total,catchWeight,
     dimension:measure.dimension,baseUnit:measure.baseUnit,baseTotal:round(outerQty*measure.baseQuantity),
     levels: outerQty>1 ? [{quantity:outerQty,type:"PACKAGE"},{quantity:innerQty,type:measure.unit}] : [{quantity:innerQty,type:measure.unit}],
     eachStr:`${innerQty} ${measure.unit}`,caseStr:outerQty>1?`${outerQty}/${innerQty} ${measure.unit}`:`${innerQty} ${measure.unit}`,
@@ -394,7 +421,7 @@ function packFromDescription(description){
 // before it is compared, and a quote that cannot be converted is held
 // for review rather than compared on the wrong footing.
 const CASE_WORDS=new Set(["cs","case","cases","cse","bx","box","boxes","pk","pack","packs","ct","ctn","carton","cartons","pallet","pallets","bag","bags","bdl","bundle","roll","rolls","tray","trays","flat","flats","sleeve","sleeves","tub","tubs","pail","pails","jug","jugs","drum","drums","cn","can","cans","jar","jars","btl","bottle","bottles","kit","kits"]);
-const EACH_WORDS=new Set(["ea","each","pc","pcs","piece","pieces","un","unit","units","hd","head","heads","bn","bunch","bunches","lp","loaf","loaves"]);
+const EACH_WORDS=new Set(["ea","each","pc","pcs","pce","pces","piece","pieces","un","unit","units","hd","head","heads","bn","bunch","bunches","lp","loaf","loaves"]);
 
 function priceBasisFor(sellingUnit){
   if(sellingUnit==null||!String(sellingUnit).trim()) return null;
@@ -491,11 +518,20 @@ function productIdentity(description) {
     if(!UNIT_LOOKUP.has(word) && !PACKAGING_ALIASES.has(word)) measurements.add(`count:${canonicalWord(word)}:${quantity}`);
   }
   const clean=text.replace(new RegExp(MEASURE_RE.source,"gi")," ").replace(/\b\d+\s*[\/x]\s*\d+\b/gi," ");
-  return { core:new Set(productCoreWords(clean)), measurements };
+  const knowledge=productKnowledge(clean);
+  return {core:new Set(productCoreWords(knowledge.text)),measurements,attributes:knowledge.attributes,
+    evidence:knowledge.evidence,unresolved:knowledge.unresolved};
 }
 function compareProductIdentity(a,b) {
   const x=productIdentity(a), y=productIdentity(b);
   const shared=[...x.core].filter(w=>y.core.has(w));
+  for(const field of new Set([...Object.keys(x.attributes),...Object.keys(y.attributes)])){
+    const left=x.attributes[field],right=y.attributes[field],label=field.replace(/_/g," ");
+    if(left&&right&&left!==right)return {status:"different",reason:`Different ${label}: ${left} versus ${right}`,field};
+    if(!left||!right)return {status:"review",reason:`${label} is ${left||right} on one listing and unstated on the other`,field};
+  }
+  const unknown=[...x.unresolved,...y.unresolved];
+  if(unknown.length)return {status:"review",reason:`Unresolved term: ${unknown[0].source||unknown[0].term}. ${unknown[0].meaning}`,field:"terminology"};
   if(!shared.length) return {status:"different",reason:"No shared defining product terms"};
   const onlyA=[...x.core].filter(w=>!y.core.has(w));
   const onlyB=[...y.core].filter(w=>!x.core.has(w));
@@ -571,11 +607,16 @@ function comparePurchasingPack(incoming,existing){
     return {status:"different",reason:`Pack size differs: ${incoming} versus ${existing}`};
   if(a.caseQty!==b.caseQty||Math.abs(a.unitQty*measurement(1,a.unit).baseQuantity-b.unitQty*measurement(1,b.unit).baseQuantity)>0.001)
     return {status:"review",reason:`Case configuration differs: ${incoming} versus ${existing}`};
-  if(JSON.stringify(a.qualifiers||[])!==JSON.stringify(b.qualifiers||[]))
-    return {status:"review",reason:`Pack qualifiers differ: ${incoming} versus ${existing}`};
   if(!!a.catchWeight!==!!b.catchWeight)
     return {status:"review",reason:`One pack is catch-weight and the other fixed-weight: ${incoming} versus ${existing}`};
   return {status:"same",reason:"Pack sizes agree"};
+}
+
+// Equivalent spellings do not erase a catalog's known pack. Every supplied
+// pack must be readable and agree, including inner quantities and dimensions.
+function commonPurchasingPack(values=[]){
+  if(!values.length||values.some(value=>!parsePackSize(value)?.parsed))return null;
+  return values.every(value=>comparePurchasingPack(value,values[0]).status==="same")?values[0]:null;
 }
 
 function bestPurchasingMatch(description,packSize,catalogItems=[]){
@@ -640,8 +681,8 @@ function quoteStatus(item,settings={},now=new Date()){
 }
 
 export {
-  MATCH_POLICY, UNIT_DEFINITIONS, configureVocabulary, normalizeUnit, measurement, parsePackSize, packsEquivalent, normalizedPrice, eachPrice,
+  MATCH_POLICY, UNIT_DEFINITIONS, configureVocabulary, configureProcurement, productKnowledge, normalizeUnit, measurement, parsePackSize, packsEquivalent, normalizedPrice, eachPrice,
   unitsForDimension, pricePerUnit, brandsMatch, priceBasisFor, casePriceFromQuote, quotePriceOnBasis, normalizeGtin, normalizeManufacturerCode, packFromDescription, isAbbreviationOf, abbreviationPairs,
   normalizeForMatch, wordsMatch, classifyCategory, suggestCategory, nextCategoryRange,
-  safeProductScore, productIdentity, compareProductIdentity, comparePurchasingPack, bestPurchasingMatch, bestPurchasingSuggestion, quoteStatus, bestCatalogMatch, bestInvoiceMatch, assertKnownPriceBasis,
+  safeProductScore, productIdentity, compareProductIdentity, comparePurchasingPack, commonPurchasingPack, bestPurchasingMatch, bestPurchasingSuggestion, quoteStatus, bestCatalogMatch, bestInvoiceMatch, assertKnownPriceBasis,
 };

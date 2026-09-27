@@ -5,7 +5,7 @@ import {unitChoices} from "../core/catalog-fields.js";
 import {backend} from "../backend/index.js";
 import {createCatalogService,mappingVerification,mappingGap,GAP_LABELS} from "../services/catalog.js";
 import {createCategoryService} from "../services/categories.js";
-import {bestCatalogMatch,bestPurchasingSuggestion,compareProductIdentity,comparePurchasingPack,parsePackSize,unitsForDimension,suggestCategory,priceBasisFor} from "../procurement.js";
+import {bestCatalogMatch,bestPurchasingSuggestion,compareProductIdentity,comparePurchasingPack,commonPurchasingPack,parsePackSize,unitsForDimension,suggestCategory,priceBasisFor} from "../procurement.js";
 import {blockReason,orderable} from "../core/ordering.js";
 import {compareItems,itemMatchesSearch} from "../core/catalog-browse.js";
 import {formatMoney} from "../localization.js";
@@ -18,7 +18,7 @@ const categoryService=createCategoryService(backend);
 const MULTI_VENDOR_FILTER="__multi_vendor__";
 const CATEGORY_REVIEW_FILTER="__category_review__";
 
-export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,mappings,vendorItems,categories,vocabulary=[],settings={},onUpdated}) {
+export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,mappings,vendorItems,categories,vocabulary=[],onUpdated}) {
   const canManage=role==="owner"||role==="manager";
   const [search,setSearch]=useState("");
   const [rowView,setRowView]=useState(true);
@@ -75,8 +75,9 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
     const linked=linkedByCatalog.get(catalogItemId)||[];
     const packs=[...new Set(linked.map(vi=>vi.pack_size).filter(Boolean))];
     const vendorsCount=new Set(linked.map(vi=>vi.vendor_id)).size;
-    const compared=packs.length===1?comparePurchasingPack(sourcePack,packs[0]):null;
-    return {packs,vendorsCount,brands:[...new Set(linked.map(v=>v.brand||"Brand not stated"))],descriptions:[...new Set(linked.map(v=>v.description))],warning:packs.length>1?"Mixed existing packs — inspect first":compared?.status!=="same"?"Pack needs verification":null};
+    const commonPack=commonPurchasingPack(linked.map(vi=>vi.pack_size));
+    const compared=commonPack?comparePurchasingPack(sourcePack,commonPack):null;
+    return {packs,vendorsCount,brands:[...new Set(linked.map(v=>v.brand||"Brand not stated"))],descriptions:[...new Set(linked.map(v=>v.description))],warning:!commonPack&&packs.length>1?"Mixed or incomplete existing packs — inspect first":compared?.status!=="same"?"Pack needs verification":null};
   }
 
   // Categories are ordered alphabetically - same as Order Guide, so both screens'
@@ -332,8 +333,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
       const others=catalogItems.filter(c=>c.id!==m.catalog_item_id);
       const suggested=vi?bestPurchasingSuggestion(vi.description,vi.pack_size,others.map(ci=>{
         const peers=linkedByCatalog.get(ci.id)||[];
-        const sizes=[...new Set(peers.map(peer=>peer.pack_size).filter(Boolean))];
-        return {...ci,pack_size:sizes.length===1?sizes[0]:null};
+      return {...ci,pack_size:commonPurchasingPack(peers.map(peer=>peer.pack_size))};
       })):null;
       const suggestion=suggested|| (vi?bestCatalogMatch(vi.description,others):null);
       const suggestedVendor=mappings.filter(link=>link.catalog_item_id===suggestion?.catalogItem?.id).map(link=>viMap.get(link.vendor_item_id)).find(link=>link?.pack_size);
@@ -569,7 +569,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
         <div style={{background:"white",borderRadius:10,padding:20,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
           <p style={{color:"#888",fontSize:13,margin:0}}>No items match that search.</p>
         </div>
-      ):rowView?<CatalogRows settings={settings} orgId={orgId} items={groupedItems.flatMap(g=>g.items)} catalogItems={catalogItems} vendorItems={vendorItems} mappings={mappings} vendors={vendors} categories={categories} vocabulary={vocabulary} canManage={canManage} onUpdated={onUpdated} onDetails={id=>{setRowView(false);setMapPanelOpenFor(id);}} />:groupedItems.map(group=>(
+      ):rowView?<CatalogRows orgId={orgId} items={groupedItems.flatMap(g=>g.items)} catalogItems={catalogItems} vendorItems={vendorItems} mappings={mappings} vendors={vendors} categories={categories} vocabulary={vocabulary} canManage={canManage} onUpdated={onUpdated} onDetails={id=>{setRowView(false);setMapPanelOpenFor(id);}} />:groupedItems.map(group=>(
         <div key={group.category} style={{marginBottom:20}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,paddingLeft:2}}>
             {canManage&&<input type="checkbox"

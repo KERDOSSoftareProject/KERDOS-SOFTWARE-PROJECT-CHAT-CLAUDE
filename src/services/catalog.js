@@ -2,7 +2,7 @@
 // only on the provider's generic table capability; UI code never names or
 // imports a database vendor.
 import {prepareCatalogCorrection} from "./catalog-rows.js";
-import {bestPurchasingMatch,bestPurchasingSuggestion,suggestCategory,nextCategoryRange,compareProductIdentity,comparePurchasingPack,brandsMatch,parsePackSize,abbreviationPairs} from "../procurement.js";
+import {bestPurchasingMatch,bestPurchasingSuggestion,suggestCategory,nextCategoryRange,compareProductIdentity,comparePurchasingPack,commonPurchasingPack,brandsMatch,parsePackSize,abbreviationPairs} from "../procurement.js";
 
 // An association is a customer's assertion about identity. Ordering eligibility
 // additionally requires agreement with the existing vendor product's pack and
@@ -133,9 +133,9 @@ export function createCatalogService(backend){
       const byId=new Map(vendorItems.map(vi=>[vi.id,vi]));
       const candidates=catalogItems.map(ci=>{
         const linked=mappings.map(m=>m.catalog_item_id===ci.id?byId.get(m.vendor_item_id):null).filter(Boolean);
-        const knownPacks=[...new Set(linked.map(vi=>vi.pack_size).filter(Boolean))];
+        const knownPack=commonPurchasingPack(linked.map(vi=>vi.pack_size));
         const knownBrands=[...new Set(linked.map(vi=>vi.brand).filter(Boolean))];
-        return {...ci,pack_size:knownPacks.length===1?knownPacks[0]:null,knownBrand:knownBrands.length===1?knownBrands[0]:null,
+        return {...ci,pack_size:knownPack,knownBrand:knownBrands.length===1?knownBrands[0]:null,
           linkedVendorItems:linked,
           otherVendorPresent:!!vendorId&&linked.some(vi=>vi.vendor_id&&vi.vendor_id!==vendorId)};
       });

@@ -2,6 +2,7 @@ import {useMemo,useState} from "react";
 import {backend,backendInfo} from "../backend/index.js";
 import {createCategoryService,holdingPen} from "../services/categories.js";
 import {btn,inp} from "../ui/styles.js";
+import {industryDictionary} from "../knowledge/category-profiles.js";
 
 const categoryService=createCategoryService(backend);
 function withTimeout(promise,ms,label){return Promise.race([promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error(`${label} timed out after ${ms/1000}s - check your connection and try again`)),ms))]);}
@@ -21,6 +22,14 @@ export function CatalogPanel({orgId,orgIndustry,categories,catalogItems,vocabula
   const [reclassifying,setReclassifying]=useState(false);
   const [reclassifyMsg,setReclassifyMsg]=useState("");
   const [error,setError]=useState("");
+  const [dictionarySearch,setDictionarySearch]=useState("");
+  const bundled=useMemo(()=>industryDictionary(orgIndustry),[orgIndustry]);
+  const dictionaryEntries=useMemo(()=>Object.entries(bundled.groups).flatMap(([group,entries])=>entries.map(entry=>({...entry,group}))),[bundled]);
+  const dictionaryMatches=useMemo(()=>{
+    const query=dictionarySearch.trim().toLowerCase();
+    if(!query)return [];
+    return dictionaryEntries.filter(entry=>[entry.term,...entry.aliases,entry.meaning,entry.group].some(text=>text.toLowerCase().includes(query)));
+  },[dictionaryEntries,dictionarySearch]);
 
   const uncategorizedCategory=useMemo(()=>holdingPen(categories),[categories]);
 
@@ -209,6 +218,18 @@ export function CatalogPanel({orgId,orgIndustry,categories,catalogItems,vocabula
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"24px 0 6px"}}>
         <h3 style={{margin:0,fontSize:16,color:"white"}}>Vocabulary</h3>
       </div>
+      {dictionaryEntries.length>0&&<div style={{background:"white",borderRadius:10,padding:14,marginBottom:12}}>
+        <strong>{orgIndustry} dictionaries active · {dictionaryEntries.length} entries</strong>
+        <p style={{fontSize:12,color:"#526174",margin:"6px 0 10px"}}>Included automatically: restaurant, chef, food, ingredient, hospitality, and slang terms. Product meanings support matching. Ambiguous terms need context; service slang explains language without changing products or availability.</p>
+        <input aria-label="Search industry dictionaries" style={inp} placeholder="Find a term or abbreviation, e.g. Yukon Gold, IQF, all day" value={dictionarySearch} onChange={e=>setDictionarySearch(e.target.value)} />
+        {dictionarySearch.trim()&&<div style={{maxHeight:280,overflowY:"auto",marginTop:8}}>
+          {dictionaryMatches.length===0?<div style={{fontSize:12}}>No bundled entry found. You can add a verified meaning below.</div>:dictionaryMatches.map(entry=><div key={`${entry.group}:${entry.term}`} style={{padding:"8px 0",borderTop:"1px solid #E2E8F0",fontSize:12}}>
+            <b>{entry.term}</b> <span style={{color:"#526174"}}>· {entry.group} · {entry.kind==="product"?(entry.context?"Context required":"Product terminology"):entry.kind==="ambiguous"?"Meaning needs confirmation":"Reference meaning"}</span>
+            {entry.aliases.length>0&&<div>Also written: {entry.aliases.join(", ")}</div>}
+            <div style={{color:"#526174"}}>{entry.meaning}</div>
+          </div>)}
+        </div>}
+      </div>}
       <div style={{fontSize:12,color:"rgba(255,255,255,0.7)",marginBottom:10}}>
         How the matching engine reads this trade's language. Units and packaging words are kept out of product names; synonyms make two spellings the same word; stopwords carry no meaning.
       </div>
@@ -234,7 +255,7 @@ export function CatalogPanel({orgId,orgIndustry,categories,catalogItems,vocabula
       </div>
       {(vocabulary||[]).length===0?(
         <div style={{background:"white",borderRadius:10,padding:16,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
-          <p style={{color:"#888",fontSize:13,margin:0}}>No vocabulary yet — load the starter pack above, or add terms as you meet them on price sheets.</p>
+          <p style={{color:"#888",fontSize:13,margin:0}}>No custom vocabulary yet. {dictionaryEntries.length?"The bundled industry dictionaries are already active. Add verified local terms above.":"Load the starter pack above, or add terms as you meet them on price sheets."}</p>
         </div>
       ):["synonym","unit","packaging","stopword"].map(kind=>{
         const rows=(vocabulary||[]).filter(v=>v.kind===kind).sort((a,b)=>a.term.localeCompare(b.term));
@@ -272,4 +293,3 @@ export function CatalogPanel({orgId,orgIndustry,categories,catalogItems,vocabula
     </div>
   );
 }
-
