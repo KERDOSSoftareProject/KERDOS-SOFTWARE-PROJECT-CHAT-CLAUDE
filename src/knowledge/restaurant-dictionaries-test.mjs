@@ -89,3 +89,11 @@ assert.equal(compareProductIdentity("EVOO","EXTRA VIRGIN OLIVE OIL").status,"sam
 assert.equal(Object.keys(industryDictionary("Restaurant").groups).length,6);
 configureProcurement();
 console.log(`Restaurant dictionaries: ${same.length} positive and ${distinct.length} negative product cases; context, slang, pack, shared matcher, and industry isolation checks passed.`);
+
+configureProcurement({industry:"Restaurant",vocabulary:[]});
+for(const name of ["GRANULATED GARLIC","SUN DRIED TOMATOES","GARLIC POWDER","CANNED ARTICHOKE HEARTS","BREADED EGGPLANT","SWEET POTATO FRIES","FROZEN BROCCOLI"])
+  assert.notEqual(suggestCategory(name,categories)?.category.id,"p",`${name} is not fresh Produce`);
+assert.equal(suggestCategory("FRESH GARLIC",[{id:"p",name:"Produce",keywords:["garlic"]},{id:"g",name:"General",keywords:[]}]).category.id,"p");
+assert.equal(suggestCategory("GRANULATED GARLIC",[{id:"p",name:"Produce",keywords:["garlic"]}]),null,"do not force preserved food into Produce when no suitable category exists");
+configureProcurement({industry:"Construction",vocabulary:[]});
+assert.equal(suggestCategory("GRANULATED GARLIC",[{id:"p",name:"Produce",keywords:["garlic"]},{id:"g",name:"General",keywords:[]}]).category.id,"p","restaurant form rules do not apply to another industry");

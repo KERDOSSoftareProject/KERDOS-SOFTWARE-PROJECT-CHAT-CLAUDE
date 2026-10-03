@@ -1,4 +1,5 @@
-import {casePriceFromQuote,parsePackSize,pricePerUnit,priceBasisFor,compareProductIdentity,comparePurchasingPack,suggestCategory,quoteStatus,brandsMatch} from "../procurement.js";
+import {calculatedUnitCost} from "./quote-controls.js";
+import {casePriceFromQuote,parsePackSize,priceBasisFor,compareProductIdentity,comparePurchasingPack,suggestCategory,quoteStatus,brandsMatch} from "../procurement.js";
 import {mappingVerification} from "../services/catalog.js";
 
 export const CATALOG_COLUMNS=[
@@ -10,13 +11,23 @@ const BASE_UNITS=[["CASE","Case / full pack"],["EACH","Each / inner item"],["LB"
   ["GAL","Gallons (US)"],["QT","Quarts (US)"],["PT","Pints (US)"],["FLOZ","Fluid ounces (US)"],
   ["KG","Kilograms"],["G","Grams"],["L","Liters"],["ML","Milliliters"],["DOZ","Dozen"],
   ["FT","Feet"],["IN","Inches"],["YD","Yards"],["M","Meters"],["CM","Centimeters"],["MM","Millimeters"]];
-export function unitChoices(vocabulary=[],pack=false){
-  const choices=pack?[["EA","Each / count"],...BASE_UNITS.filter(([code])=>!["CASE","EACH"].includes(code))]:BASE_UNITS;
+export function unitChoices(vocabulary=[],pack=false,industry=""){
+  const restaurant=String(industry).trim().toLowerCase()==="restaurant";
+  const lengthUnits=new Set(["FT","IN","YD","M","CM","MM"]);
+  const base=restaurant?BASE_UNITS.filter(([code])=>!lengthUnits.has(code)):BASE_UNITS;
+  const choices=pack?[["EA","Each / count"],...base.filter(([code])=>!["CASE","EACH"].includes(code))]:base;
+  // Industry defaults are short. Vocabulary aliases resolve to one choice,
+  // rather than showing both "pound" and "pounds" or "bunch" and "bunches".
   const seen=new Set();
-  return [...choices,...vocabulary.filter(v=>v.kind==="unit"||(!pack&&v.kind==="packaging")).map(v=>[v.term,v.term])]
-    .filter(([value])=>value&&!seen.has(value)&&(seen.add(value),true)&&!!priceBasisFor(value))
-    .map(([value,label])=>({value,label}));
+  return [...choices,...(restaurant?[]:vocabulary.filter(v=>v.kind==="unit"||(!pack&&v.kind==="packaging")).map(v=>[v.term,v.term]))]
+    .filter(([value])=>{
+      const basis=priceBasisFor(value);
+      const canonical=basis?.basis==="measure"?basis.unit:basis?.basis;
+      if(!value||!basis||seen.has(canonical))return false;
+      seen.add(canonical);return true;
+    }).map(([value,label])=>({value,label}));
 }
+
 const field=(value,accuracy,reason)=>({value,accuracy,reason});
 
 // ---- Accuracy ----------------------------------------------------------
@@ -29,7 +40,7 @@ const field=(value,accuracy,reason)=>({value,accuracy,reason});
 const STATED=90,DERIVED=90,GUESSED=70,DOUBTFUL=60;
 const empty=(value)=>value==null||value==="";
 
-export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peers=[],categories=[]}){
+export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peers=[],categories=[],industry=""}){
   const vi=vendorItem,pack=parsePackSize(vi.pack_size),basis=priceBasisFor(vi.selling_unit);
   const amount=vi.price==null||vi.price===""?null:Number(vi.price);
   const hasPrice=Number.isFinite(amount)&&amount>0;
@@ -37,7 +48,7 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   const provenance=vi.import_row?.evidence||row;
   const changes=vi.import_row?.reviewRequired?(vi.import_row?.changes||[]).map(c=>c.field):[];
   const casePrice=hasPrice&&basis?casePriceFromQuote(amount,basis.basis,basis.unit||vi.selling_unit,vi.pack_size):null;
-  const per=casePrice!=null&&pack?.parsed?pricePerUnit(casePrice,vi.pack_size):null;
+  const per=calculatedUnitCost(vi,{industry});
   const manual=vi.field_resolutions||{};
   const byClient=(key)=>Object.hasOwn(manual,key);
   const otherVendors=peers.filter(p=>p.vendor_id&&p.vendor_id!==vi.vendor_id);
@@ -73,7 +84,7 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   // Quoted unit: stated on the sheet, chosen for the whole sheet, or set here.
   let unitAcc=null,unitWhy="";
   if(!empty(vi.selling_unit)){
-    if(!basis){unitAcc=DOUBTFUL;unitWhy="Not a unit KERDOS recognises";}
+    if(!basis){unitAcc=DOUBTFUL;unitWhy=["WEIGHT","VOLUME","MEASURE"].includes(vi.selling_unit)?"Choose the measurement for this quoted price":"Not a unit KERDOS recognises";}
     else{
       unitAcc=byClient("selling_unit")?STATED:provenance.sellingUnitSource==="sheet"?DERIVED:STATED;
       unitWhy=provenance.sellingUnitSource==="remembered"?"Reused from this vendor’s verified product and pack":byClient("selling_unit")?"Set by you":provenance.sellingUnitSource==="sheet"?"Applied to the whole sheet at import":"Stated on the sheet";
@@ -110,7 +121,7 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
     if(item.category_review&&independent?.confidence==="confident"&&independent.category?.id===category.id){
       catAcc=DERIVED;catWhy=independent.reason;
     }
-    if(independent?.confidence==="confident"&&independent.category?.id!==category.id){
+    if((independent?.confidence==="confident"||independent?.reason?.includes("Prepared product form"))&&independent.category?.id!==category.id){
       catAcc=Math.min(catAcc,GUESSED);
       catWhy+=`; description points to ${independent.category.name}; check the source and category`;
     }

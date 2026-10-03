@@ -19,14 +19,25 @@ export function restaurantCategoryContext(words, categories) {
     return choose([/^(dry goods|grocery|soup bases|pantry)$/i,/^general$/i],"Prepared soup base or stock");
   if(has("swiss","provolone","cheddar","mozzarella")&&!has("chard","dressing","sauce","bread","cracker","crackers","powder","sandwich","flavored"))
     return choose([/^dairy$/i,/^cheese$/i],"Recognized cheese variety");
-  const produce = categories.find(c => String(c.name || "").toLowerCase() === "produce");
-  const prepared = categories.find(c => /^(prepared foods|frozen foods|frozen prepared foods)$/i.test(c.name || ""));
-  const general = categories.find(c => String(c.name || "").toLowerCase() === "general");
-  // The legacy Restaurant template has Produce and General. Only activate
-  // this profile with that vocabulary, never for an unrelated industry.
-  if (!produce || (!prepared && !general)) return null;
-  const produceTerms = new Set((Array.isArray(produce.keywords) ? produce.keywords : [])
-    .flatMap(term => String(term).toLowerCase().split(/[^a-z]+/)).filter(Boolean));
-  if (!words.some(w => produceTerms.has(w) || produceTerms.has(`${w}s`)) || !words.some(w => PREPARED.has(w))) return null;
-  return {category:prepared || general, confidence:"guess", reason:"Prepared product form overrides raw produce ingredient; review placement"};
+  const produce=usable.find(c=>/^produce$/i.test(c.name||""));
+  if(!produce)return null;
+  const produceTerms=new Set((Array.isArray(produce.keywords)?produce.keywords:[])
+    .flatMap(term=>String(term).toLowerCase().split(/[^a-z]+/)).filter(Boolean));
+  const vegetables=["garlic","tomato","tomatoes","onion","potato","eggplant","artichoke","pepper","carrot","lettuce","broccoli","spinach"];
+  const hasIngredient=words.some(w=>produceTerms.has(w)||produceTerms.has(`${w}s`)||vegetables.includes(w));
+  if(!hasIngredient)return null;
+  const chooseForm=(names,reason)=>choose(names,reason)||{excludedCategoryIds:[produce.id],reason};
+  // Fresh Produce excludes preserved, dried, frozen and prepared forms.
+  // Specific preparation words outweigh the raw ingredient's keyword.
+  if(has("granulated","powder","powdered","dehydrated","dried","sundried","dry"))
+    return chooseForm([/^(dry goods|grocery|pantry|spices|seasonings)$/i,/^general$/i],"Prepared product form: dried or powdered ingredient is not fresh produce");
+  if(has("canned","jarred","marinated","pickled","preserved"))
+    return chooseForm([/^(canned goods|canned|preserved foods|grocery|dry goods|pantry)$/i,/^general$/i],"Prepared product form: preserved ingredient is not fresh produce");
+  if(has("frozen"))
+    return chooseForm([/^(frozen foods|frozen|frozen prepared foods)$/i,/^general$/i],"Prepared product form: frozen ingredient is not fresh produce");
+  if(words.some(w=>PREPARED.has(w))){
+    const placement=chooseForm([/^(prepared foods|prepared|frozen prepared foods)$/i,/^general$/i],"Prepared product form: prepared ingredient is not fresh produce");
+    return {...placement,confidence:"guess"};
+  }
+  return null;
 }

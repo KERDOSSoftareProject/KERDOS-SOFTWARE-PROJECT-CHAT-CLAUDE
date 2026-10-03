@@ -20,6 +20,17 @@ try{
   assert.match(missing,/Quoted unit missing or unresolved: 1/);
   assert.match(missing,/Apply changes/);
   assert.match(missing,/Details/);
+  assert.match(html,/aria-label="KERDOS item number for undefined"/);
+  assert.match(html,/>Weight<\/option>/);assert.match(html,/>Volume<\/option>/);
+  assert.match(html,/aria-label="Unit cost metric for undefined"/);
+  const weightHtml=renderToStaticMarkup(createElement(CatalogRows,{...props,vendorItems:[{...row,selling_unit:'LB'}]}));
+  assert.match(weightHtml,/aria-label="Quoted per for undefined measurement"/);
+  assert.ok(!weightHtml.includes('Select volume unit'));
+  const partialHtml=renderToStaticMarkup(createElement(CatalogRows,{...props,vendorItems:[{...row,selling_unit:'WEIGHT'}]}));
+  assert.match(partialHtml,/Select weight unit/);assert.match(partialHtml,/Undetermined/);
+  const restaurantHtml=renderToStaticMarkup(createElement(CatalogRows,{...props,industry:"Restaurant"}));
+  assert.ok(!restaurantHtml.includes(">Yards</option>"));
+  assert.ok(!restaurantHtml.includes(">Meters</option>"));
   assert.ok(!html.includes("Previously seen pack sizes"));
   assert.match(html,/>Case<\/option>/);
   assert.match(html,/>Each<\/option>/);

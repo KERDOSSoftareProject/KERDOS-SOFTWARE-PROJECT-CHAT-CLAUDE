@@ -67,3 +67,8 @@ assert.equal(knownItemChanges({...incoming,description:""},prior).length,0,"code
 assert.equal(knownItemChanges({...incoming,sellingUnit:"CASE"},prior)[0].field,"sellingUnit");
 assert.equal(knownItemChanges({...incoming,packSize:"1/20 LB"},prior)[0].field,"packSize");
 assert.equal(knownItemChanges({...incoming,brand:"Other brand"},prior)[0].field,"brand");
+
+const restaurantUnits=unitChoices([{kind:"unit",term:"yards",canonical:"YD"},{kind:"packaging",term:"bunches"}],false,"Restaurant");
+assert.deepEqual(restaurantUnits.map(u=>u.value),["CASE","EACH","LB","OZ","GAL","QT","PT","FLOZ","KG","G","L","ML","DOZ"]);
+assert.ok(!unitChoices([],true,"Restaurant").some(u=>["CASE","EACH","FT","IN","YD","M","CM","MM"].includes(u.value)));
+assert.ok(unitChoices([],false,"Construction").some(u=>u.value==="YD"),"nonfood industries retain length units");

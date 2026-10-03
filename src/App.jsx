@@ -1399,7 +1399,7 @@ export default function App() {
             {autoPlaceError&&org.role!=="employee"&&<div role="alert" style={{background:"#FFF3E0",padding:12,marginBottom:12,borderRadius:8}}>
               {autoPlaceError} <button disabled={autoPlacing} onClick={()=>setAutoPlaceRetry(n=>n+1)} style={btn("#003584")}>Retry automatic placement</button>
             </div>}
-            <ItemCatalogPanel settings={org.settings} orgId={org.id} role={org.role} productList={productList} vendors={vendors} catalogItems={catalogItems} mappings={mappings}
+            <ItemCatalogPanel industry={org.industry} settings={org.settings} orgId={org.id} role={org.role} productList={productList} vendors={vendors} catalogItems={catalogItems} mappings={mappings}
               vendorItems={vendorItems} categories={categories} vocabulary={vocabulary}
               onUpdated={loadData} />
           </>
@@ -1439,7 +1439,7 @@ export default function App() {
         )}
       </div>
 
-      {showPaste&&org.role!=="employee"&&<PasteModal vendors={vendors} orgId={org.id} orgSettings={org.settings} catalogItems={catalogItems} categories={categories} vocabulary={vocabulary} vendorItems={vendorItems} mappings={mappings} onClose={()=>setShowPaste(false)} onDone={loadData} onFinished={setImportNotice} initialVendorId={selectedVendorId} initialMode={importMode} />}
+      {showPaste&&org.role!=="employee"&&<PasteModal industry={org.industry} vendors={vendors} orgId={org.id} orgSettings={org.settings} catalogItems={catalogItems} categories={categories} vocabulary={vocabulary} vendorItems={vendorItems} mappings={mappings} onClose={()=>setShowPaste(false)} onDone={loadData} onFinished={setImportNotice} initialVendorId={selectedVendorId} initialMode={importMode} />}
       {importNotice&&(
         <div role="status" onClick={()=>setImportNotice(null)} style={{position:"fixed",left:"50%",bottom:24,transform:"translateX(-50%)",background:"#1B5E20",color:"white",padding:"12px 18px",borderRadius:8,fontSize:13,fontWeight:700,boxShadow:"0 6px 20px rgba(0,0,0,0.25)",zIndex:1000,cursor:"pointer"}}>
           {importNotice.message}

@@ -1,3 +1,5 @@
+import {QuotedPerControl} from "./QuotedPerControl.jsx";
+import {comparisonUnits} from "../core/quote-controls.js";
 import {useState,useMemo} from "react";
 import {backend} from "../backend/index.js";
 import {createCatalogRowsService} from "../services/catalog-rows.js";
@@ -16,9 +18,10 @@ function Evidence({field}){
   const color=field.accuracy>=90?"#38704E":field.accuracy>=70?"#8D5900":"#B03A2E";
   return <small title={field.reason} style={{display:"block",marginTop:4,color}}>{field.accuracy}%</small>;
 }
-function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary,canManage,onUpdated,onDetails,peers=[],settings={}}){
+function EditableRow({industry,allCatalogItems,allVendorItems,allMappings,orgId,item,vendorItem,mapping,vendor,categories,vocabulary,canManage,onUpdated,onDetails,peers=[],settings={}}){
   const [draft,setDraft]=useState({});
   const [nameDraft,setNameDraft]=useState(null);
+  const [numberDraft,setNumberDraft]=useState(null);
   const [base,setBase]=useState(null);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
@@ -36,14 +39,19 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
     current.price_basis=basis?.basis||null;
     current.price_unavailable=!(basis&&Number(current.price)>0&&parsePackSize(current.pack_size)?.parsed&&casePriceFromQuote(current.price,basis.basis,basis.unit||current.selling_unit,current.pack_size)!=null);
   }
-  const categoryId=draft.category_id??item.category_id;
+  const linkDirty=numberDraft!=null&&numberDraft.trim()!==String(item.master_item_number);
+  const destination=linkDirty?allCatalogItems.find(ci=>String(ci.master_item_number)===numberDraft.trim()):item;
+  const displayItem=destination||item;
+  const displayPeers=linkDirty&&destination?allMappings.filter(m=>m.catalog_item_id===destination.id&&m.vendor_item_id!==vendorItem.id).map(m=>allVendorItems.find(vi=>vi.id===m.vendor_item_id)).filter(Boolean):peers;
+  const categoryId=linkDirty?displayItem.category_id:draft.category_id??item.category_id;
   const category=categories.find(c=>c.id===categoryId);
-  const evidenceItem={...item,category_id:categoryId,category_review:'category_id' in draft?!!category?.is_holding_pen:item.category_review};
-  const evidence=catalogRowEvidence({item:evidenceItem,vendorItem:current,mapping,vendor,category,peers,categories});
-  const assessment=orderGuideAssessment({item:evidenceItem,vendorItem:current,mapping,vendor,category,peers,categories,settings});
-  const units=unitChoices(vocabulary),packUnits=unitChoices(vocabulary,true);
+  const evidenceItem={...displayItem,category_id:categoryId,category_review:'category_id' in draft?!!category?.is_holding_pen:displayItem.category_review};
+  const previewMapping=linkDirty?{...mapping,catalog_item_id:displayItem.id,comparison_track:"review",confidence_score:null}:mapping;
+  const evidence=catalogRowEvidence({item:evidenceItem,vendorItem:current,mapping:previewMapping,vendor,category,peers:displayPeers,categories,industry});
+  const assessment=orderGuideAssessment({item:evidenceItem,vendorItem:current,mapping:previewMapping,vendor,category,peers:displayPeers,categories,settings});
+  const packUnits=unitChoices(vocabulary,true,industry);
   const nameDirty=nameDraft!=null&&nameDraft.trim()!==(item.name||"");
-  const dirty=Object.keys(draft).length>0||nameDirty;
+  const dirty=Object.keys(draft).length>0||nameDirty||linkDirty;
   function edit(key,value){setBase(b=>b||vendorItem);setDraft(d=>({...d,[key]:value}));setSaved(false);setError("");}
   const parsedPack=parsePackSize(current.pack_size);
   const countPack=parsedPack?.parsed&&["EA","CT"].includes(parsedPack.unit);
@@ -63,9 +71,11 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
     try{
       // One write: the row's fields and the client's item name land
       // together or not at all.
-      const patch={...draft,...(nameDirty?{item_name:nameDraft.trim()}:{})};
+      if(linkDirty&&!destination)throw new Error("Enter an existing KERDOS item number from this catalog.");
+      if(linkDirty&&(nameDirty||Object.hasOwn(draft,"category_id")))throw new Error("Apply the item name/category edits before changing its association.");
+      const patch={...draft,...(nameDirty?{item_name:nameDraft.trim()}:{ }),...(linkDirty?{catalog_item_id:destination.id}:{})};
       await service.save({organizationId:orgId,vendorItem:base||vendorItem,mapping,patch});
-      setDraft({});setNameDraft(null);setBase(null);setPackParts(null);setSaved(true);await onUpdated();
+      setDraft({});setNameDraft(null);setNumberDraft(null);setBase(null);setPackParts(null);setSaved(true);await onUpdated();
     }
     catch(err){setError(err.message||String(err));}
     finally{setBusy(false);}
@@ -75,9 +85,12 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
     <tr style={{background:dirty?"#FFFDF3":"white"}}>
       {CATALOG_COLUMNS.map(([key])=>{
         const f=evidence[key];let content;
-        if(key==="itemNumber")content=<b>#{f.value}</b>;
+        if(key==="itemNumber")content=<>
+          <input aria-label={`KERDOS item number for ${vendorItem.vendor_item_code}`} inputMode="numeric" style={{...inputStyle,fontWeight:700,width:105}} disabled={!canManage||busy} value={numberDraft??String(item.master_item_number)} onChange={e=>{setNumberDraft(e.target.value.replace(/^#/,""));setSaved(false);setError("");}}/>
+          {linkDirty&&<small style={{display:"block",color:destination?"#245785":"#A32B20"}}>{destination?`Link to ${destination.name}`:"Enter an existing KERDOS number"}</small>}
+        </>;
         else if(key==="vendor")content=<><b>{f.value}</b><small style={{display:"block"}}>{vendorItem.vendor_item_code?`Vendor #${vendorItem.vendor_item_code}`:vendorListingLabel(vendorItem)||"NVIM pending"}</small></>;
-        else if(key==="category")content=<select aria-label={`Category for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:130}} disabled={!canManage||busy} value={categoryId||""} onChange={e=>edit("category_id",e.target.value)}><option value="" disabled>Choose category</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>;
+        else if(key==="category")content=<select aria-label={`Category for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:130}} disabled={!canManage||busy||linkDirty} value={categoryId||""} onChange={e=>edit("category_id",e.target.value)}><option value="" disabled>Choose category</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>;
         else if(key==="pack")content=<>
           <select aria-label={`Pack for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:100}} disabled={!canManage||busy} value={shownPack.type} onChange={e=>changePack("type",e.target.value)}>
             <option value="" disabled>Select</option><option value="case">Case</option><option value="each">Each</option>
@@ -86,17 +99,25 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
           {!parsedPack?.parsed&&current.pack_size&&<small style={{display:"block"}}>From sheet: {current.pack_size}</small>}
           {shownPack.unit!=="EA"&&<small style={{display:"block"}}>Each: {shownPack.size} {shownPack.unit}{shownPack.catchWeight?" (average)":""}</small>}
         </>;
-        else if(key==="itemName")content=<input aria-label={`Item name for ${item.master_item_number}`} style={{...inputStyle,minWidth:180,fontWeight:700}} disabled={!canManage||busy} value={nameDraft??item.name??""} placeholder="Your name for this product" onChange={e=>setNameDraft(e.target.value)} />;
+        else if(key==="itemName")content=<input aria-label={`Item name for ${item.master_item_number}`} style={{...inputStyle,minWidth:180,fontWeight:700}} disabled={!canManage||busy||linkDirty} value={linkDirty?displayItem.name:nameDraft??item.name??""} placeholder="Your name for this product" onChange={e=>setNameDraft(e.target.value)} />;
         else if(fields[key])content=<input aria-label={`${key} for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:key==="product"?220:95}} disabled={!canManage||busy} type={key==="price"?"number":"text"} step={key==="price"?"any":undefined} min={key==="price"?"0":undefined} value={current[fields[key]]??""} placeholder={key==="brand"?"Blank if absent":""} onChange={e=>edit(fields[key],e.target.value)} />;
-        else if(key==="sellingUnit")content=<select aria-label={`Quoted per for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:140}} disabled={!canManage||busy} value={current.selling_unit||""} onChange={e=>edit("selling_unit",e.target.value)}><option value="">Select unit</option>{current.selling_unit&&!units.some(u=>u.value===current.selling_unit)&&<option value={current.selling_unit}>{current.selling_unit}</option>}{units.map(u=><option key={u.value} value={u.value}>{u.label}</option>)}</select>;
-        else content=f.value==null?<span style={{color:"#8D5900",fontWeight:700}}>Undetermined</span>:<><b>{formatMoney(f.value)}</b><small style={{display:"block"}}>per {f.unit}{dirty?" · preview":""}</small></>;
+        else if(key==="sellingUnit")content=<QuotedPerControl industry={industry} vocabulary={vocabulary} label={`Quoted per for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:130}} disabled={!canManage||busy} value={current.selling_unit||""} onChange={value=>edit("selling_unit",value)}/>;
+        else content=<>
+          {f.value==null?<span style={{color:"#8D5900",fontWeight:700}}>Undetermined</span>:<b>{formatMoney(f.value)}</b>}
+          <select aria-label={`Unit cost metric for ${vendorItem.vendor_item_code}`} style={{...inputStyle,marginTop:4,minWidth:100}} disabled={!canManage||busy||!comparisonUnits(current.pack_size).length} value={current.unit_cost_unit||""} onChange={e=>edit("unit_cost_unit",e.target.value)}>
+            <option value="">Auto{f.unit?` (${f.unit==="FLOZ"?"FL OZ":f.unit})`:""}</option>
+            {current.unit_cost_unit&&!comparisonUnits(current.pack_size).includes(current.unit_cost_unit)&&<option value={current.unit_cost_unit}>{current.unit_cost_unit} — check pack</option>}
+            {comparisonUnits(current.pack_size).map(unit=><option key={unit} value={unit}>{unit==="EA"?"Each":unit==="FLOZ"?"FL OZ":unit}</option>)}
+          </select>
+          {f.unit&&<small style={{display:"block"}}>per {f.unit}{dirty?" · preview":""}</small>}
+        </>;
         const sourceKey={product:"description",pack:"packSize",sellingUnit:"sellingUnit"}[key]||key;
         const change=vendorItem.import_row?.reviewRequired&&vendorItem.import_row?.changes?.find(c=>c.field===sourceKey);
         return <td key={key} style={{...cellStyle,background:change?"#FFF3E0":undefined}}>{content}<Evidence field={f}/>{change&&<small style={{display:"block",color:"#9B4400"}} title={change.reason}>Changed on new sheet</small>}</td>;
       })}
       <td style={{...cellStyle,minWidth:115}}>
         {canManage&&<button disabled={!dirty||busy} onClick={save} style={{...btn("#003584","white",{fontSize:11,padding:6})}}>{busy?"Applying…":"Apply changes"}</button>}
-        {dirty&&<button disabled={busy} onClick={()=>{setDraft({});setNameDraft(null);setBase(null);setPackParts(null);setError("");}} style={{border:0,background:"none",cursor:"pointer",fontSize:11}}>Undo edits</button>}
+        {dirty&&<button disabled={busy} onClick={()=>{setDraft({});setNameDraft(null);setNumberDraft(null);setBase(null);setPackParts(null);setError("");}} style={{border:0,background:"none",cursor:"pointer",fontSize:11}}>Undo edits</button>}
         <button onClick={()=>setDetails(!details)} style={{display:"block",marginTop:6,border:0,background:"none",cursor:"pointer",color:"#245785"}}>Details</button>
         {vendorItem.import_row?.reviewRequired&&<small style={{display:"block",color:"#9B4400"}}>New quote needs review</small>}
         {saved&&<small role="status" style={{color:"#276742"}}>Saved</small>}
@@ -117,6 +138,7 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
         {canManage&&<button disabled={busy} onClick={()=>{const r=vendorItem.import_row.row;edit("price",r.price??"");if(r.description)edit("description",r.description);if(r.brand)edit("brand",r.brand);if(r.packSize)edit("pack_size",r.packSize);edit("selling_unit",r.sellingUnit||"");}} style={{...btn("#FFF","#875200",{fontSize:11,marginTop:6})}}>Review incoming values in this row</button>}
         {canManage&&<button disabled={busy} onClick={()=>{if(window.confirm("Keep the saved product, brand, pack and quoted unit, and accept this incoming amount on that basis?"))edit("price",vendorItem.import_row.row?.price??"");}} style={{...btn("#FFF","#875200",{fontSize:11,marginLeft:8,marginTop:6})}}>Keep saved fields; review new price</button>}
       </div>}
+      <div style={{fontSize:12,marginBottom:6}}>To associate this vendor item with another catalog item, enter its existing KERDOS number and Apply changes. Manual links still undergo product, brand and pack checks.</div>
       <div style={{fontSize:12}}>Source: {vendorItem.import_row?.row?.sourceLine||"Original source is available under Price Sheets."}</div>
       <div style={{fontSize:11,marginTop:6}}>Percentages show how well each value holds up against the rest of the row, the vendor's history and your other vendors. A blank cell has no percentage; it is simply empty.</div>
       <ul style={{fontSize:12}}>{CATALOG_COLUMNS.map(([key,label])=><li key={key}><b>{label}:</b> {evidence[key].reason}</li>)}</ul>
@@ -124,7 +146,7 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
     </td></tr>}
   </>;
 }
-export function CatalogRows({orgId,items,catalogItems,vendorItems,mappings,vendors,categories,vocabulary,canManage,onUpdated,onDetails,settings={}}){
+export function CatalogRows({industry="",orgId,items,catalogItems,vendorItems,mappings,vendors,categories,vocabulary,canManage,onUpdated,onDetails,settings={}}){
   const summary=useMemo(()=>qualificationSummary({catalogItems,vendorItems,mappings,vendors,categories,settings}),[catalogItems,vendorItems,mappings,vendors,categories,settings]);
   const [sort,setSort]=useState({key:"product",direction:1});
   const catalog=new Map(catalogItems.map(i=>[i.id,i])),viById=new Map(vendorItems.map(v=>[v.id,v])),vendorById=new Map(vendors.map(v=>[v.id,v]));
@@ -149,7 +171,7 @@ export function CatalogRows({orgId,items,catalogItems,vendorItems,mappings,vendo
       </details>
     </div>
     <table style={{borderCollapse:"collapse",width:"100%",minWidth:1250,fontSize:12}}><thead><tr>{CATALOG_COLUMNS.map(([key,label])=><th key={key} style={{...cellStyle,textAlign:"left",background:"#E8F0FA"}} aria-sort={sort.key===key?sort.direction===1?"ascending":"descending":"none"}><button style={{border:0,background:"none",fontWeight:700,cursor:"pointer"}} onClick={()=>setSort(s=>({key,direction:s.key===key?-s.direction:1}))}>{label}{sort.key===key?sort.direction===1?" ↑":" ↓":""}</button></th>)}<th style={cellStyle}>Actions</th></tr></thead>
-      <tbody>{rows.map(row=><EditableRow settings={settings} key={row.vendorItem.id} {...row} orgId={orgId} categories={categories} vocabulary={vocabulary} canManage={canManage} onUpdated={onUpdated} onDetails={()=>onDetails(row.item.id)} />)}
+      <tbody>{rows.map(row=><EditableRow industry={industry} allCatalogItems={catalogItems} allVendorItems={vendorItems} allMappings={mappings} settings={settings} key={row.vendorItem.id} {...row} orgId={orgId} categories={categories} vocabulary={vocabulary} canManage={canManage} onUpdated={onUpdated} onDetails={()=>onDetails(row.item.id)} />)}
       {items.filter(i=>!linked.has(i.catalogItemId)).map(i=><tr key={i.catalogItemId}><td style={cellStyle}>#{i.masterItemNumber}</td><td colSpan={8} style={cellStyle}>{i.name} · No vendor listing linked yet.</td><td><button onClick={()=>onDetails(i.catalogItemId)}>Details</button></td></tr>)}
       </tbody>
     </table>

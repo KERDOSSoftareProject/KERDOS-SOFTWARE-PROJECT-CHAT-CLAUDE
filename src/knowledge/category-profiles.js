@@ -1,3 +1,4 @@
+import {restaurantUnitCostUnits} from "./restaurant-unit-policy.js";
 import {restaurantCategoryContext} from "./restaurant-category-context.js";
 import {restaurantPackContext} from "./restaurant-pack-context.js";
 import {restaurantQuoteContext} from "./restaurant-quote-context.js";
@@ -7,6 +8,7 @@ import {restaurantDictionaries,restaurantUnitVocabulary,RESTAURANT_DICTIONARY_VE
 // Profiles supply industry-specific interpretation; procurement stays generic.
 const profiles=new Map([["restaurant",{
   category:restaurantCategoryContext,quote:restaurantQuoteContext,product:restaurantProductContext,pack:restaurantPackContext,
+  unitCostUnits:restaurantUnitCostUnits,
   dictionaries:restaurantDictionaries,vocabulary:restaurantUnitVocabulary,version:RESTAURANT_DICTIONARY_VERSION,
 }]]);
 let activeProfile=null;
@@ -36,3 +38,5 @@ export function industryDictionary(industry){
 }
 
 export function packContext(text){return activeProfile?.pack?.(text)||{working:text,qualifiers:[]};}
+
+export function industryUnitCostDefaults(industry){return profiles.get(String(industry||" ").trim().toLowerCase())?.unitCostUnits||{};}

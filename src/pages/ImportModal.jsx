@@ -26,7 +26,7 @@ const documents=createDocumentService(backend);
 const importService=createImportService(backend);
 const r2=value=>Math.round(value*100)/100;
 
-export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vocabulary=[],vendorItems=[],mappings=[],onClose,onDone,onFinished,initialVendorId,initialMode}) {
+export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,categories,vocabulary=[],vendorItems=[],mappings=[],onClose,onDone,onFinished,initialVendorId,initialMode}) {
   // The vendor is a choice, never a default: the box opens on "Select
   // vendor" unless you arrived from a specific vendor's page. Nothing can
   // be dropped in until a vendor is chosen, so a sheet can't land under
@@ -52,7 +52,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
   const [invoiceSources,setInvoiceSources]=useState([]);
   const [invoiceLoad,setInvoiceLoad]=useState("loading");
   const [acceptedInvoiceConflicts,setAcceptedInvoiceConflicts]=useState(new Set());
-  const quotedUnits=unitChoices(vocabulary);
+  const quotedUnits=unitChoices(vocabulary,false,industry);
 
   useEffect(()=>{
     if(mode!=="pricelist"||!vendorId)return;

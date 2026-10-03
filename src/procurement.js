@@ -136,6 +136,9 @@ function wordsMatch(a,b) { return canonicalWord(a) === canonicalWord(b); }
 function classifyCategory(description, categories=[], catalogItems=[]) {
   const descWords = normalizeForMatch(description);
   if (!descWords.length) return null;
+  const context=categoryContext(descWords,categories);
+  if(context?.category)return context.category;
+  if(context?.excludedCategoryIds)categories=categories.filter(c=>!context.excludedCategoryIds.includes(c.id));
   const scored=[];
   for (const category of categories) {
     if(category.is_holding_pen)continue;
@@ -176,7 +179,8 @@ function classifyCategory(description, categories=[], catalogItems=[]) {
 function suggestCategory(description, categories=[], catalogItems=[]) {
   const contextWords=normalizeForMatch(description);
   const contextualPlacement=categoryContext(contextWords,categories);
-  if (contextualPlacement) return contextualPlacement;
+  if (contextualPlacement?.category) return contextualPlacement;
+  if(contextualPlacement?.excludedCategoryIds)categories=categories.filter(c=>!contextualPlacement.excludedCategoryIds.includes(c.id));
   const confident=classifyCategory(description,categories,catalogItems);
   if (confident) return {category:confident,confidence:"confident",reason:"Vocabulary and existing items point here"};
   const descWords=normalizeForMatch(description);

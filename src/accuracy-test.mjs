@@ -1,3 +1,4 @@
+import {configureProcurement} from "./procurement.js";
 import assert from "node:assert/strict";
 import {catalogRowEvidence,orderGuideReady} from "./core/catalog-fields.js";
 import {prepareCatalogCorrection} from "./services/catalog-rows.js";
@@ -91,3 +92,17 @@ await test("recordProgress and finalizeDocument write completed keys",async()=>{
 });
 
 console.log(`${passed} passed, 0 failed`);
+
+await test("manual KERDOS association is carried in the atomic row patch",()=>{
+ const target="00000000-0000-0000-0000-000000000070";
+ const prepared=prepareCatalogCorrection({organizationId:"o",vendorItem:{...base,organization_id:"o",row_revision:4},mapping:{...mapping,organization_id:"o"},patch:{catalog_item_id:target,brand:"Hatfield"}});
+ assert.equal(prepared.patch.catalog_item_id,target);assert.equal(prepared.expectedRevision,4);
+ assert.throws(()=>prepareCatalogCorrection({organizationId:"o",vendorItem:{...base,organization_id:"o"},mapping:{...mapping,organization_id:"o"},patch:{catalog_item_id:"2010"}}),/existing KERDOS/);
+});
+
+await test("a prepared vegetable saved as Produce is flagged even when manually assigned",()=>{
+ configureProcurement({industry:"Restaurant",vocabulary:[]});
+ const categories=[{id:"p",name:"Produce",keywords:["eggplant"]},{id:"g",name:"General",keywords:[]}];
+ const e=catalogRowEvidence({item:{...item,category_id:"p"},vendorItem:{...base,description:"BREADED EGGPLANT"},mapping,vendor,category:categories[0],categories});
+ assert.equal(e.category.accuracy,70);
+});

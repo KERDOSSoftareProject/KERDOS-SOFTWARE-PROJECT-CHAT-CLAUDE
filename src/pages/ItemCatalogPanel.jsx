@@ -18,7 +18,7 @@ const categoryService=createCategoryService(backend);
 const MULTI_VENDOR_FILTER="__multi_vendor__";
 const CATEGORY_REVIEW_FILTER="__category_review__";
 
-export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,mappings,vendorItems,categories,vocabulary=[],settings={},onUpdated}) {
+export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,catalogItems,mappings,vendorItems,categories,vocabulary=[],settings={},onUpdated}) {
   const canManage=role==="owner"||role==="manager";
   const [search,setSearch]=useState("");
   const [rowView,setRowView]=useState(true);
@@ -569,7 +569,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
         <div style={{background:"white",borderRadius:10,padding:20,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
           <p style={{color:"#888",fontSize:13,margin:0}}>No items match that search.</p>
         </div>
-      ):rowView?<CatalogRows settings={settings} orgId={orgId} items={groupedItems.flatMap(g=>g.items)} catalogItems={catalogItems} vendorItems={vendorItems} mappings={mappings} vendors={vendors} categories={categories} vocabulary={vocabulary} canManage={canManage} onUpdated={onUpdated} onDetails={id=>{setRowView(false);setMapPanelOpenFor(id);}} />:groupedItems.map(group=>(
+      ):rowView?<CatalogRows industry={industry} settings={settings} orgId={orgId} items={groupedItems.flatMap(g=>g.items)} catalogItems={catalogItems} vendorItems={vendorItems} mappings={mappings} vendors={vendors} categories={categories} vocabulary={vocabulary} canManage={canManage} onUpdated={onUpdated} onDetails={id=>{setRowView(false);setMapPanelOpenFor(id);}} />:groupedItems.map(group=>(
         <div key={group.category} style={{marginBottom:20}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,paddingLeft:2}}>
             {canManage&&<input type="checkbox"
@@ -646,7 +646,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                           <label>Case contains<input aria-label="Inner items per case" type="number" min="1" style={{...inp,width:70,fontSize:11}} value={vendorDraft.caseQty} onChange={e=>setVendorDraft(d=>{const next={...d,caseQty:e.target.value};if(Number(next.caseQty)>0&&Number(next.eachQty)>0)next.packSize=`${next.caseQty}/${next.eachQty} ${next.unit}`;return next;})} /></label>
                           <label>Each size<input aria-label="Size of each inner item" type="number" min="0.001" step="any" style={{...inp,width:75,fontSize:11}} value={vendorDraft.eachQty} onChange={e=>setVendorDraft(d=>{const next={...d,eachQty:e.target.value};if(Number(next.caseQty)>0&&Number(next.eachQty)>0)next.packSize=`${next.caseQty}/${next.eachQty} ${next.unit}`;return next;})} /></label>
                           <label>Unit<select aria-label="Pack measurement unit" style={{...inp,width:95,fontSize:11}} value={vendorDraft.unit} onChange={e=>setVendorDraft(d=>({...d,unit:e.target.value,packSize:Number(d.caseQty)>0&&Number(d.eachQty)>0?`${d.caseQty}/${d.eachQty} ${e.target.value}`:d.packSize}))}>
-                            {[...new Set([vendorDraft.unit,...unitChoices(vocabulary,true).map(u=>u.value)])].map(unit=><option key={unit} value={unit}>{unit}</option>)}
+                            {[...new Set([vendorDraft.unit,...unitChoices(vocabulary,true,industry).map(u=>u.value)])].map(unit=><option key={unit} value={unit}>{unit}</option>)}
                           </select></label>
                           <button disabled={busyMappingId===o.mappingId} onClick={()=>saveVendorEdit(o)} style={{...btn("#003584","white",{fontSize:11})}}>Save correction</button>
                           <div style={{flexBasis:"100%",fontSize:10,color:"#875200"}}>Changing defining fields keeps the KERDOS association but pauses this offer for verification before price comparison.</div>
@@ -655,7 +655,7 @@ export function ItemCatalogPanel({orgId,role,productList,vendors,catalogItems,ma
                       {canManage&&o.priceUnavailable&&!o.quoteBasis&&o.quotedPrice!=null&&<div style={{gridColumn:"1 / -1",background:"#FFF3E0",padding:8,borderRadius:6}}>
                         <b>Quoted amount {formatMoney(o.quotedPrice)} · selling unit unknown.</b> The product stays here; this price cannot compete yet.
                         {basisEditId===o.vendorItemId?<div style={{display:"flex",gap:7,marginTop:7,alignItems:"center"}}>
-                          <select aria-label="Confirm quoted selling unit" value={basisValue} onChange={e=>setBasisValue(e.target.value)} style={{...inp,width:125,fontSize:11}}><option value="">Select unit</option>{unitChoices(vocabulary).map(unit=><option key={unit.value} value={unit.value}>{unit.label}</option>)}</select>
+                          <select aria-label="Confirm quoted selling unit" value={basisValue} onChange={e=>setBasisValue(e.target.value)} style={{...inp,width:125,fontSize:11}}><option value="">Select unit</option>{unitChoices(vocabulary,false,industry).map(unit=><option key={unit.value} value={unit.value}>{unit.label}</option>)}</select>
                           <button disabled={busyMappingId===o.mappingId||!basisValue} onClick={()=>saveBasis(o)} style={{...btn("#003584","white",{fontSize:11})}}>Confirm quoted unit</button>
                           <button onClick={()=>setBasisEditId(null)} style={{...btn("#EEE","#555",{fontSize:11})}}>Cancel</button>
                         </div>:<button onClick={()=>{setBasisEditId(o.vendorItemId);setBasisValue("");}} style={{...btn("#FFF","#875200",{fontSize:11,marginLeft:8})}}>Resolve price unit</button>}
