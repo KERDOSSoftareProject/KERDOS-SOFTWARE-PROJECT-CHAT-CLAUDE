@@ -16,12 +16,7 @@ function Evidence({field}){
   const color=field.accuracy>=90?"#38704E":field.accuracy>=70?"#8D5900":"#B03A2E";
   return <small title={field.reason} style={{display:"block",marginTop:4,color}}>{field.accuracy}%</small>;
 }
-function packLabel(value){
-  const pack=parsePackSize(value);
-  if(!pack?.parsed)return `${value} · needs pack details`;
-  return `${pack.caseQty===1&&pack.unit==="EA"&&pack.unitQty===1?"Each / individual item":"Case / full pack"} · ${pack.caseQty} × ${pack.unitQty} ${pack.unit}${pack.catchWeight?" (average weight)":""}`;
-}
-function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary,packOptions,canManage,onUpdated,onDetails,peers=[],settings={}}){
+function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary,canManage,onUpdated,onDetails,peers=[],settings={}}){
   const [draft,setDraft]=useState({});
   const [nameDraft,setNameDraft]=useState(null);
   const [base,setBase]=useState(null);
@@ -30,8 +25,6 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
   const [saved,setSaved]=useState(false);
   const [details,setDetails]=useState(false);
   const [packParts,setPackParts]=useState(null);
-  const [customPack,setCustomPack]=useState(false);
-  const [packMode,setPackMode]=useState("");
   const original=base||vendorItem;
   const resolutions={...original.field_resolutions};
   const sourceKeys={pack_size:"packSize",selling_unit:"sellingUnit"};
@@ -52,11 +45,18 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
   const nameDirty=nameDraft!=null&&nameDraft.trim()!==(item.name||"");
   const dirty=Object.keys(draft).length>0||nameDirty;
   function edit(key,value){setBase(b=>b||vendorItem);setDraft(d=>({...d,[key]:value}));setSaved(false);setError("");}
-  function openPackEditor(mode=""){
-    const parsed=parsePackSize(current.pack_size);
-    setCustomPack(true);setDetails(true);
-    setPackMode(mode);
-    setPackParts({count:mode==="__each__"?1:parsed?.caseQty||"",size:parsed?.unitQty||"",unit:parsed?.unit||"EA",catchWeight:!!parsed?.catchWeight});
+  const parsedPack=parsePackSize(current.pack_size);
+  const countPack=parsedPack?.parsed&&["EA","CT"].includes(parsedPack.unit);
+  const inferredCount=parsedPack?.parsed?(countPack?parsedPack.total:parsedPack.caseQty):"";
+  const inferredType=parsedPack?.parsed?(inferredCount>1||String(current.pack_size).includes("/")?"case":"each"):"";
+  const shownPack=packParts||{type:inferredType,count:inferredCount,size:countPack?1:parsedPack?.parsed?parsedPack.unitQty:1,unit:countPack?"EA":parsedPack?.parsed?parsedPack.unit:"EA",catchWeight:!!parsedPack?.catchWeight};
+  function changePack(key,value){
+    const parts={...shownPack,[key]:value};
+    if(key==="type"&&value==="each")parts.count=1;
+    setPackParts(parts);
+    if(parts.type&&Number(parts.count)>0&&Number.isInteger(Number(parts.count))&&Number(parts.size)>0&&parts.unit)
+      edit("pack_size",parts.type==="each"?`${parts.size} ${parts.unit}${parts.catchWeight?" AVG":""}`:`${parts.count}/${parts.size} ${parts.unit}${parts.catchWeight?" AVG":""}`);
+    else edit("pack_size","");
   }
   async function save(){
     setBusy(true);setError("");
@@ -65,16 +65,12 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
       // together or not at all.
       const patch={...draft,...(nameDirty?{item_name:nameDraft.trim()}:{})};
       await service.save({organizationId:orgId,vendorItem:base||vendorItem,mapping,patch});
-      setDraft({});setNameDraft(null);setBase(null);setPackParts(null);setCustomPack(false);setPackMode("");setSaved(true);await onUpdated();
+      setDraft({});setNameDraft(null);setBase(null);setPackParts(null);setSaved(true);await onUpdated();
     }
     catch(err){setError(err.message||String(err));}
     finally{setBusy(false);}
   }
   const fields={product:"description",brand:"brand",price:"price"};
-  function packEdit(key,value){
-    const parts={...packParts,[key]:value};setPackParts(parts);
-    if(Number(parts.count)>0&&Number(parts.size)>0&&parts.unit)edit("pack_size",`${parts.count}/${parts.size} ${parts.unit}${parts.catchWeight?" AVG":""}`);
-  }
   return <>
     <tr style={{background:dirty?"#FFFDF3":"white"}}>
       {CATALOG_COLUMNS.map(([key])=>{
@@ -82,7 +78,14 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
         if(key==="itemNumber")content=<b>#{f.value}</b>;
         else if(key==="vendor")content=<><b>{f.value}</b><small style={{display:"block"}}>{vendorItem.vendor_item_code?`Vendor #${vendorItem.vendor_item_code}`:vendorListingLabel(vendorItem)||"NVIM pending"}</small></>;
         else if(key==="category")content=<select aria-label={`Category for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:130}} disabled={!canManage||busy} value={categoryId||""} onChange={e=>edit("category_id",e.target.value)}><option value="" disabled>Choose category</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>;
-        else if(key==="pack")content=<><select aria-label={`Pack for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:175}} disabled={!canManage||busy} value={packMode||current.pack_size||""} onChange={e=>{const value=e.target.value;if(value==="__case__"||value==="__each__"||value==="__custom__")openPackEditor(value);else{setPackMode("");edit("pack_size",value);}}}><option value="">Select pack type and size</option><option value="__case__">Case / full pack — set quantities…</option><option value="__each__">Each / individual item — set size…</option><optgroup label="Previously seen pack sizes">{current.pack_size&&!packOptions.includes(current.pack_size)&&<option value={current.pack_size}>{packLabel(current.pack_size)}</option>}{packOptions.map(pack=><option key={pack} value={pack}>{packLabel(pack)}</option>)}</optgroup><option value="__custom__">Other — enter a custom pack…</option></select><small style={{display:"block"}}>Saved pack: {current.pack_size||"not set"}</small>{canManage&&<button style={{border:0,background:"none",color:"#245785",cursor:"pointer",fontSize:11}} onClick={()=>openPackEditor(packMode)}>Set pack quantities</button>}{customPack&&<input aria-label={`Custom pack for ${vendorItem.vendor_item_code}`} style={{...inputStyle,marginTop:4}} disabled={busy} value={current.pack_size||""} placeholder="e.g. 4/10 LB" onChange={e=>edit("pack_size",e.target.value)}/>}</>;
+        else if(key==="pack")content=<>
+          <select aria-label={`Pack for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:100}} disabled={!canManage||busy} value={shownPack.type} onChange={e=>changePack("type",e.target.value)}>
+            <option value="" disabled>Select</option><option value="case">Case</option><option value="each">Each</option>
+          </select>
+          {shownPack.type&&<label style={{display:"block",marginTop:4}}>Count<input aria-label={`Count for ${vendorItem.vendor_item_code}`} type="number" min="1" step="1" style={inputStyle} disabled={!canManage||busy||shownPack.type==="each"} value={shownPack.type==="each"?1:shownPack.count} onChange={e=>changePack("count",e.target.value)}/></label>}
+          {!parsedPack?.parsed&&current.pack_size&&<small style={{display:"block"}}>From sheet: {current.pack_size}</small>}
+          {shownPack.unit!=="EA"&&<small style={{display:"block"}}>Each: {shownPack.size} {shownPack.unit}{shownPack.catchWeight?" (average)":""}</small>}
+        </>;
         else if(key==="itemName")content=<input aria-label={`Item name for ${item.master_item_number}`} style={{...inputStyle,minWidth:180,fontWeight:700}} disabled={!canManage||busy} value={nameDraft??item.name??""} placeholder="Your name for this product" onChange={e=>setNameDraft(e.target.value)} />;
         else if(fields[key])content=<input aria-label={`${key} for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:key==="product"?220:95}} disabled={!canManage||busy} type={key==="price"?"number":"text"} step={key==="price"?"any":undefined} min={key==="price"?"0":undefined} value={current[fields[key]]??""} placeholder={key==="brand"?"Blank if absent":""} onChange={e=>edit(fields[key],e.target.value)} />;
         else if(key==="sellingUnit")content=<select aria-label={`Quoted per for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:140}} disabled={!canManage||busy} value={current.selling_unit||""} onChange={e=>edit("selling_unit",e.target.value)}><option value="">Select unit</option>{current.selling_unit&&!units.some(u=>u.value===current.selling_unit)&&<option value={current.selling_unit}>{current.selling_unit}</option>}{units.map(u=><option key={u.value} value={u.value}>{u.label}</option>)}</select>;
@@ -93,7 +96,7 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
       })}
       <td style={{...cellStyle,minWidth:115}}>
         {canManage&&<button disabled={!dirty||busy} onClick={save} style={{...btn("#003584","white",{fontSize:11,padding:6})}}>{busy?"Applying…":"Apply changes"}</button>}
-        {dirty&&<button disabled={busy} onClick={()=>{setDraft({});setNameDraft(null);setBase(null);setPackParts(null);setCustomPack(false);setPackMode("");setError("");}} style={{border:0,background:"none",cursor:"pointer",fontSize:11}}>Undo edits</button>}
+        {dirty&&<button disabled={busy} onClick={()=>{setDraft({});setNameDraft(null);setBase(null);setPackParts(null);setError("");}} style={{border:0,background:"none",cursor:"pointer",fontSize:11}}>Undo edits</button>}
         <button onClick={()=>setDetails(!details)} style={{display:"block",marginTop:6,border:0,background:"none",cursor:"pointer",color:"#245785"}}>Details</button>
         {vendorItem.import_row?.reviewRequired&&<small style={{display:"block",color:"#9B4400"}}>New quote needs review</small>}
         {saved&&<small role="status" style={{color:"#276742"}}>Saved</small>}
@@ -102,13 +105,12 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
     </tr>
     {details&&<tr><td colSpan={11} style={{...cellStyle,background:"#F2F6FA"}}>
       <div style={{fontWeight:700,marginBottom:10}}>{assessment.ready?"Meets Order Guide field requirements":"Waiting on: "+assessment.blockers.map(code=>BLOCKER_LABELS[code]).join("; ")}{dirty?" (unsaved preview)":""}</div>
-      {packParts&&<div style={{display:"flex",gap:12,alignItems:"end",marginBottom:10}}>
-        <label>{packMode==="__each__"?"Items in this pack":"Inner items per case"}<input type="number" min="1" aria-label="Items in pack" style={inputStyle} value={packParts.count} onChange={e=>packEdit("count",e.target.value)} /></label>
-        <label>Size of each<input type="number" min="0" step="any" aria-label="Size of each" style={inputStyle} value={packParts.size} onChange={e=>packEdit("size",e.target.value)} /></label>
-        {packParts.catchWeight&&<span style={{fontSize:12,color:"#8D5900"}}>Average weight retained</span>}
-        <label>Measurement<select style={inputStyle} aria-label="Pack measurement" value={packParts.unit} onChange={e=>packEdit("unit",e.target.value)}>{!packUnits.some(u=>u.value===packParts.unit)&&<option value={packParts.unit}>{packParts.unit}</option>}{packUnits.map(u=><option key={u.value} value={u.value}>{u.label}</option>)}</select></label>
+      {shownPack.type&&<div style={{display:"flex",gap:12,alignItems:"end",marginBottom:10}}>
+        <label>Weight or volume of each<input type="number" min="0.001" step="any" aria-label="Size of each" style={inputStyle} disabled={!canManage||busy} value={shownPack.size} onChange={e=>changePack("size",e.target.value)}/></label>
+        <label>Measurement<select style={inputStyle} aria-label="Pack measurement" disabled={!canManage||busy} value={shownPack.unit} onChange={e=>changePack("unit",e.target.value)}>{!packUnits.some(u=>u.value===shownPack.unit)&&<option value={shownPack.unit}>{shownPack.unit}</option>}{packUnits.map(u=><option key={u.value} value={u.value}>{u.label}</option>)}</select></label>
+        {shownPack.catchWeight&&<span>Average weight retained</span>}
       </div>}
-      {packParts&&<small style={{display:"block",marginBottom:10}}>Set count, size and measurement to describe the physical pack. Quoted per separately tells us whether the vendor charges by case, each, pound, gallon or another unit.</small>}
+      <small style={{display:"block",marginBottom:10}}>Case count is the number of eaches inside. Each always has count 1. Weight or volume is separate; Quoted per tells us how the vendor charges.</small>
       {vendorItem.import_row?.reviewRequired&&<div style={{background:"#FFF3E0",padding:10,fontSize:12,marginBottom:10}}>
         <b>Incoming quote: {formatMoney(vendorItem.import_row.row?.price)} · pack {vendorItem.import_row.row?.packSize||"not stated"} · per {vendorItem.import_row.row?.sellingUnit||"not stated"}</b>
         <div>{(vendorItem.import_row.conflicts||[]).join(" ")}</div>
@@ -125,7 +127,6 @@ function EditableRow({orgId,item,vendorItem,mapping,vendor,categories,vocabulary
 export function CatalogRows({orgId,items,catalogItems,vendorItems,mappings,vendors,categories,vocabulary,canManage,onUpdated,onDetails,settings={}}){
   const summary=useMemo(()=>qualificationSummary({catalogItems,vendorItems,mappings,vendors,categories,settings}),[catalogItems,vendorItems,mappings,vendors,categories,settings]);
   const [sort,setSort]=useState({key:"product",direction:1});
-  const packOptions=[...new Set(vendorItems.map(vi=>String(vi.pack_size||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
   const catalog=new Map(catalogItems.map(i=>[i.id,i])),viById=new Map(vendorItems.map(v=>[v.id,v])),vendorById=new Map(vendors.map(v=>[v.id,v]));
   const visible=new Set(items.map(i=>i.catalogItemId));
   const rows=mappings.filter(m=>visible.has(m.catalog_item_id)).flatMap(mapping=>{
@@ -148,7 +149,7 @@ export function CatalogRows({orgId,items,catalogItems,vendorItems,mappings,vendo
       </details>
     </div>
     <table style={{borderCollapse:"collapse",width:"100%",minWidth:1250,fontSize:12}}><thead><tr>{CATALOG_COLUMNS.map(([key,label])=><th key={key} style={{...cellStyle,textAlign:"left",background:"#E8F0FA"}} aria-sort={sort.key===key?sort.direction===1?"ascending":"descending":"none"}><button style={{border:0,background:"none",fontWeight:700,cursor:"pointer"}} onClick={()=>setSort(s=>({key,direction:s.key===key?-s.direction:1}))}>{label}{sort.key===key?sort.direction===1?" ↑":" ↓":""}</button></th>)}<th style={cellStyle}>Actions</th></tr></thead>
-      <tbody>{rows.map(row=><EditableRow settings={settings} key={row.vendorItem.id} {...row} orgId={orgId} categories={categories} vocabulary={vocabulary} packOptions={packOptions} canManage={canManage} onUpdated={onUpdated} onDetails={()=>onDetails(row.item.id)} />)}
+      <tbody>{rows.map(row=><EditableRow settings={settings} key={row.vendorItem.id} {...row} orgId={orgId} categories={categories} vocabulary={vocabulary} canManage={canManage} onUpdated={onUpdated} onDetails={()=>onDetails(row.item.id)} />)}
       {items.filter(i=>!linked.has(i.catalogItemId)).map(i=><tr key={i.catalogItemId}><td style={cellStyle}>#{i.masterItemNumber}</td><td colSpan={8} style={cellStyle}>{i.name} · No vendor listing linked yet.</td><td><button onClick={()=>onDetails(i.catalogItemId)}>Details</button></td></tr>)}
       </tbody>
     </table>
