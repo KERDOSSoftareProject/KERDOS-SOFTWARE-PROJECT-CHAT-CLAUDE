@@ -1,6 +1,6 @@
 import {configureProcurement} from "./procurement.js";
 import assert from "node:assert/strict";
-import {catalogRowEvidence,orderGuideReady} from "./core/catalog-fields.js";
+import {catalogRowEvidence,orderGuideReady,initialsFor} from "./core/catalog-fields.js";
 import {prepareCatalogCorrection} from "./services/catalog-rows.js";
 import {createImportService} from "./services/imports.js";
 
@@ -27,9 +27,16 @@ await test("a pack read from the description is 90; a sheet-wide unit is 90; a g
   const e=ev({...base,import_row:{row:{packSource:"description",sellingUnitSource:"sheet"}}},{item:{...item,category_review:true,category_reason:"Best guess from existing items"}});
   assert.equal(e.pack.accuracy,90);assert.equal(e.sellingUnit.accuracy,90);assert.equal(e.category.accuracy,70);
 });
-await test("a value the client typed is checked like any other: per-pound on a count pack drops both cells",()=>{
-  const e=ev({...base,pack_size:"1/160 CT",field_resolutions:{pack_size:{}}});
-  assert.equal(e.pack.accuracy,60);assert.equal(e.sellingUnit.accuracy,60);assert.match(e.pack.reason,/Set by you/);assert.equal(e.unitCost.value,null);
+await test("a value the client typed reads 100% with their initials; a contradiction stays as a note",()=>{
+  const e=catalogRowEvidence({item,vendorItem:{...base,pack_size:"1/160 CT",field_resolutions:{pack_size:{confirmedBy:"u1"}}},mapping,vendor,category,peers:[],editors:{u1:{email:"dino.maniatis@example.com"}}});
+  assert.equal(e.pack.accuracy,100);assert.equal(e.pack.by,"DM");assert.match(e.pack.reason,/^Set by DM/);assert.match(e.pack.reason,/doesn't fit a price quoted per/);
+  assert.equal(e.unitCost.value,null);
+});
+await test("initials come from a name when there is one, else the email",()=>{
+  assert.equal(initialsFor({name:"Spiro Maniatis"}),"SM");
+  assert.equal(initialsFor({email:"dino.maniatis@x.com"}),"DM");
+  assert.equal(initialsFor({email:"spiro@x.com"}),"SP");
+  assert.equal(initialsFor(null),"");
 });
 await test("a pack that disagrees with another vendor on the same item drops to 70 and says so",()=>{
   const e=ev(base,{peers:[{id:"v2",vendor_id:"B",description:"BACON LAYOUT",pack_size:"1/15 LB",brand:"Hatfield"}]});
@@ -51,9 +58,9 @@ await test("same wording without an independent identifier does not prove accura
   const e=ev(base,{peers:[{id:"v2",vendor_id:"B",description:base.description,pack_size:base.pack_size,brand:base.brand}]});
   assert.equal(e.product.accuracy,90);assert.equal(e.pack.accuracy,90);assert.equal(e.brand.accuracy,90);
 });
-await test("a typed brand that contradicts the source loses confidence",()=>{
+await test("a typed brand that contradicts the source keeps 100% and shows the contradiction as a note",()=>{
   const e=ev({...base,brand:"Other",field_resolutions:{brand:{sourceValue:"Hatfield"}}});
-  assert.equal(e.brand.accuracy,70);assert.match(e.brand.reason,/original source/);
+  assert.equal(e.brand.accuracy,100);assert.match(e.brand.reason,/^Set by you/);assert.match(e.brand.reason,/original source/);
 });
 await test("unit cost is as sure as the least sure of pack, unit and price",()=>{
   const e=ev({...base,import_row:{row:{packSource:"description"}}});
@@ -68,7 +75,8 @@ await test("an unreadable pack is 60 with the reason, not 0",()=>{
 await test("a row at 90 or better everywhere is Order Guide ready; a 70 cell holds it back",()=>{
   assert.equal(orderGuideReady({item,vendorItem:base,mapping,vendor,category}),true);
   assert.equal(orderGuideReady({item,vendorItem:base,mapping,vendor,category,peers:[{id:"v2",vendor_id:"B",description:"BACON LAYOUT",pack_size:"1/15 LB"}]}),false);
-  assert.equal(orderGuideReady({item:{...item,category_review:true},vendorItem:base,mapping,vendor,category}),false);
+  assert.equal(orderGuideReady({item:{...item,category_review:true},vendorItem:base,mapping,vendor,category}),true,"a guessed category does not hold a priced row back");
+  assert.equal(orderGuideReady({item,vendorItem:base,mapping,vendor,category:{id:"pen",name:"Uncategorized",is_holding_pen:true}}),false,"no real category does");
 });
 
 // --- one-write apply: the item name rides in the same patch ---

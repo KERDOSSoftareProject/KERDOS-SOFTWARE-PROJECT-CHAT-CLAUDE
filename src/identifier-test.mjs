@@ -243,9 +243,9 @@ await test("setCaseBasisWhereUnstated prices readable packs and leaves stated un
     const m1=ready.find(r=>r.mappingId==="m1");
     assert.ok(m1);assert.equal(m1.verification.comparison_track,"exact");assert.equal(m1.verification.confidence_score,100);
   });
-  await test("a best-guess category (70%) holds a row back until the client picks the category",()=>{
+  await test("a best-guess category is still a placement: the row goes to the Order Guide and the category stays marked",()=>{
     const guessed=items.map(i=>i.id==="c1"?{...i,category_review:true,category_reason:"Best guess"}:i);
-    assert.ok(!autoPlaceable({catalogItems:guessed,vendorItems:vis,mappings:maps,vendors,categories}).some(r=>r.mappingId==="m1"));
+    assert.ok(autoPlaceable({catalogItems:guessed,vendorItems:vis,mappings:maps,vendors,categories}).some(r=>r.mappingId==="m1"));
   });
   await test("a row still in Uncategorized is not placed",()=>assert.ok(!autoPlaceable({catalogItems:items,vendorItems:vis,mappings:maps,vendors,categories}).some(r=>r.mappingId==="m2")));
   await test("a row with no pack or no unit is not placed",()=>{

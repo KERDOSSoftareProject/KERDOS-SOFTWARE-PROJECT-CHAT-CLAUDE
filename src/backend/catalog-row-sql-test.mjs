@@ -30,6 +30,8 @@ await db.exec(fs.readFileSync(root+'/knowledge/migration_016_manual_catalog_asso
 await db.exec(fs.readFileSync(root+'/knowledge/migration_016_manual_catalog_association.sql','utf8'));
 await db.exec(fs.readFileSync(root+'/knowledge/migration_017_unit_cost_display.sql','utf8'));
 await db.exec(fs.readFileSync(root+'/knowledge/migration_017_unit_cost_display.sql','utf8'));
+await db.exec(fs.readFileSync(root+'/knowledge/migration_018_field_review.sql','utf8'));
+await db.exec(fs.readFileSync(root+'/knowledge/migration_018_field_review.sql','utf8'));
 const quote=await db.query(`select kerdos_apply_price_quote(null,$1,$2,'001001','Bacon','1/15 LB',3.83,true,now(),null,null,'Source',null,null,null,null,null,null,$3::jsonb,'{}') as id`,[org,vendor,JSON.stringify({row:{description:'BCN',price:3.83,packSize:'1/15 LB'}})]);
 const vi=quote.rows[0].id;
 await db.query(`insert into item_mappings values($1,$2,$3,$4,'review',75,'rule_based')`,[mapping,org,vi,item]);
@@ -107,6 +109,66 @@ assert.equal(Number((await db.query('select count(*) from price_history')).rows[
 await save(metricRevision+2,{selling_unit:'WEIGHT'},null,false);
 assert.equal((await db.query('select selling_unit,price_unavailable from vendor_items')).rows[0].selling_unit,'WEIGHT');
 assert.equal((await db.query('select price_unavailable from vendor_items')).rows[0].price_unavailable,true,'incomplete weight basis remains unorderable');
+
+// Field-by-field saves: persisted evidence, partial progress and final automatic
+// qualification are checked together against the real migration function.
+const {orderGuideAssessment,autoPlaceable}=await import('../core/catalog-fields.js');
+const {configureProcurement}=await import('../procurement.js');
+configureProcurement({industry:'Restaurant'});
+await db.query(`update catalog_items set name='Bacon' where id=$1`,[target]);
+await db.query(`update vendor_items set description='Bacon',brand='Hatfield',pack_size=null,selling_unit=null,price_basis=null,price=4.2,price_unavailable=true,price_source='price_list',field_resolutions='{}',import_row=$1::jsonb`,[
+  JSON.stringify({row:{description:'Bacon',brand:'Hatfield',price:4.2},reviewRequired:true,reviewFields:['pack_size','selling_unit'],conflicts:['Pack quantity and unit are missing.','Quoted unit is unresolved.']})]);
+const nextRevision=async()=>Number((await db.query('select row_revision from vendor_items')).rows[0].row_revision);
+const readAssessment=async()=>{
+  const vendorItem=(await db.query('select * from vendor_items where id=$1',[vi])).rows[0];
+  const itemRow=(await db.query('select * from catalog_items where id=$1',[target])).rows[0];
+  const mapRow=(await db.query('select * from item_mappings where id=$1',[mapping])).rows[0];
+  const category={id:cat,name:'Meat',keywords:['bacon']};
+  const vendorRow={id:vendor,name:'Vendor'};
+  const assessment=orderGuideAssessment({item:itemRow,vendorItem,mapping:mapRow,vendor:vendorRow,category,categories:[category]});
+  return {vendorItem,assessment,automatic:autoPlaceable({catalogItems:[itemRow],vendorItems:[vendorItem],mappings:[mapRow],vendors:[vendorRow],categories:[category]})};
+};
+await save(await nextRevision(),{selling_unit:'LB'},'measure',false);
+let checked=await readAssessment();
+assert.equal(checked.vendorItem.field_resolutions.selling_unit.value,'LB');
+assert.deepEqual(checked.vendorItem.import_row.reviewFields,['pack_size']);
+assert.equal(checked.assessment.ready,false,'a partial row remains outside the guide');
+await save(await nextRevision(),{pack_size:'1/15 LB'});
+checked=await readAssessment();
+assert.equal(checked.vendorItem.import_row.reviewRequired,false,'last missing field clears the source hold without editing Price');
+assert.equal(checked.vendorItem.field_resolutions.selling_unit.value,'LB','previous confirmation survives');
+assert.equal(checked.assessment.evidence.pack.accuracy,100);
+assert.equal(checked.assessment.evidence.sellingUnit.accuracy,100);
+assert.equal(checked.assessment.ready,true);
+assert.equal(checked.automatic.length,1,'completed row automatically qualifies for placement');
+await save(await nextRevision(),{price:5});
+checked=await readAssessment();
+assert.equal(checked.vendorItem.field_resolutions.price.confirmedBy,user);
+assert.equal(Number(checked.vendorItem.field_resolutions.price.value),5);
+assert.equal(checked.assessment.evidence.price.accuracy,100,'saved price correction stays 100 after reading from database');
+assert.equal(checked.assessment.ready,true);
+await db.query('update vendor_items set import_row=$1::jsonb',[JSON.stringify({row:{description:'Bacon',brand:'Other',price:6},reviewRequired:true,reviewFields:['brand','price'],changes:[{field:'brand'}],conflicts:['Brand changed.']})]);
+await save(await nextRevision(),{price:6});
+checked=await readAssessment();
+assert.deepEqual(checked.vendorItem.import_row.reviewFields,['brand'],'price cannot accept a different brand');
+assert.equal(checked.assessment.ready,false);
+await save(await nextRevision(),{brand:'Other'});
+checked=await readAssessment();
+assert.equal(checked.vendorItem.import_row.reviewRequired,false);
+assert.equal(checked.assessment.ready,true);
+// Legacy v9 imports have no reviewFields: recover the blocker from source notes.
+await db.query('update vendor_items set import_row=$1::jsonb',[JSON.stringify({row:{description:'Bacon',price:6},reviewRequired:true,conflicts:['Quoted unit is unresolved.']})]);
+await save(await nextRevision(),{selling_unit:'LB'});
+checked=await readAssessment();
+assert.equal(checked.vendorItem.import_row.reviewRequired,false,'existing imports can be completed without reimporting');
+// Neither a manual category nor a nonempty partial pack invents readiness.
+await save(await nextRevision(),{pack_size:'CASE:4/? ?'},'measure',false);
+checked=await readAssessment();
+assert.equal(checked.assessment.ready,false);
+assert.equal(checked.assessment.evidence.pack.accuracy,100,'confirmation is independent of mathematical completeness');
+assert.equal(checked.assessment.evidence.unitCost.value,null);
+console.log('Field review workflow passed: separate column saves, persistent 100%, unrelated holds retained, legacy recovery, automatic placement, and incomplete math blocked.');
+
 await db.exec(`update organization_members set role='employee';`);
 await assert.rejects(save(Number((await db.query('select row_revision from vendor_items')).rows[0].row_revision),{price:9}),/Owner or manager/);
 console.log('Database check passed: repeat migration, partial fields, quote calculation readiness, atomic rollback, stale edits, preserved item number, price update without duplication, and role/organization checks.');

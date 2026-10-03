@@ -40,7 +40,20 @@ const field=(value,accuracy,reason)=>({value,accuracy,reason});
 const STATED=90,DERIVED=90,GUESSED=70,DOUBTFUL=60;
 const empty=(value)=>value==null||value==="";
 
-export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peers=[],categories=[],industry=""}){
+// A person's initials from what the system knows about them: a display
+// name if there is one, otherwise the name part of their email. "Spiro
+// Maniatis" → SM; "dino.maniatis@…" → DM; "spiro@…" → SP.
+export function initialsFor(person){
+  if(!person)return "";
+  const name=String(person.name||person.full_name||"").trim();
+  const source=name||String(person.email||"").split("@")[0];
+  const parts=source.split(/[^A-Za-z]+/).filter(Boolean);
+  if(!parts.length)return "";
+  if(parts.length===1)return parts[0].slice(0,2).toUpperCase();
+  return parts.slice(0,3).map(part=>part[0].toUpperCase()).join("");
+}
+
+export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peers=[],categories=[],industry="",editors={}}){
   const vi=vendorItem,pack=parsePackSize(vi.pack_size),basis=priceBasisFor(vi.selling_unit);
   const amount=vi.price==null||vi.price===""?null:Number(vi.price);
   const hasPrice=Number.isFinite(amount)&&amount>0;
@@ -158,23 +171,50 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   // Association: proven by identifier or a second vendor, exact, or under review.
   const exact=mapping?.comparison_track==="exact"&&mapping?.confidence_score===100;
   const numAcc=item.master_item_number==null?null:exact?descriptionCorroborated&&packAcc===100?100:STATED:mapping?.confidence_score!=null?Math.max(DOUBTFUL,Math.min(GUESSED,mapping.confidence_score)):GUESSED;
-  const numWhy=exact?"Association verified":"Association still being checked";
+  // The KERDOS number carries no percentage. It says how the association
+  // was made: Automated by the engine, or Manual once a person changed it.
+  const manualLink=mapping?.match_method==="manual"||Object.hasOwn(manual,"catalog_item_id");
+  const numWhy=manualLink?"Manual association":"Automated association";
 
   // Unit cost only exists when pack, unit and price all hold up; it is as
   // sure as the least sure of the three.
-  const costAcc=per?Math.min(packAcc??0,unitAcc??0,priceAcc??0):null;
+
+  // A value the client typed is theirs: it reads 100% and carries their
+  // initials. A later contradiction (another vendor's pack, the sheet's
+  // original value) stays visible as a note on the cell, and nothing
+  // about the row is held back because of it.
+  const CLIENT=100;
+  const byPerson=(key)=>{
+    const entry=manual[key];
+    if(!entry)return null;
+    const who=entry.confirmedBy?editors[entry.confirmedBy]:null;
+    return {initials:initialsFor(who)||"",at:entry.confirmedAt||null};
+  };
+  const clientField=(key,value,accuracy,reason)=>{
+    const f=field(value,accuracy,reason);
+    if(!byClient(key)||empty(value))return f;
+    const person=byPerson(key);
+    const notes=String(reason||"").split("; ").filter(part=>part&&!/^Set by you$/i.test(part)).join("; ");
+    return {...f,accuracy:CLIENT,by:person?.initials||"",reason:`Set by ${person?.initials||"you"}${notes?"; "+notes:""}`};
+  };
+
+  const packField=clientField("pack_size",vi.pack_size||"",packAcc,packWhy||"No pack yet");
+  const priceField=clientField("price",hasPrice?amount:null,priceAcc,priceWhy||"No price");
+  const unitField=clientField("selling_unit",vi.selling_unit||"",unitAcc,unitWhy||"Choose what the quoted price is per");
+  // Unit cost is as sure as the least sure of the three it comes from.
+  const costAccuracy=per?Math.min(packField.accuracy??0,unitField.accuracy??0,priceField.accuracy??0):null;
 
   return {
-    itemNumber:field(item.master_item_number,numAcc,numWhy),
+    itemNumber:{...field(item.master_item_number,numAcc,numWhy),label:manualLink?"Manual":"Automated"},
     vendor:field(vendor?.name||"",vendor?STATED:null,"Vendor selected at import"),
-    category:field(category?.name||"Uncategorized",catAcc,catWhy||"No category yet"),
-    itemName:field(item.name||"",nameAcc,nameWhy),
-    product:field(vi.description,descAcc,descWhy),
-    brand:field(vi.brand||"",brandAcc,brandWhy||"Blank when absent"),
-    pack:field(vi.pack_size||"",packAcc,packWhy||"No pack yet"),
-    price:field(hasPrice?amount:null,priceAcc,priceWhy||"No price"),
-    sellingUnit:field(vi.selling_unit||"",unitAcc,unitWhy||"Choose what the quoted price is per"),
-    unitCost:{...field(per?.price??null,costAcc,per?`Calculated per ${per.unit}${pack?.catchWeight?"; case weight is an estimate":""}`:"Needs a readable pack and a compatible quoted unit"),unit:per?.unit||null},
+    category:clientField("category_id",category?.name||"Uncategorized",catAcc,catWhy||"No category yet"),
+    itemName:clientField("item_name",item.name||"",nameAcc,nameWhy),
+    product:clientField("description",vi.description,descAcc,descWhy),
+    brand:clientField("brand",vi.brand||"",brandAcc,brandWhy||"Blank when absent"),
+    pack:packField,
+    price:priceField,
+    sellingUnit:unitField,
+    unitCost:{...field(per?.price??null,costAccuracy,per?`Calculated per ${per.unit}${pack?.catchWeight?"; case weight is an estimate":""}`:"Needs a readable pack and a compatible quoted unit"),unit:per?.unit||null},
   };
 }
 
@@ -193,7 +233,10 @@ export function orderGuideAssessment(input){
   const {item,vendorItem,mapping,vendor,category,peers=[],categories=[],settings={},now}=input;
   if(!item||!vendorItem||!mapping)return {ready:false,fieldsReady:false,blockers:["link"],evidence:null,verification:null};
   const evidence=catalogRowEvidence({item,vendorItem,mapping,vendor,category,peers,categories});
-  const blockers=REQUIRED_FIELDS.filter(key=>(evidence[key].accuracy??0)<DERIVED);
+  // A category only has to be a real one; a best-guess placement is still a
+  // placement and the price is no less right for it. The other required
+  // cells must be worked out from strong evidence or better.
+  const blockers=REQUIRED_FIELDS.filter(key=>key==="category"?(!category||category.is_holding_pen||evidence.category.accuracy==null):(evidence[key].accuracy??0)<DERIVED);
   if(evidence.unitCost.value==null&&!blockers.includes("pack")&&!blockers.includes("sellingUnit")&&!blockers.includes("price"))blockers.push("unitCost");
   const status=quoteStatus(vendorItem,settings,now);
   if(status!=="current")blockers.push(status==="expired"?"expired":"quote");

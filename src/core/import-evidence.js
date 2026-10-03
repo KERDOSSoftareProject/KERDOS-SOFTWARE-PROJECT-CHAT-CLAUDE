@@ -28,7 +28,7 @@ export function explainImportRow(source,{vendor=null,categories=[],catalogItems=
     gtin:row.gtin,manufacturer_code:row.manufacturerCode,price_unavailable:!!row.priceUnavailable,
     price_source:"pricelist",price_expired_at:null,price_quote_valid_until:null,
     field_resolutions:importResolutions(source,prior||{}),
-    import_row:{row:{...source,...source.originalFields},evidence:row,reviewRequired:!!conflicts.length||!!row.priceNeedsReview,changes:row.changes||[]}};
+    import_row:{row:{...source,...source.originalFields},evidence:row,reviewRequired:!!conflicts.length||!!row.priceNeedsReview,reviewFields:prepared.reviewFields,changes:row.changes||[]}};
   const byId=new Map(vendorItems.map(entry=>[entry.id,entry]));
   const peers=savedItem?mappings.filter(entry=>entry.catalog_item_id===savedItem.id&&entry.vendor_item_id!==prior?.id).map(entry=>byId.get(entry.vendor_item_id)).filter(Boolean):[];
   const input={item,vendorItem:vi,mapping,vendor,category,peers,categories};

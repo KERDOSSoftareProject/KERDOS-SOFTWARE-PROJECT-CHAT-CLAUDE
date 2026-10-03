@@ -51,5 +51,25 @@ export function preparePriceImport(source,prior=null,mapping=null,issues=[],invo
       reasons.push("The quoted amount, unit and pack cannot produce a valid case price.");
   }
   if(row.priceNeedsReview&&!reasons.length)reasons.push("The incoming price basis needs review.");
-  return {row:{...row,changes},resolved,requiresReview:reasons.length>0,reasons:[...new Set(reasons)]};
+  return {row:{...row,changes},resolved,requiresReview:reasons.length>0,reasons:[...new Set(reasons)],reviewFields:priceReviewFields({reasons,changes,row,prior})};
+}
+
+// Review is tracked per field. Confirming one cell cannot accept unrelated
+// incoming changes. Unknown conflicts require explicit review of each field.
+export function priceReviewFields({reasons=[],changes=[],row={},prior=null}={}){
+  const fields=new Set();
+  const names={packSize:"pack_size",sellingUnit:"selling_unit",manufacturerCode:"identifiers",gtin:"identifiers"};
+  for(const change of changes)fields.add(names[change.field]||change.field);
+  for(const reason of reasons){
+    const text=String(reason);
+    if(/barcode|manufacturer code|gtin/i.test(text))fields.add("identifiers");
+    else if(/pack/i.test(text))fields.add("pack_size");
+    else if(/sellingUnit|quoted unit|price basis|selling unit|quoted units/i.test(text))fields.add("selling_unit");
+    else if(/brand/i.test(text))fields.add("brand");
+    else if(/product|description|wording/i.test(text))fields.add("description");
+    else if(/price|amount/i.test(text))fields.add("price");
+    else for(const key of ["description","brand","pack_size","selling_unit","price"])fields.add(key);
+  }
+  if(reasons.length&&prior&&Number(row.price)!==Number(prior.price))fields.add("price");
+  return [...fields];
 }

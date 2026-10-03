@@ -69,10 +69,12 @@ assert.equal(orderGuideAssessment({...input,vendorItem:{...vi,import_row:{review
 assert.equal(orderGuideAssessment({...input,item:{...item,brand_locked:true,locked_brand:"Chosen"}}).ready,false);
 assert.equal(orderGuideAssessment({...input,item:{...item,name:"Our house product"},mapping:exact}).ready,true,"renaming an already verified catalog item does not undo its association");
 const adjusted={...vi,price:9};
-assert.equal(catalogRowEvidence({...input,vendorItem:adjusted}).price.accuracy,70,"stored price edits disagreeing with source drop to 70 even on migration 015");
+assert.equal(catalogRowEvidence({...input,vendorItem:adjusted}).price.accuracy,70,"a stored price that differs from the source with no record of who changed it drops to 70");
+assert.equal(catalogRowEvidence({...input,vendorItem:{...adjusted,field_resolutions:{price:{sourceValue:3.6}}}}).price.accuracy,100,"the same change recorded as the client's reads 100%");
 assert.equal(importResolutions(source,{field_resolutions:{price:{value:9,sourceValue:3.5}}}).price,undefined,"new quote replaces old amount evidence");
 const manual=explainImportRow({...source,price:9,manualFields:["price"],originalFields:{price:3.6}},{vendor,categories});
-assert.equal(manual.price.accuracy,70);
+assert.equal(manual.price.accuracy,100,"a price corrected by hand during import is the client's: 100%, with the difference from the sheet noted");
+assert.match(manual.price.reason,/^Set by/);
 
 const invoice={id:"invoice-1",number:"I-1",row:{code:"100",description:"Beef",packSize:"10 LB",sellingUnit:"LB",price:2.5}};
 const missing={code:"100",description:"Beef",price:35};

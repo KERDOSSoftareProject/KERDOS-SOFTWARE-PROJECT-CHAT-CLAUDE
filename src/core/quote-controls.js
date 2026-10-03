@@ -23,13 +23,17 @@ export function comparisonUnits(packSize){
   const units=pack.dimension==='mass'?MASS:pack.dimension==='volume'?VOLUME:unitsForDimension(pack.dimension).filter(u=>u!=='CT');
   return [...new Set([...units,pack.dimension==='unknown'?pack.unit:'EA'])];
 }
+export function defaultComparisonUnit(packSize,industry=''){
+  const pack=parsePackSize(packSize);
+  if(!pack?.parsed)return '';
+  return industryUnitCostDefaults(industry)[pack.dimension]||(pack.dimension==='count'?'EA':pack.unit);
+}
 export function calculatedUnitCost(row,{industry=''}={}){
   const pack=parsePackSize(row.pack_size),basis=priceBasisFor(row.selling_unit);
   if(!pack?.parsed||!basis)return null;
   const full=casePriceFromQuote(row.price,basis.basis,basis.unit||row.selling_unit,row.pack_size);
   if(full==null)return null;
-  const defaults=industryUnitCostDefaults(industry);
-  const target=row.unit_cost_unit||defaults[pack.dimension]||(pack.dimension==='count'?'EA':pack.unit);
+  const target=row.unit_cost_unit||defaultComparisonUnit(row.pack_size,industry);
   if(!comparisonUnits(row.pack_size).includes(target))return null;
   if(target==='EA'&&pack.dimension!=='count')return {price:Math.round(full/pack.caseQty*10000)/10000,unit:'EA'};
   return pricePerUnit(full,row.pack_size,target);
