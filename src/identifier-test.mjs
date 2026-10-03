@@ -161,7 +161,7 @@ await test("a single-vendor mapping is never engine-verifiable",()=>{
 });
 
 // --- category placement: most likely category first, holding pen last ---
-const cats=[{id:"meat",name:"Meat & Poultry",keywords:["chicken","beef","pork"]},{id:"dairy",name:"Dairy & Eggs",keywords:["milk","cheese","eggs"]},{id:"paper",name:"Paper Goods",keywords:["napkins","cups","lids"]},{id:"pen",name:"Uncategorized",is_holding_pen:true,keywords:[]}];
+const cats=[{id:"meat",name:"Meat & Poultry",keywords:["chicken","beef","pork"]},{id:"dairy",name:"Dairy & Eggs",keywords:["milk","cheese","eggs"]},{id:"paper",name:"Paper Goods",keywords:["napkins","cups","lids"]},{id:"pen",name:"Uncategorized",is_holding_pen:true,keywords:[]}].map((c,i)=>({...c,range_start:(i+1)*1000,range_end:(i+2)*1000-1}));
 const examples=[{category_id:"dairy",name:"AMERICAN CHEESE SLICED"}];
 await test("a clear vocabulary hit is confident",()=>assert.equal(suggestCategory("CHICKEN THIGH BNLS",cats,examples).confidence,"confident"));
 await test("a resemblance to existing items is a guess, flagged for review",()=>{
@@ -198,7 +198,7 @@ await test("matchOrCreate files a new product under its best guess with the revi
 });
 await test("moving an item clears the review flag; confirming keeps it in place",async()=>{
   const updates=[];
-  const query=()=>({update:v=>({eq:(col,id)=>{updates.push({id,...v});return Promise.resolve({data:null,error:null});}})});
+  const query=()=>({update:v=>({eq:(col,id)=>{updates.push({id,...v});return {select:()=>Promise.resolve({data:[],error:null}),then:resolve=>resolve({data:null,error:null})};}})});
   await createCategoryService({records:{query}}).assignItem({catalogItemId:"i1",categoryId:"meat",catalogItems:[],categories:cats});
   await createCatalogService({records:{query}}).confirmCategory("i2");
   assert.equal(updates[0].category_review,false);assert.equal(updates[0].category_id,"meat");

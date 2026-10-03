@@ -60,16 +60,15 @@ export function createCategoryService(backend){
     async assignItem({catalogItemId,categoryId,catalogItems,categories}){
       const target=categories.find(category=>category.id===categoryId);
       if(!target)return null;
+      if(target.range_start==null||Number(target.range_start)<=0)throw new Error("This category needs an item-number range.");
       const current=catalogItems.find(item=>item.id===catalogItemId);
-      // A category is a location, not the item's identity. Keep its assigned
-      // number and every linked vendor mapping when the whole row moves.
       const existingNumber=current?.master_item_number;
-      const members=catalogItems.filter(item=>item.category_id===target.id);
-      const masterItemNumber=existingNumber??(members.length?Math.max(...members.map(item=>item.master_item_number||0))+1:(target.range_start||1));
-      const update={category_id:target.id,category_review:false,category_reason:null};
-      if(existingNumber==null)update.master_item_number=masterItemNumber;
-      await run(table("catalog_items").update(update).eq("id",catalogItemId),"Could not move the item");
-      return masterItemNumber;
+      const members=catalogItems.filter(item=>Number(item.master_item_number)>=Number(target.range_start)&&Number(item.master_item_number)<=Number(target.range_end||Number.MAX_SAFE_INTEGER));
+      const masterItemNumber=current?.category_id===target.id&&existingNumber!=null?existingNumber:(members.length?Math.max(...members.map(item=>Number(item.master_item_number)||0))+1:(target.range_start));
+      if(target.range_end!=null&&masterItemNumber>target.range_end)throw new Error("This category item-number range is full.");
+      const update={category_id:target.id,master_item_number:masterItemNumber,category_review:false,category_reason:null};
+      const saved=await run(table("catalog_items").update(update).eq("id",catalogItemId).select("master_item_number"),"Could not move the item");
+      return saved?.[0]?.master_item_number??masterItemNumber;
     },
     async reclassifyUncategorized({catalogItems,categories}){
       const holding=holdingPen(categories);
@@ -82,12 +81,13 @@ export function createCategoryService(backend){
         const suggested=suggestCategory(item.name,choices,working);
         const target=suggested?.category;
         if(!target)continue;
+        if(target.range_start==null||Number(target.range_start)<=0)throw new Error("This category needs an item-number range.");
         const review=suggested.confidence!=="confident";
-        const members=working.filter(candidate=>candidate.category_id===target.id);
-        const number=item.master_item_number??(members.length?Math.max(...members.map(candidate=>candidate.master_item_number||0))+1:(target.range_start||1));
+        const members=working.filter(candidate=>Number(candidate.master_item_number)>=Number(target.range_start)&&Number(candidate.master_item_number)<=Number(target.range_end||Number.MAX_SAFE_INTEGER));
+        const number=(members.length?Math.max(...members.map(candidate=>candidate.master_item_number||0))+1:(target.range_start));
         const index=working.findIndex(candidate=>candidate.id===item.id);
         if(index>=0)working[index]={...working[index],category_id:target.id,master_item_number:number};
-        assignments.push({itemId:item.id,categoryId:target.id,masterItemNumber:item.master_item_number==null?number:null,review,reason:review?suggested.reason:null});
+        assignments.push({itemId:item.id,categoryId:target.id,masterItemNumber:number,review,reason:review?suggested.reason:null});
       }
       const results=await Promise.all(assignments.map(row=>table("catalog_items").update({category_id:row.categoryId,...(row.masterItemNumber==null?{}:{master_item_number:row.masterItemNumber}),category_review:row.review,category_reason:row.reason}).eq("id",row.itemId)));
       const moved=results.filter(result=>!result.error).length;

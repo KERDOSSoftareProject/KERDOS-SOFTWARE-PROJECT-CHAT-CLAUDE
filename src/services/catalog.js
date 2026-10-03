@@ -182,11 +182,13 @@ export function createCatalogService(backend){
     },
     async createItem({organizationId,name,categoryId,categoryReview=false,categoryReason=null,catalogItems,categories}){
       const category=categories.find(candidate=>candidate.id===categoryId)||null;
+      if(!category||!Number.isFinite(Number(category.range_start))||category.range_start==null||Number(category.range_start)<=0)throw new Error("This category needs an item-number range before creating an item.");
       // Include numbers from items later moved to another category. Their
       // KERDOS numbers remain theirs and must never be recycled here.
-      const itemsInCategory=catalogItems.filter(item=>item.master_item_number>=Number(category?.range_start||1)&&
+      const itemsInCategory=catalogItems.filter(item=>item.master_item_number>=Number(category.range_start)&&
         item.master_item_number<=Number(category?.range_end||Number.MAX_SAFE_INTEGER));
-      const masterItemNumber=itemsInCategory.length?Math.max(...itemsInCategory.map(item=>item.master_item_number||0))+1:(category?.range_start||1);
+      const masterItemNumber=itemsInCategory.length?Math.max(...itemsInCategory.map(item=>item.master_item_number||0))+1:(category.range_start);
+      if(category.range_end!=null&&masterItemNumber>Number(category.range_end))throw new Error("This category item-number range is full.");
       return run(table("catalog_items").insert({organization_id:organizationId,category_id:categoryId||null,master_item_number:masterItemNumber,name:name.slice(0,120),matching_behavior:"flexible",canonical_unit:null,brand_locked:false,category_review:!!categoryReview,category_reason:categoryReason||null}).select().single(),"Could not create the item");
     },
     // Rows whose sheet never said what the price is for. One decision for
