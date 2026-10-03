@@ -7,7 +7,7 @@ export function prepareCatalogCorrection({organizationId,vendorItem,mapping,patc
   const allowed=new Set(["description","brand","pack_size","price","selling_unit","category_id","item_name","catalog_item_id","unit_cost_unit","approve_row","unit_cost_override"]);
   if(Object.keys(patch).some(key=>!allowed.has(key)))throw new Error("Unsupported catalog field.");
   const cleaned={...patch};
-  for(const key of ["description","brand","pack_size","selling_unit","item_name","unit_cost_unit","approve_row","unit_cost_override"])if(key in cleaned)cleaned[key]=String(cleaned[key]??"").trim();
+  for(const key of ["description","brand","pack_size","selling_unit","item_name","unit_cost_unit"])if(key in cleaned)cleaned[key]=String(cleaned[key]??"").trim();
   if("description" in cleaned&&!cleaned.description)throw new Error("Enter a product description.");
   if("item_name" in cleaned&&!cleaned.item_name)throw new Error("Enter an item name.");
   if("price" in cleaned){
