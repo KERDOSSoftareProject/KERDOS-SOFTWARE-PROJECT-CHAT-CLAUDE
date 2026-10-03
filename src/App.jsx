@@ -374,7 +374,9 @@ export default function App() {
         const quote=quoteStatus(vi,org?.settings||{});
         const expired=quote==="expired";
         const invoiceOnly=quote==="invoice_only";
-        const pack=vi.pack_size;
+        const clientApproved=m.match_method==="manual"&&!!vi.field_resolutions?.row_approval;
+        const costOverride=clientApproved?vi.field_resolutions?.unit_cost_override?.value:null;
+        const pack=vi.pack_size||(costOverride?"Client-approved purchasing pack":null);
         const assessment=orderGuideAssessment({item:ci,vendorItem:vi,mapping:m,vendor:v,category:categories.find(c=>c.id===ci.category_id),
           peers:ciMappings.filter(other=>other.id!==m.id).map(other=>viMap.get(other.vendor_item_id)).filter(Boolean),categories,settings:org?.settings||{}});
         // Every vendor is ranked on the price of one full pack. A quote
@@ -382,17 +384,17 @@ export default function App() {
         // legacy rows with no recorded basis were always pack prices.
         const quoteBasis=vi.price_basis||priceBasisFor(vi.selling_unit)?.basis||null;
         const quoteUnit=quoteBasis==="measure"?(vi.selling_unit||null):null;
-        const price=casePriceFromQuote(vi.price,quoteBasis,quoteUnit,pack);
+        const price=costOverride?Number(costOverride.packPrice):casePriceFromQuote(vi.price,quoteBasis,quoteUnit,pack);
         const basisUnconvertible=price==null&&!!quoteBasis&&quoteBasis!=="case";
-        const each=quote==="current"&&price!=null?eachPrice(price,pack):null;
+        const each=!costOverride&&quote==="current"&&price!=null?eachPrice(price,pack):null;
         // A locked brand blocks every vendor item that is a different
         // brand - and one with no brand listed, since "unknown" cannot
         // be verified as the locked brand.
-        const brandMismatch=!!lockedBrand&&!brandsMatch(vi.brand,lockedBrand);
+        const brandMismatch=!clientApproved&&!!lockedBrand&&!brandsMatch(vi.brand,lockedBrand);
         return {
           vendorId:v.id, vendorName:v.name,
           vendorItemId:vi.id, vendorItemCode:vi.vendor_item_code,vendorNvim:vi.nvim_number,
-          brand:vi.brand, packSize:pack, description:vi.description,
+          brand:vi.brand, packSize:pack, description:vi.description,clientApproved,costOverride,
           casePrice:quote==="unavailable"&&vi.price_basis==null?null:price??(vi.price==null?null:parseFloat(vi.price)),
           quotedPrice:vi.price==null?null:parseFloat(vi.price), quoteBasis, quoteUnit, basisUnconvertible,
           eachPrice:each?.price||null, eachSize:each?.size||null,
@@ -422,7 +424,7 @@ export default function App() {
             compareProductIdentity(option.description,other.description).status!=="same" ||
             (!!(option.brand||other.brand)&&!brandsMatch(option.brand,other.brand));
         });
-        if(conflicting){
+        if(conflicting&&!option.clientApproved){
           option.unverified=true;
           option.comparisonWarning="Linked vendor products differ in description or pack; review this catalog item";
         }
@@ -434,7 +436,7 @@ export default function App() {
       const firstPack=options.map(o=>parsePackSize(o.packSize)).find(p=>p?.parsed);
       const displayUnit=ci.canonical_unit||firstPack?.unit||null;
       for(const o of options){
-        o.perUnit=(orderable(o)&&displayUnit)?pricePerUnit(o.casePrice,o.packSize,displayUnit):null;
+        o.perUnit=o.costOverride?{price:Number(o.costOverride.price),unit:o.costOverride.unit}:(orderable(o)&&displayUnit)?pricePerUnit(o.casePrice,o.packSize,displayUnit):null;
         // Never represent unlike dimensions as competing per-unit offers.
         if(o.perUnit && o.perUnit.unit!==displayUnit) o.perUnit=null;
       }
