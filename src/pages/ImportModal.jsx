@@ -9,7 +9,7 @@ import {createCategoryService} from "../services/categories.js";
 import {createDocumentService} from "../services/documents.js";
 import {createImportService} from "../services/imports.js";
 import {createOrganizationService} from "../services/organization.js";
-import {COLUMN_ROLE_LABELS,COLUMN_ROLES_FOR_CHOICE,rememberedLayout,withRememberedLayout} from "../core/sheet-layout.js";
+import {rememberedLayout,withRememberedLayout} from "../core/sheet-layout.js";
 import {formatMoney} from "../localization.js";
 import {explainImportRow} from "../core/import-evidence.js";
 import {importResolutions,unitChoices} from "../core/catalog-fields.js";
@@ -32,7 +32,15 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
   // be dropped in until a vendor is chosen, so a sheet can't land under
   // the wrong name.
   const [vendorId,setVendorId]=useState(()=>initialVendorId&&vendors.some(v=>v.id===initialVendorId)?initialVendorId:"");
-  const mode=initialMode||"pricelist";
+  // What this import is. Starts from where the person clicked, but a
+  // price sheet dropped into Import Invoice is read as a price sheet: no
+  // invoice number, no invoice date and a long list of priced items is a
+  // price sheet, whatever button opened the window.
+  const [mode,setMode]=useState(initialMode||"pricelist");
+  const [switchedToPriceSheet,setSwitchedToPriceSheet]=useState(false);
+  function looksLikePriceSheet(group){
+    return group.documentKind!=="invoice"&&!findInvoiceNumber(group.text)&&!findDate(group.text)&&(group.rows?.length||0)>=8;
+  }
   const [pastedText,setPastedText]=useState("");
   const [fileGroups,setFileGroups]=useState([]); // [{id,file,name,text}] — one entry per dragged/selected file
   const [parsedGroups,setParsedGroups]=useState([]); // after Parse: fileGroups (+pasted text) each with rows/skipped attached
@@ -108,7 +116,13 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
   const knownBrands=useMemo(()=>[...new Set(vendorItems.map(vi=>String(vi.brand||"").trim()).filter(Boolean))],[vendorItems]);
   function settleRow(row){
     let next=row;
-    if(!next.sellingUnit&&sheetBasis&&mode==="pricelist")next={...next,sellingUnit:sheetBasis,sellingUnitSource:"sheet"};
+    // The person said what this sheet's prices are per. That covers a row
+    // with no unit and a row whose unit KERDOS can't read ("P"); the
+    // vendor's original token is kept as a detail.
+    if(sheetBasis&&mode==="pricelist"&&(!next.sellingUnit||!priceBasisFor(next.sellingUnit))){
+      const original=next.sellingUnit;
+      next={...next,sellingUnit:sheetBasis,sellingUnitSource:"sheet",...(original?{details:[...(next.details||[]),`unit as printed: ${original}`]}:{})};
+    }
     // An unlabeled cell that matches a brand this organization already
     // knows is that brand; the engine fills it and says where it came from.
     if(!next.brand&&next.details?.length&&knownBrands.length){
@@ -127,8 +141,6 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
   // organization's settings, plus any given during this import.
   const organizationService=useMemo(()=>createOrganizationService(backend),[]);
   const [layoutAnswers,setLayoutAnswers]=useState({});   // fingerprint -> {columnIndex: role}
-  const [layoutDraft,setLayoutDraft]=useState({});       // fingerprint -> {columnIndex: role} being chosen now
-  const [savingLayout,setSavingLayout]=useState(false);
   function answersFor(fingerprint){
     return {...rememberedLayout(orgSettings,vendorId,fingerprint),...(layoutAnswers[fingerprint]||{})};
   }
@@ -139,6 +151,35 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
     const fingerprint=first.layout?.fingerprint||"";
     const answers=fingerprint?answersFor(fingerprint):{};
     return Object.keys(answers).length?parseDocument(text,{layoutAnswers:answers}):first;
+  }
+  // Unknown headings are settled without asking: the engine's reading of
+  // the column's contents becomes the answer and is remembered for this
+  // vendor's layout. The person never sees a question.
+  async function settleUnknownHeaders(groups){
+    let settled=groups;
+    const toRemember=[];
+    for(const g of groups){
+      const fp=g.layout?.fingerprint;const unknown=g.layout?.unknown||[];
+      if(!fp||!unknown.length)continue;
+      const answers={};
+      for(const h of unknown){
+        const guessed=Object.entries(g.columnMap||{}).find(([,i])=>i===h.index)?.[0];
+        answers[h.index]=guessed||"ignore";
+      }
+      toRemember.push([fp,answers]);
+      setLayoutAnswers(prev=>({...prev,[fp]:answers}));
+      settled=settled.map(x=>{
+        if(x.layout?.fingerprint!==fp)return x;
+        const parsed=parseDocument(x.text,{layoutAnswers:{...rememberedLayout(orgSettings,vendorId,fp),...answers}});
+        return {...x,rows:parsed.rows.map(settleRow),skipped:parsed.skipped,layout:parsed.layout,columnMap:parsed.columnMap};
+      });
+    }
+    if(toRemember.length){
+      let next=orgSettings;
+      for(const [fp,answers] of toRemember)next=withRememberedLayout(next,vendorId,fp,answers);
+      try{await organizationService.update(orgId,{settings:next});}catch{/* remembering is a convenience */}
+    }
+    return settled;
   }
   async function parseSources(files,text){
     // Every dropped/selected file is parsed on its own — never merged into
@@ -165,7 +206,9 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
         setParseError(`No product rows could be read from ${docs.map(d=>d.name).join(", ")}. Check that the file contains item lines, or paste a sample of its text for review.`);
         return;
       }
-      setParsedGroups(groups);
+      const settled=await settleUnknownHeaders(groups);
+      if(mode==="invoice"&&settled.every(looksLikePriceSheet)){setMode("pricelist");setSwitchedToPriceSheet(true);}
+      setParsedGroups(settled);
       setStep(2);
     }catch(error){setParseError(`Could not parse the document: ${error.message||String(error)}`);}
     finally{setParsing(false);}
@@ -186,34 +229,6 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
   const allIncomplete=allRows.filter(r=>r.priceUnavailable);
   const showSourceTags=parsedGroups.length>1;
   const unsafeDocuments=parsedGroups.filter(g=>g.documentKind==="mixed"||(g.documentKind!=="unknown"&&g.documentKind!==mode));
-  // Header columns KERDOS did not recognise and no one has answered yet,
-  // per layout. Asked once; the answer is remembered for this vendor.
-  const unknownHeaders=useMemo(()=>{
-    const byFingerprint=new Map();
-    for(const g of parsedGroups){
-      const fp=g.layout?.fingerprint;const unknown=g.layout?.unknown||[];
-      if(!fp||!unknown.length||byFingerprint.has(fp))continue;
-      byFingerprint.set(fp,{fingerprint:fp,file:g.name,columns:unknown.map(h=>({index:h.index,label:h.label,guess:Object.entries(g.columnMap||{}).find(([,i])=>i===h.index)?.[0]||"ignore"}))});
-    }
-    return [...byFingerprint.values()];
-  },[parsedGroups]);
-  async function confirmLayout(entry){
-    const draft=layoutDraft[entry.fingerprint]||{};
-    const answers={};
-    for(const col of entry.columns)answers[col.index]=draft[col.index]||col.guess||"ignore";
-    setSavingLayout(true);
-    try{
-      // Remember for next time, then re-read this file with the answers.
-      const nextSettings=withRememberedLayout(orgSettings,vendorId,entry.fingerprint,answers);
-      try{await organizationService.update(orgId,{settings:nextSettings});}catch{/* remembering is a convenience; the answers still apply to this import */}
-      setLayoutAnswers(prev=>({...prev,[entry.fingerprint]:answers}));
-      setParsedGroups(groups=>groups.map(g=>{
-        if(g.layout?.fingerprint!==entry.fingerprint)return g;
-        const parsed=parseDocument(g.text,{layoutAnswers:{...rememberedLayout(orgSettings,vendorId,entry.fingerprint),...answers}});
-        return {...g,rows:parsed.rows.map(settleRow),skipped:parsed.skipped,layout:parsed.layout,columnMap:parsed.columnMap};
-      }));
-    }finally{setSavingLayout(false);}
-  }
   const missingInvoiceDates=mode==="invoice"?parsedGroups.filter(g=>g.rows.length&&!/^\d{4}-\d{2}-\d{2}$/.test(g.invoiceDate||"")):[];
   const needsReview=parsedGroups.flatMap(g=>g.rows.map((row,index)=>({groupId:g.id,index,row})))
     .filter(x=>x.row.issues?.length&&!acceptedIssues.has(`${x.groupId}:${x.index}`));
@@ -306,8 +321,9 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
         const rowKey=`${group.id}:${rowIndex}`;
         // A cell that failed its column's test travels with the row as a
         // named reason (which cell, why), so Item Catalog shows it in place.
-        const cellIssues=Object.entries(sourceRow.cellIssues||{}).map(([role,reason])=>`${COLUMN_ROLE_LABELS[role]||role}: ${reason}`);
-        const rowIssues=[...(sourceRow.issues||[]),...cellIssues,...(!acceptedInvoiceConflicts.has(rowKey)?(invoiceClues.get(rowKey)?.conflicts||[]):[])];
+        // A cell that failed its column's test already shows in that cell's
+        // accuracy; it is not a source conflict and does not hold the row.
+        const rowIssues=[...(sourceRow.issues||[]),...(!acceptedInvoiceConflicts.has(rowKey)?(invoiceClues.get(rowKey)?.conflicts||[]):[])];
         const rowNeedsReview=!!rowIssues.length&&!acceptedIssues.has(rowKey);
         try{
         if(!rowNeedsReview&&!row.priceUnavailable&&(!Number.isFinite(Number(row.price))||Number(row.price)<=0)) throw new Error("No confirmed positive unit price");
@@ -356,11 +372,11 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
           priceUnavailable:!!row.priceUnavailable||needsBasis,effectiveDate:importBatchTime,
           quoteValidUntil:group.quoteValidUntil,sourceFilePath,
           sourceFileName:group.name,sourceLine:row.sourceLine||null,sourceDocumentId,
-          importRow:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:needsBasis,conflicts:prepared.reasons,changes:row.changes||[]},
+          importRow:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:needsBasis,reviewFields:prepared.reviewFields,conflicts:prepared.reasons,changes:row.changes||[]},
           fieldResolutions:importResolutions(sourceRow,ex||{}),
         });
         if(needsBasis&&ex){
-          const {error}=await backend.records.query("vendor_items").update({import_row:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,changes:row.changes||[],conflicts:prepared.reasons}}).eq("id",ex.id).eq("organization_id",orgId);
+          const {error}=await backend.records.query("vendor_items").update({import_row:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,reviewFields:prepared.reviewFields,changes:row.changes||[],conflicts:prepared.reasons}}).eq("id",ex.id).eq("organization_id",orgId);
           if(error)throw new Error(`Could not save the incoming quote for review: ${error.message}`);
         }
         if(ex&&!needsBasis) updated++; else if(!ex) created++;
@@ -624,14 +640,14 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
   // ready. A person is needed only when the source contradicts prior evidence.
   useEffect(()=>{
     if(step!==2||autoSaveStarted||loading||!allRows.length) return;
-    if(unsafeDocuments.length||unknownHeaders.length) return;
+    if(unsafeDocuments.length) return;
     // Price sheets save automatically with issues attached to their rows.
     // Invoices still wait: an unreviewed charge must never alter a quote.
     if(mode==="invoice"&&(missingInvoiceDates.length||needsReview.length)) return;
     if(mode==="pricelist"&&invoiceLoad==="loading")return;
     setAutoSaveStarted(true);
     doSave();
-  },[mode,step,autoSaveStarted,loading,allRows.length,unsafeDocuments.length,unknownHeaders.length,missingInvoiceDates.length,needsReview.length,invoiceLoad,invoiceConflicts.length]);
+  },[mode,step,autoSaveStarted,loading,allRows.length,unsafeDocuments.length,missingInvoiceDates.length,needsReview.length,invoiceLoad,invoiceConflicts.length]);
 
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
@@ -699,25 +715,8 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
 
         {step===2&&<>
           <div style={{background:"#E8F5E9",padding:"10px 14px",borderRadius:8,marginBottom:14,fontSize:13}}>
-            Found {allRows.length} items across {parsedGroups.length} document{parsedGroups.length===1?"":"s"} — {loading?"saving automatically…":unknownHeaders.length?"answer the column question above to continue":unsafeDocuments.length||(mode==="invoice"&&(missingInvoiceDates.length||needsReview.length||invoiceConflicts.length))?"resolve the highlighted issue to finish saving":mode==="pricelist"&&(needsReview.length||invoiceConflicts.length)?`saving automatically; ${needsReview.length+invoiceConflicts.length} row${needsReview.length+invoiceConflicts.length===1?"":"s"} will be marked to finish in Item Catalog`:"saving automatically…"}
+            Found {allRows.length} items across {parsedGroups.length} document{parsedGroups.length===1?"":"s"} — {loading?"saving automatically…":unsafeDocuments.length||(mode==="invoice"&&(missingInvoiceDates.length||needsReview.length||invoiceConflicts.length))?"resolve the highlighted issue to finish saving":mode==="pricelist"&&(needsReview.length||invoiceConflicts.length)?`saving automatically; ${needsReview.length+invoiceConflicts.length} row${needsReview.length+invoiceConflicts.length===1?"":"s"} will be marked to finish in Item Catalog`:"saving automatically…"}
           </div>
-          {unknownHeaders.map(entry=>(
-            <div key={entry.fingerprint} style={{background:"#F4F8FE",border:"1px solid #C9DAF0",borderRadius:8,padding:12,marginBottom:12}}>
-              <div style={{fontSize:13,fontWeight:800,color:"#003584",marginBottom:4}}>Tell KERDOS what these columns are — once</div>
-              <div style={{fontSize:12,color:"#49617C",marginBottom:10}}>The sheet <b>{entry.file}</b> has {entry.columns.length} column heading{entry.columns.length===1?"":"s"} KERDOS doesn't recognise. Choose what each one means; it will remember this layout for this vendor.</div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:10}}>
-                {entry.columns.map(col=>(
-                  <label key={col.index} style={{fontSize:12,fontWeight:700}}>
-                    Column "{col.label}"
-                    <select style={{...inp,marginTop:4,fontSize:12}} value={layoutDraft[entry.fingerprint]?.[col.index]||col.guess||"ignore"} onChange={e=>setLayoutDraft(d=>({...d,[entry.fingerprint]:{...(d[entry.fingerprint]||{}),[col.index]:e.target.value}}))}>
-                      {COLUMN_ROLES_FOR_CHOICE.map(role=><option key={role} value={role}>{COLUMN_ROLE_LABELS[role]}</option>)}
-                    </select>
-                  </label>
-                ))}
-              </div>
-              <button disabled={savingLayout} onClick={()=>confirmLayout(entry)} style={{...btn("#003584","white",{fontSize:12,marginTop:12})}}>{savingLayout?"Saving…":"Use these columns"}</button>
-            </div>
-          ))}
           {mode==="invoice"&&parsedGroups.map(g=><label key={g.id} style={{display:"block",fontSize:12,marginBottom:7}}>
             Invoice date for {g.name}: <input type="date" value={g.invoiceDate||""} onChange={e=>setParsedGroups(groups=>groups.map(x=>x.id===g.id?{...x,invoiceDate:e.target.value}:x))} />
             {!g.invoiceDate&&<span style={{color:"#B26A00"}}> Required</span>}
@@ -786,6 +785,7 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
           <div style={{textAlign:"center",padding:"24px 0 8px"}}>
             <div style={{fontSize:40,marginBottom:10}}>✅</div>
             <h3 style={{margin:"0 0 6px"}}>Upload successful</h3>
+            {switchedToPriceSheet&&<p style={{color:"#8D6E00",fontSize:12,margin:"0 0 6px"}}>This file was a price sheet, so KERDOS filed it under Price Sheets.</p>}
             <p style={{color:"#666",fontSize:14,margin:"0 0 18px"}}>
               {result.count} row{result.count===1?"":"s"} from {result.vendor} saved
               {result.basisReview>0?` · ${result.basisReview} to finish in Item Catalog`:""}

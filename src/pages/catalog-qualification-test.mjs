@@ -36,9 +36,13 @@ try{
   assert.match(html,/>Each<\/option>/);
   const caseHtml=renderToStaticMarkup(createElement(CatalogRows,{...props,vendorItems:[{...row,pack_size:"4/5 LB"}]}));
   assert.match(caseHtml,/aria-label="Count for undefined"[^>]*value="4"/);
-  assert.match(caseHtml,/Each: 5 LB/);
+  assert.match(caseHtml,/aria-label="Amount in each for undefined"[^>]*value="5"/);
+  assert.match(caseHtml,/>Pounds<\/option>/);
+  assert.ok(!caseHtml.includes("Auto ("));
+  assert.match(caseHtml,/aria-label="Item name for 20001"[^>]*value="Beef"/);
   const eachHtml=renderToStaticMarkup(createElement(CatalogRows,{...props,vendorItems:[{...row,pack_size:"5 LB",selling_unit:"EACH"}]}));
-  assert.match(eachHtml,/aria-label="Count for undefined"[^>]*disabled=""[^>]*value="1"/);
+  assert.ok(!eachHtml.includes("Count for undefined"));
+  assert.match(eachHtml,/aria-label="Amount in each for undefined"[^>]*value="5"/);
   const unknownHtml=renderToStaticMarkup(createElement(CatalogRows,{...props,vendorItems:[{...row,pack_size:"20"}]}));
   assert.match(unknownHtml,/From sheet: 20/);
   assert.ok(!unknownHtml.includes("Count for undefined"),"unknown pack must not acquire an invented count");

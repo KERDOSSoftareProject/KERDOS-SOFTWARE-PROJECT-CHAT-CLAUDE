@@ -96,6 +96,21 @@ export default function App() {
   const [showPaste,setShowPaste]=useState(false);
   // One plain line after an import finishes on its own; it clears itself.
   const [importNotice,setImportNotice]=useState(null);
+  // Who is on the team, by user id, so a cell someone edited can show their
+  // initials. Loaded once per organization for owners and managers.
+  const [editors,setEditors]=useState({});
+  useEffect(()=>{
+    if(!org||org.role==="employee"){setEditors({});return;}
+    let cancelled=false;
+    organizationService.team(org.id).then(team=>{
+      if(cancelled)return;
+      const map={};
+      for(const member of team?.members||[])map[member.user_id]={email:member.email||"",name:member.name||member.full_name||""};
+      if(session?.user?.id&&!map[session.user.id])map[session.user.id]={email:session.user.email||""};
+      setEditors(map);
+    }).catch(()=>{ if(!cancelled&&session?.user?.id)setEditors({[session.user.id]:{email:session.user.email||""}}); });
+    return ()=>{cancelled=true;};
+  },[org?.id,org?.role,session?.user?.id]);
   useEffect(()=>{ if(!importNotice) return; const t=setTimeout(()=>setImportNotice(null),8000); return ()=>clearTimeout(t); },[importNotice]);
   const [selectedVendorId,setSelectedVendorId]=useState(null);
   const [importMode,setImportMode]=useState("pricelist");
@@ -265,7 +280,7 @@ export default function App() {
 
   useEffect(()=>{
     if(!org) return;
-    return backend.realtime.subscribeToOrganization(org.id,loadData);
+    return backend.realtime.subscribeToOrganization(org.id,()=>{void loadData();});
   },[org?.id]);
 
   const vendorColors=useMemo(()=>new Map(vendors.map((v,i)=>[v.id,PALETTE[i%PALETTE.length]])),[vendors]);
@@ -1400,7 +1415,7 @@ export default function App() {
               {autoPlaceError} <button disabled={autoPlacing} onClick={()=>setAutoPlaceRetry(n=>n+1)} style={btn("#003584")}>Retry automatic placement</button>
             </div>}
             <ItemCatalogPanel industry={org.industry} settings={org.settings} orgId={org.id} role={org.role} productList={productList} vendors={vendors} catalogItems={catalogItems} mappings={mappings}
-              vendorItems={vendorItems} categories={categories} vocabulary={vocabulary}
+              vendorItems={vendorItems} categories={categories} vocabulary={vocabulary} editors={editors}
               onUpdated={loadData} />
           </>
         )}

@@ -1,7 +1,7 @@
+import {unitLabel} from "../core/unit-labels.js";
 import {unitChoices} from "../core/catalog-fields.js";
 import {QUOTE_GROUPS,quoteGroup,quoteMetrics,chooseQuoteGroup} from '../core/quote-controls.js';
 import {priceBasisFor} from '../procurement.js';
-const labels={FLOZ:'FL OZ'};
 export function QuotedPerControl({industry="",vocabulary=[],value,onChange,disabled,style,label}){
   const group=quoteGroup(value),unit=priceBasisFor(value)?.unit||'';
   const otherMetrics=unitChoices(vocabulary,false,industry).map(u=>u.value).filter(u=>quoteGroup(u)==='measure');
@@ -13,7 +13,7 @@ export function QuotedPerControl({industry="",vocabulary=[],value,onChange,disab
       {offerOther&&<option value="measure">Other measurement</option>}
     </select>
     {metrics.length>0&&<select aria-label={`${label} measurement`} style={{...style,marginTop:4}} disabled={disabled} value={unit} onChange={e=>onChange(e.target.value)}>
-      <option value="" disabled>Select {group==='measure'?'measurement':group} unit</option>{metrics.map(u=><option key={u} value={u}>{labels[u]||u}</option>)}
+      <option value="" disabled>Select {group==='measure'?'measurement':group} unit</option>{metrics.map(u=><option key={u} value={u}>{unitLabel(u)}</option>)}
     </select>}
     {group==='measure'&&unit&&!metrics.includes(unit)&&<small style={{display:'block'}}>From sheet: {value}</small>}
     {!group&&value&&<small style={{display:'block'}}>From sheet: {value} · select quoted basis</small>}
