@@ -202,7 +202,7 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   const priceField=clientField("price",hasPrice?amount:null,priceAcc,priceWhy||"No price");
   const unitField=clientField("selling_unit",vi.selling_unit||"",unitAcc,unitWhy||"Choose what the quoted price is per");
   // Unit cost is as sure as the least sure of the three it comes from.
-  const costAccuracy=per?Math.min(packField.accuracy??0,unitField.accuracy??0,priceField.accuracy??0):null;
+  const costAccuracy=per?.manual?100:per?Math.min(packField.accuracy??0,unitField.accuracy??0,priceField.accuracy??0):null;
 
   return {
     itemNumber:{...field(item.master_item_number,numAcc,numWhy),label:manualLink?"Manual":"Automated"},
@@ -214,7 +214,7 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
     pack:packField,
     price:priceField,
     sellingUnit:unitField,
-    unitCost:{...field(per?.price??null,costAccuracy,per?`Calculated per ${per.unit}${pack?.catchWeight?"; case weight is an estimate":""}`:"Needs a readable pack and a compatible quoted unit"),unit:per?.unit||null},
+    unitCost:{...field(per?.price??null,costAccuracy,per?.manual?`Client-approved unit cost per ${per.unit}`:per?`Calculated per ${per.unit}${pack?.catchWeight?"; case weight is an estimate":""}`:"Needs a readable pack and a compatible quoted unit"),unit:per?.unit||null},
   };
 }
 
@@ -236,15 +236,18 @@ export function orderGuideAssessment(input){
   // A category only has to be a real one; a best-guess placement is still a
   // placement and the price is no less right for it. The other required
   // cells must be worked out from strong evidence or better.
+  const clientApproved=mapping.comparison_track==="exact"&&mapping.confidence_score===100&&mapping.match_method==="manual"&&!!vendorItem.field_resolutions?.row_approval;
+  const override=clientApproved&&!!vendorItem.field_resolutions?.unit_cost_override?.value;
   const blockers=REQUIRED_FIELDS.filter(key=>key==="category"?(!category||category.is_holding_pen||evidence.category.accuracy==null):(evidence[key].accuracy??0)<DERIVED);
+  if(override){for(const key of ["pack","sellingUnit"])if(blockers.includes(key))blockers.splice(blockers.indexOf(key),1);}
   if(evidence.unitCost.value==null&&!blockers.includes("pack")&&!blockers.includes("sellingUnit")&&!blockers.includes("price"))blockers.push("unitCost");
   const status=quoteStatus(vendorItem,settings,now);
   if(status!=="current")blockers.push(status==="expired"?"expired":"quote");
   if(vendorItem.import_row?.reviewRequired)blockers.push("source");
-  if(item.brand_locked&&!brandsMatch(vendorItem.brand,item.locked_brand))blockers.push("brand");
+  if(!clientApproved&&item.brand_locked&&!brandsMatch(vendorItem.brand,item.locked_brand))blockers.push("brand");
   const fieldsReady=blockers.length===0;
   const approved=mapping.comparison_track==="exact"&&mapping.confidence_score===100;
-  const verification=approved&&!peers.length?mapping:mappingVerification(vendorItem,item,peers);
+  const verification=approved&&(clientApproved||!peers.length)?mapping:mappingVerification(vendorItem,item,peers);
   if(verification.comparison_track!=="exact")blockers.push("association");
   return {ready:blockers.length===0,fieldsReady,blockers,evidence,verification};
 }
@@ -330,6 +333,7 @@ export function importResolutions(row,prior={},date=new Date().toISOString()){
   // A fresh quote replaces the amount evidence; old price edits are not
   // permanent product corrections.
   delete fields.price;
+  delete fields.unit_cost_override;
   for(const input of row.manualFields||[]){
     const key=FIELDS[input]||(input==="sellingUnit"?"selling_unit":input==="price"?"price":null);
     if(key)fields[key]={value:row[input]??"",sourceValue:row.originalFields?.[input]??prior.import_row?.row?.[input]??row[input]??"",confirmedAt:date};

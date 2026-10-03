@@ -123,10 +123,11 @@ const readAssessment=async()=>{
   const vendorItem=(await db.query('select * from vendor_items where id=$1',[vi])).rows[0];
   const itemRow=(await db.query('select * from catalog_items where id=$1',[target])).rows[0];
   const mapRow=(await db.query('select * from item_mappings where id=$1',[mapping])).rows[0];
+  if(mapRow.confidence_score!=null)mapRow.confidence_score=Number(mapRow.confidence_score);
   const category={id:cat,name:'Meat',keywords:['bacon']};
   const vendorRow={id:vendor,name:'Vendor'};
   const assessment=orderGuideAssessment({item:itemRow,vendorItem,mapping:mapRow,vendor:vendorRow,category,categories:[category]});
-  return {vendorItem,assessment,automatic:autoPlaceable({catalogItems:[itemRow],vendorItems:[vendorItem],mappings:[mapRow],vendors:[vendorRow],categories:[category]})};
+  return {vendorItem,mapping:mapRow,assessment,automatic:autoPlaceable({catalogItems:[itemRow],vendorItems:[vendorItem],mappings:[mapRow],vendors:[vendorRow],categories:[category]})};
 };
 await save(await nextRevision(),{selling_unit:'LB'},'measure',false);
 let checked=await readAssessment();
@@ -169,6 +170,23 @@ assert.equal(checked.assessment.evidence.pack.accuracy,100,'confirmation is inde
 assert.equal(checked.assessment.evidence.unitCost.value,null);
 console.log('Field review workflow passed: separate column saves, persistent 100%, unrelated holds retained, legacy recovery, automatic placement, and incomplete math blocked.');
 
+await db.exec(fs.readFileSync(root+'/knowledge/migration_019_client_approval.sql','utf8'));
+await db.exec(fs.readFileSync(root+'/knowledge/migration_019_client_approval.sql','utf8'));
+await save(await nextRevision(),{approve_row:true,description:'Client chosen product',brand:'Brand A',pack_size:'1/15 LB',selling_unit:'LB',price:5,category_id:cat,item_name:'My different item name',unit_cost_override:null});
+checked=await readAssessment();
+assert.equal(checked.assessment.ready,true,'Apply accepts a different KERDOS name without another association check');
+assert.equal(checked.mapping.match_method,'manual');
+await save(await nextRevision(),{approve_row:true,pack_size:'',selling_unit:'',price:44.3,unit_cost_override:{price:0.0886,unit:'FT',packPrice:44.3}},null,false);
+checked=await readAssessment();
+assert.equal(checked.assessment.ready,true,'client unit-cost override makes an incomplete pack ready');
+assert.equal(checked.assessment.evidence.unitCost.value,0.0886);
+assert.equal(checked.assessment.evidence.unitCost.accuracy,100);
+await assert.rejects(save(await nextRevision(),{approve_row:true,unit_cost_override:{price:-1,unit:'FT',packPrice:44.3}},null,false),/positive/);
+await save(await nextRevision(),{approve_row:true,pack_size:'1/500 FT',selling_unit:'EACH',price:44.3,unit_cost_override:null},'each',true);
+checked=await readAssessment();
+assert.equal(checked.assessment.ready,true,'later edits can replace the override with calculated cost');
+assert.equal(checked.vendorItem.field_resolutions.unit_cost_override,undefined);
+console.log('Client approval and unit-cost override workflow passed.');
 await db.exec(`update organization_members set role='employee';`);
 await assert.rejects(save(Number((await db.query('select row_revision from vendor_items')).rows[0].row_revision),{price:9}),/Owner or manager/);
 console.log('Database check passed: repeat migration, partial fields, quote calculation readiness, atomic rollback, stale edits, preserved item number, price update without duplication, and role/organization checks.');
