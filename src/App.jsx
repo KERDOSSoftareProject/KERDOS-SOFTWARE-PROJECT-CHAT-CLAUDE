@@ -1,5 +1,5 @@
+import {alternativeGroups,automaticAlternativeVerified} from "./core/alternative-groups.js";
 import {defaultComparisonUnit} from "./core/quote-controls.js";
-import {unitLabel} from "./core/unit-labels.js";
 import {AssociateAlternatives} from "./pages/AssociateAlternatives.jsx";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { backend } from "./backend/index.js";
@@ -14,8 +14,8 @@ import { createOperationsService } from "./services/operations.js";
 import { createImportService } from "./services/imports.js";
 import { loadSnapshot, saveSnapshot } from "./offline-store.js";
 import { configureProcurement, priceBasisFor, eachPrice, pricePerUnit, parsePackSize, brandsMatch, quoteStatus, comparePurchasingPack, compareProductIdentity, casePriceFromQuote } from "./procurement.js";
-import { blockReason, orderable, priceForOffer, rankVendorOffers, solveOrder } from "./core/ordering.js";
-import { compareItems, itemMatchesSearch, comparisonReviewCandidates } from "./core/catalog-browse.js";
+import { blockReason, orderable, priceForOffer, rankVendorOffers, offerDollarDifference, solveOrder } from "./core/ordering.js";
+import { compareItems, itemMatchesSearch } from "./core/catalog-browse.js";
 import { configureLocale, formatDate, formatMoney } from "./localization.js";
 import { buildVarianceReportCSV, downloadTextFile } from "./reporting.js";
 import {InvoicesPage,PriceSheetsPage} from "./pages/DocumentPages.jsx";
@@ -69,6 +69,7 @@ function r2(n) { return Math.round(n * 100) / 100; }
 
 // ── LANDING ───────────────────────────────────────────────────────────
 export default function App() {
+  const automaticGrouping=useRef(false);
   const [alternativeSelections,setAlternativeSelections]=useState(new Set());
   const [session,setSession]=useState(undefined);
   const [org,setOrg]=useState(null);
@@ -128,6 +129,14 @@ export default function App() {
   const [negotiatedPrices,setNegotiatedPrices]=useState({}); // unit key -> vendor ID -> agreed price
   const [splitOrders,setSplitOrders]=useState({}); // {item/unit key: {vendorId, quantity}}
   const [openPriceMenu,setOpenPriceMenu]=useState(null);
+  useEffect(()=>{
+    if(openPriceMenu==null)return;
+    const closeOutside=event=>{if(!(event.target instanceof Element)||!event.target.closest("[data-price-menu]"))setOpenPriceMenu(null);};
+    const closeEscape=event=>{if(event.key==="Escape")setOpenPriceMenu(null);};
+    document.addEventListener("pointerdown",closeOutside);
+    document.addEventListener("keydown",closeEscape);
+    return ()=>{document.removeEventListener("pointerdown",closeOutside);document.removeEventListener("keydown",closeEscape);};
+  },[openPriceMenu]);
   const [customPriceDrafts,setCustomPriceDrafts]=useState({});
   const [negotiatedVendorDrafts,setNegotiatedVendorDrafts]=useState({});
   const [negotiationErrors,setNegotiationErrors]=useState({});
@@ -260,6 +269,22 @@ export default function App() {
     // The engine reads this org's vocabulary from here on - before any
     // matching, parsing, or per-unit pricing in this session runs.
     configureProcurement({industry:o.industry,vocabulary:snapshot.vocabulary});
+    if(!usingLocal&&["owner","manager"].includes(o.role)&&backend.catalog.groupAutomaticAlternatives&&!automaticGrouping.current){
+      automaticGrouping.current=true;
+      let changed=false;
+      try{
+        const groups=alternativeGroups(snapshot).slice(0,20);
+        for(const group of groups){
+          await backend.catalog.groupAutomaticAlternatives({organizationId:id,vendorItemIds:group.rows.map(v=>v.id),targetCatalogItemId:group.targetCatalogItemId,key:group.key,dimension:group.dimension,revisions:Object.fromEntries(group.rows.map(v=>[v.id,v.row_revision||0]))});
+          changed=true;
+        }
+        if(changed){snapshot=await backend.workspace.snapshot(id);void saveSnapshot(snapshotKey,snapshot);}
+      }catch(error){
+        if(changed){try{snapshot=await backend.workspace.snapshot(id);void saveSnapshot(snapshotKey,snapshot);}catch{}}
+        setImportNotice({message:"Automatic associations need attention: "+error.message});
+      }
+      finally{automaticGrouping.current=false;}
+    }
     setVocabulary(snapshot.vocabulary);
     setVendors(snapshot.vendors);
     setCatalogItems(snapshot.catalogItems);
@@ -398,7 +423,7 @@ export default function App() {
         return {
           vendorId:v.id, vendorName:v.name,
           vendorItemId:vi.id, vendorItemCode:vi.vendor_item_code,vendorNvim:vi.nvim_number,
-          brand:vi.brand, packSize:pack, description:vi.description,clientApproved,costOverride,
+          brand:vi.brand, packSize:pack, description:vi.description,clientApproved,costOverride,automaticAlternative:automaticAlternativeVerified(vi,ci,ciMappings.map(other=>viMap.get(other.vendor_item_id)).filter(Boolean)),
           casePrice:quote==="unavailable"&&vi.price_basis==null?null:price??(vi.price==null?null:parseFloat(vi.price)),
           quotedPrice:vi.price==null?null:parseFloat(vi.price), quoteBasis, quoteUnit, basisUnconvertible,
           eachPrice:each?.price||null, eachSize:each?.size||null,
@@ -428,7 +453,7 @@ export default function App() {
             compareProductIdentity(option.description,other.description).status!=="same" ||
             (!!(option.brand||other.brand)&&!brandsMatch(option.brand,other.brand));
         });
-        if(conflicting&&(!option.clientApproved||ci.comparison_mode==="exact")){
+        if(conflicting&&((!option.clientApproved&&!option.automaticAlternative)||ci.comparison_mode==="exact")){
           option.unverified=true;
           option.comparisonWarning="Linked vendor products differ in description or pack; review this catalog item";
         }
@@ -969,7 +994,7 @@ export default function App() {
               {filtered.map(group=>(
                 <div key={group.category} style={{marginBottom:8}}>
                   <div style={{fontSize:11,fontWeight:800,color:"rgba(255,255,255,0.75)",letterSpacing:"0.08em",textTransform:"uppercase",margin:"14px 0 6px"}}>{group.category}</div>
-                  <div style={{background:"white",borderRadius:8,overflow:"hidden"}}>
+                  <div style={{background:"white",borderRadius:8}}>
                     <div style={{display:"grid",gridTemplateColumns:"minmax(220px,1fr) 88px 104px minmax(370px,420px)",columnGap:10,rowGap:2,alignItems:"center",padding:"8px 12px"}}>
                       <div className="order-column-head" style={{padding:"2px 2px 7px"}}>Item</div>
                       <div className="order-column-head" style={{padding:"2px 6px 7px"}}>Unit</div>
@@ -991,8 +1016,6 @@ export default function App() {
                         const negotiation=negotiatedPrices[activeKey];
                         const unitOptions=rankVendorOffers(selectedUnit==="case"?item.options:item.options.filter(o=>o.eachPrice),negotiation,selectedUnit);
                         const rankedOptions=unitOptions.filter(orderable);
-                        const pendingVendors=rankedOptions.length<2
-                          ?comparisonReviewCandidates(item,vendorItems,mappings,vendors,org?.settings||{}):[];
                         const displayOption=assignment
                           ?unitOptions.find(opt=>opt.vendorItemId===assignment.vendorItemId)
                           :rankedOptions.find(o=>o.vendorItemId===vendorOverride[activeKey]||o.vendorId===vendorOverride[activeKey])||rankedOptions.find(o=>item.preferredBrand&&brandsMatch(o.brand,item.preferredBrand))||rankedOptions[0];
@@ -1010,6 +1033,16 @@ export default function App() {
                         const activeMatchTrack=activeOption?.matchTrack;
                         const activeMatchConfidence=activeOption?.matchConfidence;
 
+                        const alternativesMenu=menuOpen&&<div role="listbox" aria-label={`Alternatives for ${item.name}`} style={{position:"absolute",top:"100%",right:0,zIndex:30,width:"min(520px, calc(100vw - 32px))",maxHeight:280,overflowY:"auto",background:"white",border:"1px solid #CBD5E1",padding:4}}>
+                          <div style={{display:"grid",gridTemplateColumns:"minmax(120px,2fr) minmax(90px,1fr) 75px 85px",gap:8,padding:"5px 8px",fontSize:10,color:"#667085"}}><span>Item</span><span>Vendor</span><span>Price</span><span>Difference ($)</span></div>
+                          {rankedOptions.filter(opt=>opt.vendorItemId!==displayOption?.vendorItemId).map(opt=><button key={opt.vendorItemId} role="option" aria-selected={false} onClick={()=>{setVendorOverride(prev=>({...prev,[activeKey]:opt.vendorItemId}));setOpenPriceMenu(null);}}
+                            style={{width:"100%",display:"grid",gridTemplateColumns:"minmax(120px,2fr) minmax(90px,1fr) 75px 85px",gap:8,padding:"7px 8px",background:"white",border:0,borderTop:"1px solid #EEE",fontSize:12,fontWeight:400,textAlign:"left",cursor:"pointer"}}>
+                            <span title={opt.description} style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{opt.description}</span>
+                            <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{opt.vendorName}</span>
+                            <span style={{textAlign:"right"}}>{formatMoney(opt.unitPrice)}</span>
+                            <span title={opt.comparisonUnit?"Dollar difference for the same quantity as the lowest-cost purchasing pack":"Dollar difference from the lowest eligible price"} style={{textAlign:"right"}}>{offerDollarDifference(opt,rankedOptions[0])>0?"+":""}{formatMoney(offerDollarDifference(opt,rankedOptions[0]))}</span>
+                          </button>)}
+                        </div>;
                         const cells=[
                           <div key={item.catalogItemId+"_name"} draggable={!activeBlocked}
                             onDragStart={event=>{event.dataTransfer.effectAllowed="copy";event.dataTransfer.setData("text/plain",activeKey);setDragItem({catalogItemId:item.catalogItemId,key:activeKey,name:item.name});}}
@@ -1049,52 +1082,17 @@ export default function App() {
                               style={{width:26,height:26,borderRadius:7,border:"none",background:activeBlocked?"#DDD":"#2E7D32",cursor:activeBlocked?"not-allowed":"pointer",fontSize:15,fontWeight:800,color:"white",flexShrink:0}}>+</button>
                           </div>,
                           <div key={item.catalogItemId+"_price"} style={{padding:"6px",borderTop:"1px solid #F2F2F2",borderLeft:"1px solid #EEE",background:"#FAFBFC"}}>
-                            <div>
-                              <button onClick={()=>setOpenPriceMenu(menuOpen?null:activeKey)} aria-expanded={menuOpen} title="Power Ranked alternatives" style={{width:"100%",textAlign:"left",padding:"7px 9px",border:"1px solid #CBD5E1",borderRadius:6,background:"white",cursor:"pointer",fontSize:12,fontWeight:400}}>
-                                {activeBlocked?activeBlockReason:`${activeVendorName} · ${displayOption?.brand||"Brand not stated"} · ${formatMoney(activePrice)}${customPriceIsWinner?" negotiated":""}`} <span style={{float:"right"}}>{menuOpen?"▴":"▾"}</span>
+                            <div className="order-price-grid">
+                              <div className="order-price-card" data-price-menu style={{border:"1px solid #CBD5E1",position:"relative"}}>
+                              <div style={{fontSize:10,color:"#667085",marginBottom:4}}>Vendor price · Power Ranked</div>
+                              <button onClick={()=>setOpenPriceMenu(menuOpen?null:activeKey)} aria-label={`Power Ranked alternatives for ${item.name}`} aria-haspopup="listbox" aria-expanded={menuOpen} title="Power Ranked alternatives" style={{width:"100%",textAlign:"left",padding:"7px 9px",border:"1px solid #CBD5E1",borderRadius:6,background:"white",cursor:"pointer",fontSize:12,fontWeight:400}}>
+                                {activeBlocked?activeBlockReason:`${activeVendorName} · ${formatMoney(activePrice)}${customPriceIsWinner?" negotiated":""}`} <span style={{float:"right"}}>{menuOpen?"▴":"▾"}</span>
                               </button>
-
-                            </div>
-                          </div>,
-                        ];
-
-                        if(menuOpen){
-                          cells.push(
-                            <div key={item.catalogItemId+"_menu"} style={{gridColumn:"4",background:"white",border:"1px solid #CBD5E1",borderRadius:8,padding:4,margin:"0 6px 6px",boxShadow:"0 8px 20px rgba(15,23,42,.12)"}}>
-                              <div style={{fontSize:10,color:"#56718F",fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",padding:"6px 10px"}}>Power Ranked alternatives</div>
-                              <button onClick={()=>{setVendorOverride(prev=>{const next={...prev};delete next[activeKey];return next;});setOpenPriceMenu(null);}} style={{width:"100%",textAlign:"left",background:"#F2F7FF",border:"1px solid #C6D7EE",borderRadius:5,padding:"7px 10px",marginBottom:5,fontSize:11,fontWeight:700,cursor:"pointer",color:"#003584"}}>✓ Use preferred brand, otherwise lowest comparable cost</button>
-                              {unitOptions.map(opt=>{
-                                const isSelected=displayOption?.vendorItemId===opt.vendorItemId;
-                                const blocked=!orderable(opt);
-                                return (
-                                  <div key={opt.vendorItemId}><button onClick={()=>{
-                                      if(blocked) return;
-                                      setVendorOverride(prev=>({...prev,[activeKey]:opt.vendorItemId}));
-                                      setOpenPriceMenu(null);
-                                    }}
-                                    disabled={blocked}
-                                    title={blocked?blockReason(opt):undefined}
-                                    style={{width:"100%",display:"grid",gridTemplateColumns:"minmax(90px,1fr) auto minmax(72px,auto) 18px",gap:8,alignItems:"center",
-                                      background:isSelected?"#E8F1FF":"white",border:isSelected?"1px solid #60A5FA":"1px solid #E2E8F0",marginBottom:4,
-                                      borderRadius:4,padding:"9px 10px",cursor:blocked?"not-allowed":"pointer",textAlign:"left",opacity:blocked?0.58:1}}>
-                                    <span style={{fontSize:12,fontWeight:400}}>{opt.vendorName} · {opt.brand||"Brand not stated"}<small style={{display:"block"}}>{opt.description} · {opt.packSize}{item.preferredBrand&&brandsMatch(opt.brand,item.preferredBrand)?" · Preferred brand":""}</small></span>
-                                    {blocked?(
-                                      <span style={{fontSize:11,fontWeight:600,color:"#94A3B8",gridColumn:"2 / 4",textAlign:"right"}}>Unavailable</span>
-                                    ):(
-                                      <>
-                                        <span style={{fontSize:12,fontWeight:700,textAlign:"right",whiteSpace:"nowrap"}} title={opt.quoteBasis&&opt.quoteBasis!=="case"?`Vendor quotes ${formatMoney(opt.quotedPrice)} per ${opt.quoteUnit||"each"}; shown as one full pack`:undefined}>{formatMoney(opt.unitPrice)}{opt.comparisonUnit&&<small style={{display:"block"}}>{formatMoney(opt.comparisonPrice)} / {unitLabel(opt.comparisonUnit)}</small>}</span>
-                                        <span style={{fontSize:10,fontWeight:600,color:"#64748B",textAlign:"right",whiteSpace:"nowrap"}}>{opt.difference===0?"Best":`+${formatMoney(opt.difference)}${opt.comparisonUnit?" / "+unitLabel(opt.comparisonUnit):""}`}</span>
-                                      </>
-                                    )}
-                                    <span style={{fontSize:12,color:"#2563EB",textAlign:"center"}}>{isSelected?"✓":""}</span>
-                                  </button>
-                                  {["owner","manager"].includes(org.role)&&opt.brand&&!blocked&&<label style={{display:"block",fontSize:11,padding:"0 10px 6px"}}><input type="checkbox" checked={!!item.preferredBrand&&brandsMatch(opt.brand,item.preferredBrand)} onChange={async e=>{const preferred=e.target.checked?opt.brand:null;try{await catalogService.updateItemSettings(item.catalogItemId,{preferred_brand:preferred});await loadData();}catch(error){setImportNotice({message:error.message});}}}/> Prefer this brand</label>}
-                                  </div>
-                                );
-                              })}
-                              <details style={{marginTop:4,fontSize:11}}><summary style={{cursor:"pointer"}}>Negotiated price</summary>
+                              {vendorOverride[activeKey]&&<button onClick={()=>setVendorOverride(prev=>{const next={...prev};delete next[activeKey];return next;})} style={{fontSize:10,background:"none",border:0,padding:"4px 0 0",cursor:"pointer"}}>Use lowest price</button>}
+                              {alternativesMenu}
+                              </div>
                               <div className="order-price-card" title="Price agreed with the vendor you select" style={{border:"1px solid #E3E7ED",background:"white"}}>
-                                <div style={{fontSize:8,fontWeight:900,textTransform:"uppercase",letterSpacing:".06em",color:"#667085",marginBottom:4}}>Negotiated price</div>
+                                <div style={{fontSize:10,fontWeight:400,color:"#667085",marginBottom:4}}>Negotiated price</div>
                                 <select aria-label={`Negotiated vendor for ${item.name}`} value={negotiationVendorId} onChange={e=>{setNegotiatedVendorDrafts(prev=>({...prev,[activeKey]:e.target.value}));setCustomPriceDrafts(prev=>{const next={...prev};delete next[activeKey];return next;});setNegotiationErrors(prev=>{const next={...prev};delete next[activeKey];return next;});}}
                                   style={{width:"100%",fontSize:10,border:"1px solid #CBD5E1",borderRadius:5,padding:"3px",marginBottom:4,background:"white"}}>
                                   {!rankedOptions.length&&<option value="">No eligible vendor</option>}
@@ -1122,18 +1120,9 @@ export default function App() {
                                   setNegotiatedVendorDrafts(prev=>{const next={...prev};delete next[activeKey];return next;});
                                   setCustomPriceDrafts(prev=>{const next={...prev};delete next[activeKey];return next;});
                                 }} style={{border:0,background:"none",padding:"3px 0 0",fontSize:9,color:"#2563EB",cursor:"pointer"}}>↺ Remove this vendor's negotiated price</button>}
-                              </div></details>
-                              {pendingVendors.length>0&&<div style={{borderTop:"1px solid #E2E8F0",padding:"8px 10px",fontSize:10,color:"#475569"}}>
-                                <b>Possible listings awaiting mapping</b>
-                                {pendingVendors.slice(0,5).map(candidate=><div key={candidate.vendorId+candidate.description} style={{marginTop:5}}>
-                                  {candidate.vendorName} · {candidate.price!=null?formatMoney(candidate.price):"No comparable current quote"} · {candidate.packSize||"Pack missing"}
-                                  <span style={{display:"block",color:"#64748B"}}>{candidate.description} · Verify identity and pack before price comparison</span>
-                                </div>)}
-                                <button onClick={()=>{setTab("catalog");setOpenPriceMenu(null);}} style={{...btn("#E8F1FF","#003584",{fontSize:10,padding:"5px 9px",marginTop:7})}}>Review in Item Catalog</button>
-                              </div>}
                               {activeQty>1&&rankedOptions.some(opt=>opt.vendorId!==activeVendorId)&&(
-                                <div style={{padding:"9px 10px",borderTop:"1px solid #E2E8F0",fontSize:11,color:"#475569"}}>
-                                  <div style={{fontWeight:700,marginBottom:6}}>Vendor short? Split {selectedUnit==="case"?"cases":"units"} across two vendors</div>
+                                <details open={!!splitOrders[activeKey]?.vendorId} style={{marginTop:6,fontSize:11,color:"#475569"}}>
+                                  <summary style={{cursor:"pointer"}}>Split order</summary>
                                   <div style={{display:"flex",alignItems:"center",gap:6}}>
                                     <select aria-label={`Split vendor for ${item.name}`} value={splitOrders[activeKey]?.vendorId||""}
                                       onChange={e=>setSplitOrders(prev=>({...prev,[activeKey]:{vendorId:e.target.value,quantity:prev[activeKey]?.quantity||1}}))}
@@ -1148,11 +1137,13 @@ export default function App() {
                                   </div>
                                   {splitOrders[activeKey]?.vendorId&&<button onClick={()=>setSplitOrders(prev=>{const next={...prev};delete next[activeKey];return next;})}
                                     style={{border:0,background:"none",color:"#2563EB",padding:"6px 0 0",cursor:"pointer",fontSize:10}}>Remove split</button>}
-                                </div>
+                                </details>
                               )}
+                              </div>
                             </div>
-                          );
-                        }
+                          </div>,
+                        ];
+
                         return cells;
                       })}
                     </div>

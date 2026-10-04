@@ -1,3 +1,4 @@
+import {automaticAlternativeVerified} from "./alternative-groups.js";
 import {vendorListingLabel} from "./vendor-listing.js";
 import {calculatedUnitCost} from "./quote-controls.js";
 import {casePriceFromQuote,parsePackSize,priceBasisFor,compareProductIdentity,comparePurchasingPack,suggestCategory,quoteStatus,brandsMatch} from "../procurement.js";
@@ -249,7 +250,7 @@ export function orderGuideAssessment(input){
   if(item.brand_locked&&!brandsMatch(vendorItem.brand,item.locked_brand))blockers.push("brand");
   const fieldsReady=blockers.length===0;
   const approved=mapping.comparison_track==="exact"&&mapping.confidence_score===100;
-  const verification=approved&&((clientApproved&&item.comparison_mode!=="exact")||!peers.length)?mapping:mappingVerification(vendorItem,item,peers);
+  const verification=approved&&((clientApproved&&item.comparison_mode!=="exact")||automaticAlternativeVerified(vendorItem,item,peers)||!peers.length)?mapping:mappingVerification(vendorItem,item,peers);
   if(verification.comparison_track!=="exact")blockers.push("association");
   return {ready:blockers.length===0,fieldsReady,blockers,evidence,verification};
 }

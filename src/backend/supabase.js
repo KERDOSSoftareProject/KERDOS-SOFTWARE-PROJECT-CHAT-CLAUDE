@@ -91,6 +91,8 @@ export function createSupabaseBackend({url,anonKey}) {
       },
     },
     catalog:{
+      groupAutomaticAlternatives(row){return providerResult(client.rpc("kerdos_group_automatic_alternatives",{p_organization_id:row.organizationId,p_vendor_item_ids:row.vendorItemIds,p_target_catalog_item_id:row.targetCatalogItemId,p_key:row.key,p_dimension:row.dimension,p_revisions:row.revisions}),"Group automatic alternatives");},
+      separateAutomaticAlternatives(row){return providerResult(client.rpc("kerdos_separate_automatic_alternatives",{p_organization_id:row.organizationId,p_target_catalog_item_id:row.targetCatalogItemId}),"Separate automatic alternatives");},
       associateAlternatives(row){return providerResult(client.rpc("kerdos_associate_alternatives",{p_organization_id:row.organizationId,p_vendor_item_ids:row.vendorItemIds,p_target_catalog_item_id:row.targetCatalogItemId,p_name:row.name,p_preferred_brand:row.preferredBrand||null,p_revisions:row.revisions}),"Associate selected alternatives");},
       saveRow(row){return providerResult(client.rpc("kerdos_save_catalog_row",{
         p_organization_id:row.organizationId,p_vendor_item_id:row.vendorItemId,p_mapping_id:row.mappingId,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {blockReason,orderable,priceForOffer,rankVendorOffers,solveOrder} from "./ordering.js";
+import {blockReason,orderable,priceForOffer,rankVendorOffers,offerDollarDifference,solveOrder} from "./ordering.js";
 const option=(vendorId,price,extra={})=>({vendorId,vendorName:vendorId,vendorItemId:`${vendorId}-item`,price,packSize:"1 CT",matchTrack:"exact",matchConfidence:100,...extra});
 assert.equal(orderable(option("a",10)),true);
 assert.equal(orderable(option("a",10,{matchTrack:"new"})),false);
@@ -50,3 +50,9 @@ console.log("Alternative ranking passed: unequal packs, common unit prices, nego
 
 const sameVendorChoice=solveOrder([{catalogItemId:"choice",quantity:1,orderUnit:"case",forcedVendorId:"vendor-premium",options:[option("vendor",5,{vendorItemId:"vendor-basic"}),option("vendor",7,{vendorItemId:"vendor-premium"})]}],[])[0];
 assert.equal(sameVendorChoice.vendorItemId,"vendor-premium","selecting a listing must retain the chosen product even within one vendor");
+
+const ounceOffers=rankVendorOffers([55.9,56.9,57].map((price,index)=>option(String(index),price,{casePrice:price,packSize:"6/66.5 OZ",perUnit:{price:Math.round(price/399*10000)/10000,unit:"OZ"}})));
+assert.deepEqual(ounceOffers.map(o=>offerDollarDifference(o,ounceOffers[0])),[0,1,1.1],"dollar differences retain the full pack premium despite per-ounce rounding");
+const packOffers=rankVendorOffers([option("big",20,{casePrice:20,packSize:"1/10 LB",perUnit:{price:2,unit:"LB"}}),option("small",12,{casePrice:12,packSize:"1/4 LB",perUnit:{price:3,unit:"LB"}})]);
+assert.equal(offerDollarDifference(packOffers[1],packOffers[0]),10,"different packs compare equivalent purchasing quantities in dollars");
+console.log("Dropdown dollar differences passed: equal packs, small per-ounce premiums and unequal purchasing packs.");

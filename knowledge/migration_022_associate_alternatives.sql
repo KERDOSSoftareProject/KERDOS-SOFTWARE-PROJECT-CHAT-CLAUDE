@@ -15,7 +15,7 @@ begin
  if (select count(distinct vendor_item_id) from item_mappings where vendor_item_id=any(p_vendor_item_ids) and organization_id=p_organization_id)<>v_count then raise exception 'A selected association changed; refresh and select again'; end if;
  for v_vendor in select * from vendor_items where id=any(p_vendor_item_ids) and organization_id=p_organization_id order by id loop
   if (p_revisions->>v_vendor.id::text)::bigint is null or (p_revisions->>v_vendor.id::text)::bigint<>v_vendor.row_revision then raise exception 'A selected product changed; refresh and select again'; end if;
-  v_resolutions:=coalesce(v_vendor.field_resolutions,'{}'::jsonb);
+  v_resolutions:=coalesce(v_vendor.field_resolutions,'{}'::jsonb)-'automatic_group';
   for v_key,v_value in select key,value from jsonb_each(jsonb_build_object('description',v_vendor.description,'brand',v_vendor.brand,'pack_size',v_vendor.pack_size,'selling_unit',v_vendor.selling_unit,'price',v_vendor.price,'catalog_item_id',v_item.id,'category_id',v_item.category_id)) loop
    v_resolutions:=jsonb_set(v_resolutions,array[v_key],jsonb_build_object('value',v_value,'confirmedAt',now(),'confirmedBy',auth.uid(),'sourceValue',coalesce(v_resolutions->v_key->'sourceValue',v_value)));
   end loop;

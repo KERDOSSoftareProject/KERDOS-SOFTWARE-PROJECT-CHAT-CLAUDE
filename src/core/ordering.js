@@ -1,3 +1,4 @@
+import {parsePackSize,measurement} from "../procurement.js";
 // Industry-neutral ordering rules. UI and persistence adapters supply plain
 // items/vendors; this module decides eligibility and allocation.
 const money=value=>Math.round(Number(value)*100)/100;
@@ -32,6 +33,20 @@ export function priceForOffer(option,negotiation,unit="case"){
 
 // The same ranking drives the menu, savings display and chosen vendor.
 // Blocked quotations remain visible but never establish the best price.
+// Express the premium in dollars for the amount in the best purchasing pack.
+// Compare exact pack quantities before rounding; a rounded per-ounce premium
+// would otherwise erase a real $1 difference between large packs.
+export function offerDollarDifference(option,best){
+  if(!option||!best||!orderable(option)||!orderable(best))return null;
+  if(!best.comparisonUnit)return money(Math.max(0,option.unitPrice-best.unitPrice));
+  const pack=parsePackSize(option.packSize),reference=parsePackSize(best.packSize);
+  const dimension=measurement(1,best.comparisonUnit)?.dimension;
+  if(!option.costOverride&&!best.costOverride&&pack?.parsed&&reference?.parsed&&pack.dimension===dimension&&reference.dimension===dimension&&pack.baseTotal>0){
+    return money(Math.max(0,option.unitPrice*reference.baseTotal/pack.baseTotal-best.unitPrice));
+  }
+  return money(Math.max(0,(option.comparisonPrice-best.comparisonPrice)*best.unitPrice/best.comparisonPrice));
+}
+
 export function rankVendorOffers(options,negotiations,unit="case"){
   const eligible=options.filter(orderable);
   const comparisonUnit=unit==="case"&&eligible.length&&eligible.every(o=>o.perUnit&&o.perUnit.unit===eligible[0].perUnit?.unit)?eligible[0].perUnit.unit:null;

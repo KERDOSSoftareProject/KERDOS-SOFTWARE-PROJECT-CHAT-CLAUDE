@@ -236,6 +236,43 @@ assert.equal(groupedItem.comparison_mode,'alternatives');
 assert.equal(orderGuideAssessment({item:{...groupedItem,brand_locked:true,locked_brand:'Other brand'},vendorItem:checked.vendorItem,mapping:checked.mapping,category:{id:cat,name:'General'},peers:[alternative]}).ready,false,'required brand still blocks a different brand');
 assert.equal(orderGuideAssessment({item:{...groupedItem,comparison_mode:'exact'},vendorItem:checked.vendorItem,mapping:checked.mapping,category:{id:cat,name:'General'},peers:[alternative]}).ready,false,'exact mode retains identity checks');
 console.log('Selected alternatives passed: atomic grouping, different brands/packs, persistent preference, stale selection, role isolation and exact/required-brand modes.');
+await db.exec(fs.readFileSync(root+'/knowledge/migration_023_automatic_alternatives.sql','utf8'));
+await db.exec(fs.readFileSync(root+'/knowledge/migration_023_automatic_alternatives.sql','utf8'));
+const {alternativeKey,automaticAlternativeVerified,alternativeGroups}=await import('../core/alternative-groups.js');
+const autoIds=[];
+for(const [index,brand] of ['BrandA','BrandB'].entries()){
+ const ci=(await db.query("insert into catalog_items(id,organization_id,name,category_id) values(gen_random_uuid(),$1,'Tongol tuna',$2) returning id",[org,cat])).rows[0].id;
+ const row=(await db.query("insert into vendor_items(organization_id,vendor_id,description,brand,pack_size,selling_unit,price_basis,price,price_source,last_updated) values($1,$2,$3,$4,$5,'CS','case',50,'price_list',now()) returning *",[org,vendor,index?'Tongol tuna BrandB':'BrandA tuna tongol',brand,index?'1/10 LB':'6/66.5 OZ'])).rows[0];
+ await db.query("insert into item_mappings values(gen_random_uuid(),$1,$2,$3,'review',70,'rule_based')",[org,row.id,ci]);
+ autoIds.push({ci,row});
+}
+const key=alternativeKey(autoIds[0].row),autoRevisions=Object.fromEntries(autoIds.map(x=>[x.row.id,x.row.row_revision]));
+const autoGroup=(expected=autoRevisions,organization=org,productKey=key)=>db.query('select kerdos_group_automatic_alternatives($1,$2::uuid[],$3,$4,$5,$6::jsonb)',[organization,autoIds.map(x=>x.row.id),autoIds[0].ci,productKey,'mass',JSON.stringify(expected)]);
+for(const row of [autoIds[0].row,autoIds[1].row,{description:'Milk 2% BrandA 12/1 QT',brand:'BrandA',pack_size:'12/1 QT'},{description:'Half and Half UHT',brand:'PACKER',pack_size:'12/1 QT'}]){
+ assert.equal((await db.query('select kerdos_alternative_key($1,$2,$3) as key',[row.description,row.brand,row.pack_size])).rows[0].key,alternativeKey(row),'server and client use identical conservative keys');
+}
+await assert.rejects(autoGroup({...autoRevisions,[autoIds[0].row.id]:999}),/changed/);
+await assert.rejects(autoGroup(autoRevisions,'00000000-0000-0000-0000-000000000099'),/access/);
+await assert.rejects(autoGroup(autoRevisions,org,'tuna'),/details/);
+assert.equal((await db.query('select catalog_item_id from item_mappings where vendor_item_id=$1',[autoIds[1].row.id])).rows[0].catalog_item_id,autoIds[1].ci,'failed grouping rolls back');
+await autoGroup();
+let autoRows=(await db.query('select * from vendor_items where id=any($1::uuid[])',[autoIds.map(x=>x.row.id)])).rows;
+const autoItem=(await db.query('select * from catalog_items where id=$1',[autoIds[0].ci])).rows[0];
+assert.equal(autoRows.every(row=>!row.field_resolutions.row_approval),true,'automatic grouping does not invent a client approval');
+assert.equal(automaticAlternativeVerified(autoRows[0],autoItem,autoRows),true);
+const autoMappings=(await db.query('select * from item_mappings where vendor_item_id=any($1::uuid[])',[autoRows.map(r=>r.id)])).rows;
+for(const m of autoMappings)if(m.confidence_score!=null)m.confidence_score=Number(m.confidence_score);
+assert.equal(new Set(autoMappings.map(m=>m.catalog_item_id)).size,1);
+assert.equal(alternativeGroups({vendorItems:autoRows,catalogItems:[autoItem],mappings:autoMappings}).length,0,'refresh does not reapply the group');
+const readyAuto=orderGuideAssessment({item:autoItem,vendorItem:autoRows[0],mapping:autoMappings.find(m=>m.vendor_item_id===autoRows[0].id),category:{id:cat,name:'General'},peers:autoRows.filter(r=>r.id!==autoRows[0].id)});
+assert.equal(readyAuto.ready,true,'clear alternatives become orderable with existing field evidence');
+assert.equal(orderGuideAssessment({item:autoItem,vendorItem:{...autoRows[0],import_row:{reviewRequired:true}},mapping:autoMappings.find(m=>m.vendor_item_id===autoRows[0].id),category:{id:cat,name:'General'},peers:autoRows.filter(r=>r.id!==autoRows[0].id)}).ready,false,'source conflicts remain blocked');
+await db.query('select kerdos_separate_automatic_alternatives($1,$2)',[org,autoItem.id]);
+autoRows=(await db.query('select * from vendor_items where id=any($1::uuid[])',[autoIds.map(x=>x.row.id)])).rows;
+assert.equal(autoRows.every(row=>row.field_resolutions.automatic_group_excluded===true),true,'undo prevents regrouping');
+for(const x of autoIds)assert.equal((await db.query('select catalog_item_id from item_mappings where vendor_item_id=$1',[x.row.id])).rows[0].catalog_item_id,x.ci,'undo restores original KERDOS numbers');
+await assert.rejects(autoGroup(Object.fromEntries(autoRows.map(r=>[r.id,r.row_revision]))),/details/);
+console.log('Automatic grouping SQL passed: shared number, no fabricated approvals, readiness, source review, stale revisions, key validation, organization isolation and persistent undo.');
 await db.exec(`update organization_members set role='employee';`);
 await assert.rejects(save(Number((await db.query('select row_revision from vendor_items')).rows[0].row_revision),{price:9}),/Owner or manager/);
 console.log('Database check passed: repeat migration, partial fields, quote calculation readiness, atomic rollback, stale edits, preserved item number, price update without duplication, and role/organization checks.');
