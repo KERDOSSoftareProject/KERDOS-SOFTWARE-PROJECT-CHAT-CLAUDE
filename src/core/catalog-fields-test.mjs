@@ -51,7 +51,7 @@ configureVocabulary([{kind:"unit",term:"sheet",canonical:"SHEET"}]);
 assert.ok(unitChoices([{kind:"unit",term:"sheet",canonical:"SHEET"}]).some(u=>u.value==="sheet"));
 assert.equal(casePriceFromQuote(2,"measure","sheet","100 sheet"),200);
 configureVocabulary([]);
-assert.deepEqual(CATALOG_COLUMNS.map(c=>c[0]),["itemNumber","vendor","category","itemName","product","brand","pack","price","sellingUnit","unitCost"]);
+assert.deepEqual(CATALOG_COLUMNS.map(c=>c[0]),["itemNumber","vendor","vendorItemNumber","category","itemName","product","brand","pack","price","sellingUnit","unitCost"]);
 console.log("KERDOS new-item and remembered-item workflow tests passed");
 
 const changedWords={...incoming,description:"Vendor changed the label"};

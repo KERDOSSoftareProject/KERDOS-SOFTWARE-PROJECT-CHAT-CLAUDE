@@ -36,3 +36,17 @@ assert.equal(reranked.assignedVendorId,"a","the agreed vendor becomes the winner
 const chosen=solveOrder([{catalogItemId:"cheese",quantity:1,forcedVendorId:"b",options:quotes.map(o=>({...o,price:priceForOffer(o,agreement)}))}],[])[0];
 assert.equal(chosen.assignedVendorId,"b","a deliberate replacement vendor stays selected");
 console.log("KERDOS universal ordering-core tests passed");
+
+const unequal=[option("small",12,{casePrice:12,perUnit:{price:3,unit:"LB"}}),option("large",20,{casePrice:20,perUnit:{price:2,unit:"LB"}})];
+const normalized=rankVendorOffers(unequal);
+assert.equal(normalized[0].vendorId,"large","alternatives rank by common unit cost, not cheaper small pack");
+assert.equal(normalized[1].difference,1);
+assert.equal(normalized[0].unitPrice,20,"actual order pack price is retained");
+assert.equal(rankVendorOffers(unequal,{small:4})[0].vendorId,"small","negotiated amounts normalize using the same pack");
+const normalizedOrder=solveOrder([{catalogItemId:"alternatives",quantity:2,orderUnit:"case",options:unequal}],[])[0];
+assert.equal(normalizedOrder.assignedVendorId,"large");
+assert.equal(normalizedOrder.lineTotal,40,"order totals use actual pack prices");
+console.log("Alternative ranking passed: unequal packs, common unit prices, negotiated amounts, and actual basket totals.");
+
+const sameVendorChoice=solveOrder([{catalogItemId:"choice",quantity:1,orderUnit:"case",forcedVendorId:"vendor-premium",options:[option("vendor",5,{vendorItemId:"vendor-basic"}),option("vendor",7,{vendorItemId:"vendor-premium"})]}],[])[0];
+assert.equal(sameVendorChoice.vendorItemId,"vendor-premium","selecting a listing must retain the chosen product even within one vendor");

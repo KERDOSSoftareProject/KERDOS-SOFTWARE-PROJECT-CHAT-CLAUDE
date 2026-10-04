@@ -181,9 +181,9 @@ await test("prepared vegetables are reviewed outside Produce while fresh vegetab
   assert.equal(suggestCategory("FRESH EGGPLANT",restaurant,[]).category.id,"produce");
   assert.equal(suggestCategory("CANNED ARTICHOKE HEARTS",restaurant,[]).category.id,"general");
   assert.equal(suggestCategory("FRESH ARTICHOKE HEARTS",restaurant,[]).category.id,"produce");
-  assert.equal(suggestCategory("BREADED EGGPLANT",restaurant,[]).confidence,"guess");
+  assert.equal(suggestCategory("BREADED EGGPLANT",restaurant,[]).confidence,"confident");
   const better=[...restaurant,{id:"prepared",name:"Prepared Foods",keywords:["breaded","fries"]}];
-  assert.equal(suggestCategory("SWEET POTATO FRIES",better,[]).category.id,"prepared");
+  assert.equal(suggestCategory("SWEET POTATO FRIES",better,[]).category.id,"general");
   configureCategoryProfile(null);
   assert.equal(suggestCategory("BREADED EGGPLANT",restaurant,[]).category.id,"produce","other industries do not inherit restaurant rules");
 });

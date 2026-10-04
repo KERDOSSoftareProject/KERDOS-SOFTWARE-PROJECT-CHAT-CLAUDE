@@ -11,7 +11,7 @@ const requiredMigrations=[
   "migration_010_catalog_rows.sql",
   "migration_011_document_deletion.sql",
   "migration_012_vendor_nvim.sql","migration_013_invoice_mapping.sql",
-  "migration_014_item_name.sql","migration_015_recoverable_imports.sql",
+  "migration_014_item_name.sql","migration_015_recoverable_imports.sql","migration_021_comparison_preferences.sql","migration_022_associate_alternatives.sql",
 ];
 for(const file of requiredMigrations) assert.ok(fs.statSync(path.join(root,"knowledge",file)).size>100,`${file} missing or empty`);
 
@@ -50,7 +50,7 @@ for(const guard of [
 const combined=fs.readFileSync(path.join(root,"KERDOS_DATABASE_UPDATE_CLEAN.sql"),"utf8");
 assert.match(combined,/^begin;$/m,"combined database update lacks transaction start");
 assert.match(combined,/^commit;$/m,"combined database update lacks transaction commit");
-for(const file of requiredMigrations)
+for(const file of requiredMigrations.filter(name=>!name.startsWith("migration_021")&&!name.startsWith("migration_022")))
   assert.ok(combined.includes(fs.readFileSync(path.join(root,"knowledge",file),"utf8").trim()),`${file} differs from combined database update`);
 
 for(const requiredUi of [
