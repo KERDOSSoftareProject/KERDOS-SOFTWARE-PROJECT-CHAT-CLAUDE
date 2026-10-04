@@ -1,9 +1,10 @@
+import {vendorListingLabel} from "./vendor-listing.js";
 import {calculatedUnitCost} from "./quote-controls.js";
 import {casePriceFromQuote,parsePackSize,priceBasisFor,compareProductIdentity,comparePurchasingPack,suggestCategory,quoteStatus,brandsMatch} from "../procurement.js";
 import {mappingVerification} from "../services/catalog.js";
 
 export const CATALOG_COLUMNS=[
-  ["itemNumber","KERDOS item #"],["vendor","Vendor"],["category","Category"],
+  ["itemNumber","KERDOS item #"],["vendor","Vendor name"],["vendorItemNumber","Vendor item number"],["category","Category"],
   ["itemName","Item name"],["product","Vendor description"],["brand","Brand"],["pack","Pack"],
   ["price","Quoted price"],["sellingUnit","Quoted per"],["unitCost","Unit cost"],
 ];
@@ -207,6 +208,7 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   return {
     itemNumber:{...field(item.master_item_number,numAcc,numWhy),label:manualLink?"Manual":"Automated"},
     vendor:field(vendor?.name||"",vendor?STATED:null,"Vendor selected at import"),
+    vendorItemNumber:field(String(vi.vendor_item_code||"").trim()||vendorListingLabel(vi)||"",vi.vendor_item_code||vendorListingLabel(vi)?100:null,"Vendor code or persistent NVIM number"),
     category:clientField("category_id",category?.name||"Uncategorized",catAcc,catWhy||"No category yet"),
     itemName:clientField("item_name",item.name||"",nameAcc,nameWhy),
     product:clientField("description",vi.description,descAcc,descWhy),
@@ -244,10 +246,10 @@ export function orderGuideAssessment(input){
   const status=quoteStatus(vendorItem,settings,now);
   if(status!=="current")blockers.push(status==="expired"?"expired":"quote");
   if(vendorItem.import_row?.reviewRequired)blockers.push("source");
-  if(!clientApproved&&item.brand_locked&&!brandsMatch(vendorItem.brand,item.locked_brand))blockers.push("brand");
+  if(item.brand_locked&&!brandsMatch(vendorItem.brand,item.locked_brand))blockers.push("brand");
   const fieldsReady=blockers.length===0;
   const approved=mapping.comparison_track==="exact"&&mapping.confidence_score===100;
-  const verification=approved&&(clientApproved||!peers.length)?mapping:mappingVerification(vendorItem,item,peers);
+  const verification=approved&&((clientApproved&&item.comparison_mode!=="exact")||!peers.length)?mapping:mappingVerification(vendorItem,item,peers);
   if(verification.comparison_track!=="exact")blockers.push("association");
   return {ready:blockers.length===0,fieldsReady,blockers,evidence,verification};
 }

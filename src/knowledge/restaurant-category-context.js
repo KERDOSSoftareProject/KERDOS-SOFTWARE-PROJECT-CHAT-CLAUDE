@@ -1,6 +1,6 @@
 // Restaurant-only product state cues. Keep industry vocabulary outside the
 // procurement engine. A prepared form outweighs its raw ingredient category.
-const PREPARED = new Set(["breaded", "battered", "fried", "fries", "fry", "parfried", "precooked", "cooked", "roasted", "grilled", "canned", "jarred", "marinated", "pickled"]);
+const PREPARED = new Set(["prepared", "breaded", "battered", "fried", "fries", "fry", "parfried", "precooked", "cooked", "roasted", "grilled", "canned", "jarred", "marinated", "pickled"]);
 
 export function restaurantCategoryContext(words, categories) {
   const usable=categories.filter(category=>!category.is_holding_pen);
@@ -9,6 +9,10 @@ export function restaurantCategoryContext(words, categories) {
     return category?{category,confidence:"confident",reason}:null;
   };
   const has=(...terms)=>terms.some(term=>words.includes(term));
+  if(has("canned","jarred","marinated","pickled","preserved")||words.some(w=>PREPARED.has(w))) {
+    const general=choose([/^general$/i],"Prepared or preserved product belongs in General");
+    if(general)return general;
+  }
   // Product form takes precedence over an ingredient word. The fallback
   // names are the bundled Restaurant template; no categories are created.
   if(has("jam","jelly","jellies","preserves","marmalade"))

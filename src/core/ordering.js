@@ -33,18 +33,23 @@ export function priceForOffer(option,negotiation,unit="case"){
 // The same ranking drives the menu, savings display and chosen vendor.
 // Blocked quotations remain visible but never establish the best price.
 export function rankVendorOffers(options,negotiations,unit="case"){
-  const ranked=options.map(option=>({...option,unitPrice:priceForOffer(option,negotiations,unit)}))
-    .sort((a,b)=>Number(!orderable(a))-Number(!orderable(b))||a.unitPrice-b.unitPrice);
-  const best=ranked.find(orderable)?.unitPrice??null;
-  return ranked.map(option=>({...option,difference:orderable(option)&&best!=null?money(option.unitPrice-best):null}));
+  const eligible=options.filter(orderable);
+  const comparisonUnit=unit==="case"&&eligible.length&&eligible.every(o=>o.perUnit&&o.perUnit.unit===eligible[0].perUnit?.unit)?eligible[0].perUnit.unit:null;
+  const ranked=options.map(option=>{
+    const unitPrice=priceForOffer(option,negotiations,unit);
+    const comparisonPrice=comparisonUnit&&option.perUnit&&Number(option.casePrice)>0?option.perUnit.price*unitPrice/option.casePrice:unitPrice;
+    return {...option,unitPrice,comparisonPrice,comparisonUnit};
+  }).sort((a,b)=>Number(!orderable(a))-Number(!orderable(b))||a.comparisonPrice-b.comparisonPrice);
+  const best=ranked.find(orderable)?.comparisonPrice??null;
+  return ranked.map(option=>({...option,difference:orderable(option)&&best!=null?money(option.comparisonPrice-best):null}));
 }
 
 export function solveOrder(cartItems,vendors){
   if(!cartItems.length)return [];
   let assignments=cartItems.map(item=>{
-    const valid=item.options.filter(orderable),cheapest=[...valid].sort((a,b)=>a.price-b.price)[0]||null;
+    const valid=item.options.filter(orderable),priced=valid.map(o=>({...o,casePrice:o.casePrice??o.price})),cheapest=rankVendorOffers(priced,Object.fromEntries(priced.map(o=>[o.vendorId,o.price])),item.orderUnit||"case")[0]||null;
     if(!cheapest)return {...item,assignedVendorId:null,assignedVendorName:null,vendorItemId:null,price:0,packSize:null,orderUnit:item.orderUnit,lineTotal:0,cheapestPrice:0,premiumPaid:0,locked:false,unorderable:true};
-    const forced=item.forcedVendorId?valid.find(option=>option.vendorId===item.forcedVendorId):null;
+    const forced=item.forcedVendorId?valid.find(option=>option.vendorId===item.forcedVendorId||option.vendorItemId===item.forcedVendorId):null;
     if(item.forcedVendorId&&!forced)return {...item,assignedVendorId:null,assignedVendorName:null,vendorItemId:null,price:null,packSize:null,lineTotal:0,cheapestPrice:cheapest.price,premiumPaid:0,locked:true,unorderable:true};
     const best=forced||cheapest,effective=item.forcedPrice!=null?item.forcedPrice:best.price,lineTotal=money(effective*item.quantity);
     return {...item,assignedVendorId:best.vendorId,assignedVendorName:best.vendorName,vendorItemId:best.vendorItemId,price:effective,packSize:best.packSize,orderUnit:best.orderUnit,lineTotal,cheapestPrice:cheapest.price,premiumPaid:money(Math.max(0,lineTotal-cheapest.price*item.quantity)),locked:!!item.forcedVendorId||item.forcedPrice!=null,unorderable:false};
