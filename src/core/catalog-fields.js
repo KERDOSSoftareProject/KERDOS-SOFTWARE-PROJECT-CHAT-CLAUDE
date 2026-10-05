@@ -3,7 +3,7 @@ import {casePriceFromQuote,parsePackSize,priceBasisFor,compareProductIdentity,co
 import {mappingVerification} from "../services/catalog.js";
 
 export const CATALOG_COLUMNS=[
-  ["itemNumber","KERDOS item #"],["vendor","Vendor"],["category","Category"],
+  ["itemNumber","KERDOS item #"],["vendor","Vendor"],["vendorItemNumber","Vendor item #"],["category","Category"],
   ["itemName","Item name"],["product","Vendor description"],["brand","Brand"],["pack","Pack"],
   ["price","Quoted price"],["sellingUnit","Quoted per"],["unitCost","Unit cost"],
 ];
@@ -207,6 +207,7 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   return {
     itemNumber:{...field(item.master_item_number,numAcc,numWhy),label:manualLink?"Manual":"Automated"},
     vendor:field(vendor?.name||"",vendor?STATED:null,"Vendor selected at import"),
+    vendorItemNumber:field(vi.vendor_item_code||"",vi.vendor_item_code?STATED:null,"Vendor item number"),
     category:field(category?.name||"Uncategorized",catAcc,catWhy||"No category yet"),
     itemName:field(item.name||"",nameAcc,nameWhy),
     product:clientField("description",vi.description,descAcc,descWhy),
