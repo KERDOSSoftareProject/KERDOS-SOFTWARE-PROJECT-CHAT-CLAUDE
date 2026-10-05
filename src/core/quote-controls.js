@@ -29,6 +29,8 @@ export function defaultComparisonUnit(packSize,industry=''){
   return industryUnitCostDefaults(industry)[pack.dimension]||(pack.dimension==='count'?'EA':pack.unit);
 }
 export function calculatedUnitCost(row,{industry=''}={}){
+  const override=row.field_resolutions?.unit_cost_override?.value;
+  if(override&&Number(override.price)>0&&Number(override.packPrice)>0&&priceBasisFor(override.unit))return {price:Number(override.price),unit:override.unit,manual:true};
   const pack=parsePackSize(row.pack_size),basis=priceBasisFor(row.selling_unit);
   if(!pack?.parsed||!basis)return null;
   const full=casePriceFromQuote(row.price,basis.basis,basis.unit||row.selling_unit,row.pack_size);

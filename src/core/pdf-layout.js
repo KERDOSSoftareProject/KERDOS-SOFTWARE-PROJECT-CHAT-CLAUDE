@@ -12,6 +12,9 @@ export function pdfTextLines(items) {
   const heading=groups.find(g=>g.words.filter(w=>/^product$/i.test(w.str)).length>=2 && g.words.filter(w=>/^price$/i.test(w.str)).length>=2);
   if(!heading){
     const rawLines=groups.map(g=>g.words.sort((a,b)=>a.x-b.x).map(w=>w.str).join(' '));
+    // bare price line merge: a line that is only a number belongs to the
+    // description on the line before it. sourceLine evidence is on the
+    // description row before merging happens.
     const merged=[];
     for(let i=0;i<rawLines.length;i++){
       const next=rawLines[i+1]||"";
@@ -30,20 +33,12 @@ export function pdfTextLines(items) {
       if(segment.length)lanes[lane].push(segment.map(w=>w.str).join(' '));
     }
   }
-  // Each lane has alternating description and price lines because the PDF
-  // draws each on its own baseline. Merge each description+price pair
-  // into one line so the parser sees them together.
   return lanes.map(lane=>{
     const merged=[];
     for(let i=0;i<lane.length;i++){
-      const line=lane[i];
       const next=lane[i+1]||"";
-      if(next&&/^\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$/.test(next.trim())){
-        merged.push(line+"  "+next.trim());
-        i++;
-      } else {
-        merged.push(line);
-      }
+      if(next&&/^\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$/.test(next.trim())){merged.push(lane[i]+"  "+next.trim());i++;}
+      else merged.push(lane[i]);
     }
     return merged;
   }).flat();

@@ -55,7 +55,7 @@ assert.equal(commonPurchasingPack(["4/5 LB","1/20 LB"]),null,"equal total weight
 assert.equal(commonPurchasingPack(["50 LB",null]),null);
 assert.equal(commonPurchasingPack(["50 LB","50 KG"]),null);
 assert.equal(pricePerUnit(30,"50LB","LB").price,0.6);
-const categories=[{id:"p",name:"Produce",keywords:["potato","eggplant","artichoke"]},{id:"g",name:"General",keywords:["base","canned","breaded"]}];
+const categories=[{id:"p",name:"Produce",keywords:["potato","eggplant","artichoke"],range_start:9000,range_end:10999,is_holding_pen:false},{id:"g",name:"General",keywords:["base","canned","breaded"],range_start:29000,range_end:30999,is_holding_pen:false}];
 assert.equal(suggestCategory("YUKON GOLD",categories).category.id,"p");
 assert.equal(suggestCategory("BRD EGGPLANT",categories).category.id,"g");
 assert.equal(suggestCategory("CNND ARTICHOKE HTS",categories).category.id,"g");
@@ -65,10 +65,16 @@ const peers=[{id:"a",vendor_id:"vendor-a",description:"YUKON GOLD",pack_size:"50
   {id:"b",vendor_id:"vendor-b",description:"YUKON GOLD POTATOES",pack_size:"50LB"}];
 const catalog=[{id:"c",name:"YUKON GOLD POTATOES",matching_behavior:"flexible",master_item_number:1000}];
 const mappings=peers.map(p=>({vendor_item_id:p.id,catalog_item_id:"c"}));
-const service=createCatalogService({records:{query(){throw new Error("Equivalent products should reuse the existing item, not write a new one");}}});
+// Cross-vendor import now creates a new entry (2026-10-05).
+// The third vendor gets its own KERDOS number; Item Catalog shows the proposed link.
+const service=createCatalogService({records:{query(t){
+  // stub insert for createItem
+  const chain={insert(v){return {...chain,_v:v};},select(){return chain;},single(){return chain;},then(r){r({data:{id:"created",...(chain._v||{})},error:null});}};
+  return chain;
+}}});
 const result=await service.matchOrCreate({organizationId:"org",vendorId:"vendor-c",description:"YUKON GOLD",packSize:"50 LB",catalogItems:catalog,categories,vendorItems:peers,mappings});
-assert.equal(result.catalogItemId,"c");
-assert.equal(result.track,"exact");
+assert.ok(result.catalogItemId!=="c","third vendor gets its own new KERDOS entry, not attached to existing");
+assert.ok(["review","new"].includes(result.track),"track is review or new, not exact");
 assert.equal(mappingVerification({id:"c",description:"YUKON GOLD",pack_size:"50 LB"},catalog[0],peers).comparison_track,"exact");
 assert.equal(mappingVerification({id:"c",description:"YUKON GOLD A",pack_size:"50 LB"},catalog[0],peers).comparison_track,"review");
 

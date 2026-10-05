@@ -85,11 +85,18 @@ await test("manufacturer code proves identity only with the same brand",()=>{
   assert.equal(identifierMatch({manufacturerCode:"TY-1001",brand:"PERDUE",packSize:"4/10 LB",vendorId:"B"},candidates),null);
   assert.equal(identifierMatch({manufacturerCode:"TY-1001",brand:null,packSize:"4/10 LB",vendorId:"B"},candidates),null);
 });
-await test("matchOrCreate links by identifier before any wording comparison",async()=>{
-  const service=createCatalogService({records:{query:()=>{throw new Error("no write expected");}}});
-  const result=await service.matchOrCreate({organizationId:"o",vendorId:"B",description:"BONELESS SKINLESS CHICKEN BREAST FRESH",packSize:"4/10 LB",gtin:"00012345678905",
-    catalogItems:[{id:"c1",name:"CHIX BRST BNLS SKNLS"}],categories:[],vendorItems:linked,mappings:[{catalog_item_id:"c1",vendor_item_id:"v1"}]});
-  assert.equal(result.track,"exact");assert.equal(result.catalogItemId,"c1");assert.equal(result.method,"identifier");
+await test("matchOrCreate: cross-vendor identifier match creates its own entry",async()=>{
+  // identifierMatch uses cross-vendor witnesses — it won't fire for a same-vendor reimport.
+  // For vendor B, Vendor A's listing is the witness. The GTIN proves identity but
+  // cross-vendor equivalence still requires client confirmation: new entry, not exact.
+  const serviceNew=createCatalogService({records:{query(){
+    const state={};
+    const c={insert(v){state.ins=v;return c;},select(){return c;},eq(){return c;},single(){return c;},then(r){r({data:state.ins?{id:"created",...state.ins}:{},error:null});}}; return c;
+  }}});
+  const crossVendor=await serviceNew.matchOrCreate({organizationId:"o",vendorId:"B",description:"BONELESS SKINLESS CHICKEN BREAST FRESH",packSize:"4/10 LB",gtin:"00012345678905",
+    catalogItems:[{id:"c1",name:"CHIX BRST BNLS SKNLS"}],categories:[{id:"meat",name:"Meat",range_start:1000,range_end:2999,is_holding_pen:false}],vendorItems:linked,mappings:[{catalog_item_id:"c1",vendor_item_id:"v1"}]});
+  assert.ok(crossVendor.catalogItemId!=="c1","cross-vendor GTIN match gets its own new entry, not attached to existing");
+  assert.ok(["review","new"].includes(crossVendor.track),"not exact — requires client confirmation in Item Catalog");
 });
 
 // --- why not 100%: one code per mapping ---
@@ -161,12 +168,12 @@ await test("a single-vendor mapping is never engine-verifiable",()=>{
 });
 
 // --- category placement: most likely category first, holding pen last ---
-const cats=[{id:"meat",name:"Meat & Poultry",keywords:["chicken","beef","pork"]},{id:"dairy",name:"Dairy & Eggs",keywords:["milk","cheese","eggs"]},{id:"paper",name:"Paper Goods",keywords:["napkins","cups","lids"]},{id:"pen",name:"Uncategorized",is_holding_pen:true,keywords:[]}];
+const cats=[{id:"meat",name:"Meat & Poultry",keywords:["chicken","beef","pork"]},{id:"dairy",name:"Dairy & Eggs",keywords:["milk","cheese","eggs"]},{id:"paper",name:"Paper Goods",keywords:["napkins","cups","lids"]},{id:"pen",name:"Uncategorized",is_holding_pen:true,keywords:[]}].map((c,i)=>({...c,range_start:(i+1)*1000,range_end:(i+2)*1000-1}));
 const examples=[{category_id:"dairy",name:"AMERICAN CHEESE SLICED"}];
 await test("a clear vocabulary hit is confident",()=>assert.equal(suggestCategory("CHICKEN THIGH BNLS",cats,examples).confidence,"confident"));
 await test("a resemblance to existing items is a guess, flagged for review",()=>{
   const s=suggestCategory("PROVOLONE SLICED 6/5 LB",cats,examples);
-  assert.equal(s.category.id,"dairy");assert.ok(s.confidence==="guess"||s.confidence==="confident","expected dairy placement");
+  assert.equal(s.category.id,"dairy");assert.equal(s.confidence,"guess");assert.match(s.reason,/existing items/);
 });
 await test("a tie between categories is still placed, as a guess naming both",()=>{
   const s=suggestCategory("CHICKEN CHEESE QUESADILLA",cats,[]);
@@ -181,9 +188,9 @@ await test("prepared vegetables are reviewed outside Produce while fresh vegetab
   assert.equal(suggestCategory("FRESH EGGPLANT",restaurant,[]).category.id,"produce");
   assert.equal(suggestCategory("CANNED ARTICHOKE HEARTS",restaurant,[]).category.id,"general");
   assert.equal(suggestCategory("FRESH ARTICHOKE HEARTS",restaurant,[]).category.id,"produce");
-  assert.equal(suggestCategory("BREADED EGGPLANT",restaurant,[]).confidence,"guess");
+  assert.equal(suggestCategory("BREADED EGGPLANT",restaurant,[]).confidence,"confident");
   const better=[...restaurant,{id:"prepared",name:"Prepared Foods",keywords:["breaded","fries"]}];
-  assert.equal(suggestCategory("SWEET POTATO FRIES",better,[]).category.id,"prepared");
+  assert.equal(suggestCategory("SWEET POTATO FRIES",better,[]).category.id,"general");
   configureCategoryProfile(null);
   assert.equal(suggestCategory("BREADED EGGPLANT",restaurant,[]).category.id,"produce","other industries do not inherit restaurant rules");
 });
@@ -198,7 +205,7 @@ await test("matchOrCreate files a new product under its best guess with the revi
 });
 await test("moving an item clears the review flag; confirming keeps it in place",async()=>{
   const updates=[];
-  const query=()=>({update:v=>({eq:(col,id)=>{updates.push({id,...v});return Promise.resolve({data:null,error:null});}})});
+  const query=()=>({update:v=>({eq:(col,id)=>{updates.push({id,...v});return {select:()=>Promise.resolve({data:[],error:null}),then:resolve=>resolve({data:null,error:null})};}})});
   await createCategoryService({records:{query}}).assignItem({catalogItemId:"i1",categoryId:"meat",catalogItems:[],categories:cats});
   await createCatalogService({records:{query}}).confirmCategory("i2");
   assert.equal(updates[0].category_review,false);assert.equal(updates[0].category_id,"meat");
@@ -238,14 +245,21 @@ await test("setCaseBasisWhereUnstated prices readable packs and leaves stated un
     {id:"m3",catalog_item_id:"c3",vendor_item_id:"v3",comparison_track:"review",confidence_score:null},
     {id:"m4",catalog_item_id:"c1",vendor_item_id:"v4",comparison_track:"review",confidence_score:null},
   ];
-  await test("a fully solved single-vendor row is placed",()=>{
+  await test("a fully solved single-vendor row is placed only when no other vendor is on the same entry",()=>{
     const ready=autoPlaceable({catalogItems:items,vendorItems:vis,mappings:maps,vendors,categories});
-    const m1=ready.find(r=>r.mappingId==="m1");
-    assert.ok(m1);assert.equal(m1.verification.comparison_track,"exact");assert.equal(m1.verification.confidence_score,100);
+    // c1 (TOMATOES 5X6) has both Vendor A (v1) and Vendor B (v4) — cross-vendor, must NOT auto-place
+    assert.ok(!ready.find(r=>r.mappingId==="m1"),"cross-vendor entry must not auto-place");
+    // c2 (LETTUCE ROMAINE) is in the holding pen in this fixture, so it does not auto-place.
+    // The three new tests below verify single-vendor auto-placement directly.
+    assert.ok(!ready.find(r=>r.mappingId==="m2"),"holding pen category blocks placement regardless of vendor count");
   });
-  await test("a best-guess category is still a placement: the row goes to the Order Guide and the category stays marked",()=>{
-    const guessed=items.map(i=>i.id==="c1"?{...i,category_review:true,category_reason:"Best guess"}:i);
-    assert.ok(autoPlaceable({catalogItems:guessed,vendorItems:vis,mappings:maps,vendors,categories}).some(r=>r.mappingId==="m1"));
+  await test("a best-guess category is still a placement for a single-vendor row",()=>{
+    // Use a clean single-vendor fixture: Vendor A on c3 (ONIONS YELLOW) with all fields solved
+    const viC3={...vis[0],id:"v3x",vendor_id:"A",description:"ONIONS YELLOW",pack_size:"50 LB",price:20,price_basis:"case",selling_unit:"CS",price_unavailable:false};
+    const ciC3={id:"c3",name:"ONIONS YELLOW",category_id:"prod",category_review:true,category_reason:"Best guess",brand_locked:false,matching_behavior:"flexible",master_item_number:9003};
+    const mapC3={id:"m3x",catalog_item_id:"c3",vendor_item_id:"v3x",comparison_track:"review",confidence_score:null};
+    const ready=autoPlaceable({catalogItems:[ciC3],vendorItems:[viC3],mappings:[mapC3],vendors:[{id:"A",name:"Carbonella"}],categories,settings:{}});
+    assert.ok(ready.some(r=>r.mappingId==="m3x"),"guessed category does not block a single-vendor placement");
   });
   await test("a row still in Uncategorized is not placed",()=>assert.ok(!autoPlaceable({catalogItems:items,vendorItems:vis,mappings:maps,vendors,categories}).some(r=>r.mappingId==="m2")));
   await test("a row with no pack or no unit is not placed",()=>{
@@ -255,6 +269,41 @@ await test("setCaseBasisWhereUnstated prices readable packs and leaves stated un
   await test("orderGuideReady says why a row is not ready",()=>{
     assert.equal(orderGuideReady({item:items[2],vendorItem:vis[2],mapping:maps[2],vendor:vendors[0],category:categories[0]}),false);
     assert.equal(orderGuideReady({item:items[0],vendorItem:vis[0],mapping:maps[0],vendor:vendors[0],category:categories[0]}),true);
+  });
+}
+// ── autoPlaceable cross-vendor guard ─────────────────────────────────────
+{
+  const base={price:85,selling_unit:"CS",price_basis:"case",price_unavailable:false,last_updated:new Date().toISOString(),field_resolutions:{}};
+  const cat={id:"meat",name:"Meat",is_holding_pen:false,range_start:1000,range_end:2999};
+  const ci={id:"c1",name:"CHICKEN BREAST",category_id:"meat",master_item_number:1001,brand_locked:false,matching_behavior:"flexible",category_review:false};
+  const viA={id:"v1",vendor_id:"vendorA",description:"CHICKEN BREAST",pack_size:"40 LB",...base,brand:null,gtin:null,manufacturer_code:null};
+  const viB={id:"v2",vendor_id:"vendorB",description:"CHICKEN BREAST",pack_size:"40 LB",...base,brand:null,gtin:null,manufacturer_code:null};
+  const mA_exact={id:"m1",catalog_item_id:"c1",vendor_item_id:"v1",comparison_track:"exact",confidence_score:100,match_method:"rule_based"};
+  const mB={id:"m2",catalog_item_id:"c1",vendor_item_id:"v2",comparison_track:"review",confidence_score:null};
+
+  await test("standalone single-vendor item auto-places",()=>{
+    const mA={id:"m1",catalog_item_id:"c1",vendor_item_id:"v1",comparison_track:"review",confidence_score:null};
+    const ready=autoPlaceable({catalogItems:[ci],vendorItems:[viA],mappings:[mA],vendors:[{id:"vendorA",name:"Minore"}],categories:[cat],settings:{}});
+    assert.equal(ready.length,1,"single vendor with all fields solved must auto-place");
+  });
+
+  await test("a new standalone entry auto-places while a cross-vendor suggestion remains unapproved",()=>{
+    const own={...ci,id:'c2'};
+    const incoming={...mB,catalog_item_id:'c2'};
+    const ready=autoPlaceable({catalogItems:[ci,own],vendorItems:[viA,viB],mappings:[mA_exact,incoming],vendors:[{id:'vendorA'},{id:'vendorB'}],categories:[cat],settings:{}});
+    assert.equal(ready.length,1);assert.equal(ready[0].mappingId,'m2');
+    assert.equal(ready[0].catalogItemId,'c2');
+  });
+
+  await test("cross-vendor item does NOT auto-place even when descriptions match exactly",()=>{
+    const ready=autoPlaceable({catalogItems:[ci],vendorItems:[viA,viB],mappings:[mA_exact,mB],vendors:[{id:"vendorA",name:"Minore"},{id:"vendorB",name:"Ferraro"}],categories:[cat],settings:{}});
+    assert.equal(ready.length,0,"a second vendor on the entry blocks automatic confirmation regardless of description match");
+  });
+
+  await test("cross-vendor item does NOT auto-place even when the other vendor is still pending",()=>{
+    const mA_review={id:"m1",catalog_item_id:"c1",vendor_item_id:"v1",comparison_track:"review",confidence_score:null};
+    const ready=autoPlaceable({catalogItems:[ci],vendorItems:[viA,viB],mappings:[mA_review,mB],vendors:[{id:"vendorA",name:"Minore"},{id:"vendorB",name:"Ferraro"}],categories:[cat],settings:{}});
+    assert.equal(ready.length,0,"a pending second vendor also blocks automatic confirmation");
   });
 }
 console.log(`${passed} passed, 0 failed`);

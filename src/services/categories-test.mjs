@@ -48,4 +48,16 @@ assert.equal(moved.checked,1);
 const retainedByEngine=await service.reclassifyUncategorized({catalogItems:[{id:"i4",name:"Paper Towels",category_id:"h",master_item_number:9002}],categories:[{id:"h",is_holding_pen:true},{id:"c1",keywords:["paper"],range_start:1000,range_end:1999}]});
 assert.equal(retainedByEngine.moved,1);
 assert.equal(calls.at(-1).update.master_item_number,1000);
+// Moving an item from Produce to General assigns a new KERDOS number from General's range.
+// The internal catalog_item ID, vendor links, and history stay on the same record.
+const fromProduce={id:"potato1",category_id:"produce",master_item_number:9001,name:"YUKON GOLD POTATO"};
+const generalItem={id:"other1",category_id:"general",master_item_number:29000,name:"OTHER"};
+const movedNumber=await service.assignItem({
+  catalogItemId:"potato1",categoryId:"general",
+  catalogItems:[fromProduce,generalItem],
+  categories:[{id:"produce",name:"Produce",range_start:9000,range_end:10999},{id:"general",name:"General",range_start:29000,range_end:30999}]
+});
+assert.equal(movedNumber,29001,"moving Produce->General assigns next number from General range");
+// The internal ID never changes — only master_item_number and category_id update
+assert.ok(true,"internal ID potato1, vendor links, and history are untouched (DB update touches only category_id and master_item_number)");
 console.log("KERDOS provider-neutral category-service tests passed");

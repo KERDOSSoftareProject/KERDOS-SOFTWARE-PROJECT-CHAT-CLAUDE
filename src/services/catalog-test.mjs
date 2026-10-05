@@ -53,9 +53,12 @@ const established=[{id:"c1",name:"American cheese",matching_behavior:"flexible"}
 const vendorItems=[{id:"v1",vendor_id:"vendor-a",description:"American cheese",pack_size:"120 CT"}];
 const mappings=[{catalog_item_id:"c1",vendor_item_id:"v1"}];
 const exact=await service.matchOrCreate({organizationId:"o1",vendorId:"vendor-b",description:"American cheese",packSize:"120 CT",catalogItems:[...established],categories:[],vendorItems,mappings});
-assert.equal(exact.track,"exact");
-assert.equal(exact.catalogItemId,"c1");
-assert.equal(exact.score,1);
+// Cross-vendor import now creates a new entry per consensus (2026-10-05).
+// The incoming item gets its own orderable KERDOS number. The suggestion
+// of the existing entry is carried in track:"review" so Item Catalog can
+// show it as a proposed link for the client to act on.
+assert.ok(exact.catalogItemId!=="c1","cross-vendor item gets its own new KERDOS entry");
+assert.ok(["review","new"].includes(exact.track),"track is review or new, not exact");
 const mixedPeers=[{id:"v1",vendor_id:"vendor-a",description:"American cheese",pack_size:"120 CT"},
   {id:"v2",vendor_id:"vendor-c",description:"American cheese",pack_size:"160 CT"}];
 const conflicted=await service.matchOrCreate({organizationId:"o1",vendorId:"vendor-b",description:"American cheese",packSize:"120 CT",catalogItems:[...established],categories:[],vendorItems:mixedPeers,mappings:[...mappings,{catalog_item_id:"c1",vendor_item_id:"v2"}]});

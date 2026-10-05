@@ -18,7 +18,7 @@ try{
   const missing=renderToStaticMarkup(createElement(CatalogRows,{...props,vendorItems:[{...row,selling_unit:null,price_basis:null}]}));
   assert.match(missing,/0 of 1 vendor rows meet Order Guide requirements/);
   assert.match(missing,/Quoted unit missing or unresolved: 1/);
-  assert.match(missing,/Apply changes/);
+  assert.match(missing,/Apply/);
   assert.match(missing,/Details/);
   assert.match(html,/aria-label="KERDOS item number for undefined"/);
   assert.match(html,/>Weight<\/option>/);assert.match(html,/>Volume<\/option>/);

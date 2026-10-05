@@ -14,6 +14,14 @@ t('base remains separate description',e.rows[1].description,'Chicken base');
 t('base pack extracted from description',e.rows[1].packSize,'1 lb');
 t('metadata not imported as product',e.rows.some(r=>/from:|subject:|invoice\s*#/i.test(r.description)),false);
 const invoice=`INVOICE #8765\nDate 09/14/2026\nItem: Chicken Breast Qty: 2 Price: $82.50 Total: $165.00\nItem: Chicken Base Qty: 1 Price: $14.00 Total: $14.00\nTotal: $179.00`;
+// ── Mixed fraction pack tests (shared normalizeMixedFraction) ──────────────
+const lettuce=parseDocument('LETTUCE ROMAINE 1-1/9 BU 25.00');
+t('lettuce 1-1/9 BU produces a readable BU pack',lettuce.rows[0]?.packSize,'1.111111 BU');
+t('lettuce original fraction preserved in originalPackSize',lettuce.rows[0]?.originalPackSize,'1-1/9 BU');
+t('lettuce source text preserved in sourceLine',lettuce.rows[0]?.sourceLine,'LETTUCE ROMAINE 1-1/9 BU 25.00');
+t('lettuce description cleaned of pack',lettuce.rows[0]?.description,'LETTUCE ROMAINE');
+// Unit cost is calculated from pack+price — tested in accuracy-test.mjs with full catalog row
+
 const i=parseDocument(invoice);
 t('invoice classified as invoice',i.documentKind,'invoice');
 t('invoice has exactly 2 products',i.rows.length,2);

@@ -1,3 +1,5 @@
+import {associationRejected} from "../core/alternative-groups.js";
+import {AssociateAlternatives} from "./AssociateAlternatives.jsx";
 import {useMemo,useState} from "react";
 import {createCatalogRowsService} from "../services/catalog-rows.js";
 import {CatalogRows} from "./CatalogRows.jsx";
@@ -226,8 +228,8 @@ export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,cat
     if(await act(()=>catalogService.remapToExisting(mappingId,newCatalogItemId,verification))){ setRemapOpenFor(null); setRemapSearch(""); }
     setBusyMappingId(null);
   }
-  async function handleRemapNew(mappingId,description){
-    if(!window.confirm(`Create a separate catalog item for "${description}"?\n\nOnly this vendor product will move to the new item. Existing vendor products remain in their current catalog items.`))return;
+  async function handleRemapNew(mappingId,description,quick=false){
+    if(!quick&&!window.confirm(`Create a separate catalog item for "${description}"?\n\nOnly this vendor product will move to the new item. Existing vendor products remain in their current catalog items.`))return;
     setBusyMappingId(mappingId);
     if(await act(()=>catalogService.splitMapping({organizationId:orgId,mappingId,description,catalogItems,categories}))){ setRemapOpenFor(null); setRemapSearch(""); }
     setBusyMappingId(null);
@@ -326,20 +328,16 @@ export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,cat
     setAddingBusy(false);
   }
 
-  // This memo runs an identity comparison for every unresolved mapping.
-  // Limit to 50 at a time so opening the catalog tab never stalls on a
-  // large dataset. The rest are computed when the user pages deeper.
-  const MAX_SUGGESTION_ROWS=50;
   const lowConfidenceMatches=useMemo(()=>
-    mappings.filter(m=>m.comparison_track!=="exact"||m.confidence_score!==100||productList.some(item=>item.catalogItemId===m.catalog_item_id&&item.options.some(option=>option.mappingId===m.id&&option.unverified))).slice(0,MAX_SUGGESTION_ROWS).map(m=>{
+    mappings.filter(m=>m.comparison_track!=="exact"||m.confidence_score!==100||productList.some(item=>item.catalogItemId===m.catalog_item_id&&item.options.some(option=>option.mappingId===m.id&&option.unverified))).map(m=>{
       const vi=viMap.get(m.vendor_item_id); const ci=ciMap.get(m.catalog_item_id);
       const v=vi?vMap.get(vi.vendor_id):null;
-      const others=catalogItems.filter(c=>c.id!==m.catalog_item_id);
-      const suggested=vi?bestPurchasingSuggestion(vi.description,vi.pack_size,others.map(ci=>{
+      const others=showReview?catalogItems.filter(c=>c.id!==m.catalog_item_id&&!(linkedByCatalog.get(c.id)||[]).some(peer=>vi&&associationRejected(vi,peer))):[];
+      const suggested=showReview&&vi?bestPurchasingSuggestion(vi.description,vi.pack_size,others.map(ci=>{
         const peers=linkedByCatalog.get(ci.id)||[];
         return {...ci,pack_size:commonPurchasingPack(peers.map(peer=>peer.pack_size))};
       })):null;
-      const suggestion=suggested|| (vi?bestCatalogMatch(vi.description,others):null);
+      const suggestion=suggested|| (showReview&&vi?bestCatalogMatch(vi.description,others):null);
       const suggestedVendor=mappings.filter(link=>link.catalog_item_id===suggestion?.catalogItem?.id).map(link=>viMap.get(link.vendor_item_id)).find(link=>link?.pack_size);
       const detail=vi&&ci?compareProductIdentity(vi.description,ci.name):null;
       const packCheck=vi?comparePurchasingPack(vi.pack_size,suggestedVendor?.pack_size):null;
@@ -352,7 +350,7 @@ export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,cat
         reason:!vi?.pack_size?"Pack size missing":currentVerification?.comparison_track==="review"?detail?.status!=="same"?detail?.reason:packCheck?.reason||"Check full product specifications with linked vendors":"Check the full product specifications",
         suggestion:suggestion?{catalogItemId:suggestion.catalogItem.id,name:suggestion.catalogItem.name,score:Math.round(suggestion.score*100)}:null};
     }).sort((a,b)=>a.gap.code.localeCompare(b.gap.code)||(a.confidence??0)-(b.confidence??0)),
-  [mappings,viMap,ciMap,vMap,catalogItems,productList,linkedByCatalog]);
+  [mappings,viMap,ciMap,vMap,catalogItems,productList,linkedByCatalog,showReview]);
 
   // One count per reason, so the client sees where the work is instead of
   // a flat list, and a click narrows the list to that reason.
@@ -468,7 +466,7 @@ export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,cat
                       ))}
                     </div>
                     <div style={{display:"flex",gap:6,marginTop:6}}>
-                      <button disabled={busyMappingId===m.mappingId} onClick={()=>handleRemapNew(m.mappingId,m.vendorDescription)}
+                      <button disabled={busyMappingId===m.mappingId} onClick={()=>handleRemapNew(m.mappingId,m.vendorDescription,true)}
                         style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px",flex:1})}}>Create a new item for this vendor product</button>
                       <button onClick={()=>{setRemapOpenFor(null);setRemapSearch("");}} style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 10px"})}}>Cancel</button>
                     </div>
@@ -483,6 +481,7 @@ export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,cat
                     )}
                     <button disabled={busyMappingId===m.mappingId} onClick={()=>{setRemapOpenFor(m.mappingId);setRemapSearch("");}}
                       style={{...btn("#EEE","#555",{fontSize:11,padding:"6px 12px"})}}>Choose another item or create new</button>
+                    {mappings.some(other=>other.catalog_item_id===m.catalogItemId&&other.id!==m.mappingId)&&<button disabled={busyMappingId===m.mappingId} onClick={()=>handleRemapNew(m.mappingId,m.vendorDescription,true)} style={{...btn("#FFF3E0","#E65100",{fontSize:11})}}>Unlink from group</button>}
                   </div>
                 )}
               </div>
@@ -556,6 +555,7 @@ export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,cat
         <div style={{background:"white",borderRadius:10,padding:12,marginBottom:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",
           display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",position:"sticky",top:8,zIndex:5}}>
           <span style={{fontSize:13,fontWeight:700,color:"#003584"}}>{selectedIds.size} selected</span>
+          <AssociateAlternatives orgId={orgId} selectedVendorIds={mappings.filter(m=>selectedIds.has(m.catalog_item_id)).map(m=>m.vendor_item_id)} vendorItems={vendorItems} catalogItems={catalogItems} mappings={mappings} vendors={vendors} onUpdated={onUpdated} onClear={()=>setSelectedIds(new Set())}/>
           <select defaultValue="" disabled={bulkBusy} onChange={e=>{handleBulkAssign(e.target.value);e.target.value="";}}
             style={{...inp,fontSize:12,padding:"7px 9px",width:"auto",flex:"0 1 220px"}}>
             <option value="" disabled>{bulkBusy?"Moving...":"Move all to..."}</option>
@@ -640,7 +640,7 @@ export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,cat
                     <div style={{display:"grid",gridTemplateColumns:"140px minmax(180px,1fr) 95px 95px 100px 170px",gap:10,padding:"8px 10px",fontSize:10,fontWeight:800,color:"#49617C",background:"#DFEAF7",borderRadius:"6px 6px 0 0"}}><span>Vendor</span><span>Description</span><span>Pack</span><span>Price</span><span>Per unit</span><span>Association</span></div>
                     {item.options.map(o=><div key={o.vendorItemId} style={{display:"grid",gridTemplateColumns:"140px minmax(180px,1fr) 95px 95px 100px 170px",gap:10,padding:"10px",alignItems:"center",background:"white",borderBottom:"1px solid #E8EDF4",fontSize:11}}>
                       <b>{o.vendorName}</b><span>{o.description}{o.brand?` · ${o.brand}`:""}</span><b>{o.packSize||"Unknown"}</b><b>{o.casePrice!=null?formatMoney(o.casePrice):"No quote"}</b><b>{o.perUnit?`${formatMoney(o.perUnit.price)}/${o.perUnit.unit}`:"—"}</b>
-                      <button disabled={!canManage} onClick={()=>{setRemapOpenFor(o.mappingId);setRemapSearch("");}} style={{...btn("#E8F1FB","#003584",{fontSize:10,padding:"6px"})}}>Change association</button>
+                      <div><button disabled={!canManage} onClick={()=>{setRemapOpenFor(o.mappingId);setRemapSearch("");}} style={{...btn("#E8F1FB","#003584",{fontSize:10,padding:"6px"})}}>Change association</button>{canManage&&mappings.some(m=>m.catalog_item_id===item.catalogItemId&&m.vendor_item_id!==o.vendorItemId)&&<button disabled={busyMappingId===o.mappingId} onClick={()=>handleRemapNew(o.mappingId,o.description,true)} style={{...btn("#FFF3E0","#E65100",{fontSize:10,padding:"6px"})}}>Unlink from group</button>}</div>
                       {canManage&&<div style={{gridColumn:"1 / -1"}}>
                         <button onClick={()=>vendorEditId===o.vendorItemId?setVendorEditId(null):openVendorEdit(o)} style={{...btn("#E8F1FB","#003584",{fontSize:10,padding:"5px 8px"})}}>{vendorEditId===o.vendorItemId?"Close field editor":"Correct product, brand or pack"}</button>
                         {vendorEditId===o.vendorItemId&&<div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"end",padding:10,marginTop:7,background:"#F4F8FE",borderRadius:6}}>
@@ -688,7 +688,16 @@ export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,cat
                       return (
                         <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"flex-end",background:"white",border:"1px solid #EEE",borderRadius:6,padding:"8px 10px",marginBottom:8}}>
                           <div>
-                            <div style={lbl}>Brand lock</div>
+                            <label style={{display:"block",fontSize:12}}><input type="checkbox" checked={item.comparisonMode!=="exact"} onChange={e=>handleItemSetting(item.catalogItemId,{comparison_mode:e.target.checked?"alternatives":"exact"})}/> Accept client-approved alternatives across brands</label>
+                            <small>To add an alternative, set its KERDOS number to this item's number in Edit catalog rows, then Apply. Each vendor keeps its description, brand and pack.</small>
+                          </div>
+                          <div>
+                            <label style={{display:"block",fontSize:12}}><input type="checkbox" checked={!!item.preferredBrand} disabled={!brands.length} onChange={e=>handleItemSetting(item.catalogItemId,{preferred_brand:e.target.checked?brands[0]:null})}/> Prefer a brand</label>
+                            {item.preferredBrand&&<select aria-label={`Preferred brand for ${item.name}`} style={sel} value={item.preferredBrand} onChange={e=>handleItemSetting(item.catalogItemId,{preferred_brand:e.target.value})}>{[...new Set([item.preferredBrand,...brands])].map(b=><option key={b} value={b}>{b}</option>)}</select>}
+                            <small style={{display:"block"}}>Alternatives remain available.</small>
+                          </div>
+                          <div>
+                            <div style={lbl}>Require this brand</div>
                             {brands.length?(
                               <select style={sel} value={item.lockedBrand||""}
                                 onChange={e=>handleItemSetting(item.catalogItemId,{brand_locked:!!e.target.value,locked_brand:e.target.value||null})}>

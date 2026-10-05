@@ -10,17 +10,7 @@ function query(table){
   const chain={select(value){state.select=value;return chain;},insert(value){state.insert=value;return chain;},update(value){state.update=value;return chain;},delete(){state.delete=true;return chain;},eq(column,value){(state.eq??=[]).push([column,value]);return chain;},in(column,value){state.in=[column,value];return chain;},lte(column,value){state.lte=[column,value];return chain;},order(column,options){(state.order??=[]).push([column,options]);return chain;},range(from,to){state.range=[from,to];return chain;},limit(value){state.limit=value;return chain;},maybeSingle(){state.maybeSingle=true;return chain;},single(){state.single=true;return chain;},then(resolve){calls.push({...state});resolve({data:state.single?{id:"created"}:state.maybeSingle?null:[],error:null});}};
   return chain;
 }
-// backend.operations.submitOrder is the new atomic path; route it
-// through the same call recorder so existing assertions still work.
-const backendOps={
-  submitOrder(p){
-    // Translate the RPC params back to an insert call for the assertions.
-    const lines=p.p_lines||[];
-    calls.push({table:"purchase_order_lines",insert:lines});
-    return Promise.resolve({id:"order1",vendor_id:p.p_vendor_id,status:"submitted",total_amount:p.p_total_amount});
-  }
-};
-const backend={records:{query},operations:backendOps};
+const backend={records:{query},orders:{async submit(value){calls.push({order:value});return {id:"created"};}}};
 const vendors=createVendorService(backend);
 await vendors.add({organizationId:"o1",name:" Vendor ",email:"",minimumDollar:"100",minimumUnits:"5"});
 assert.equal(calls.at(-1).insert.name,"Vendor");
@@ -38,9 +28,11 @@ assert.equal(calls.at(-1).table,"import_documents","archive pagination loads act
 assert.deepEqual(calls.at(-1).eq,[["organization_id","o1"],["document_kind","pricelist"]]);
 assert.deepEqual(calls.at(-1).range,[500,999]);
 assert.deepEqual(calls.at(-1).order.map(([key])=>key),["created_at","id"]);
-await operations.submitOrder({organizationId:"o1",userId:"u1",basket:{vendorId:"v2",vendorName:"Vendor",dollar:24,items:[{catalogItemId:"c1_split_case",vendorItemId:"vi2",quantity:2,price:12,lineTotal:24}]}});
-assert.equal(calls.at(-1).insert[0].catalog_item_id,"c1","split line must retain the client catalog ID in the purchase order");
+await operations.submitOrder({organizationId:"o1",userId:"u1",basket:{vendorId:"v2",vendorName:"Vendor",dollar:24,items:[{catalogItemId:"c1_split_case",vendorItemId:"vi2",quantity:2,price:12,lineTotal:24,orderUnit:"case"}]}});
+assert.equal(calls.at(-1).order.p_lines[0].catalog_item_id,"c1","split line must retain the client catalog ID in the purchase order");
 
+assert.equal(calls.at(-1).order.p_lines[0].quantity,2);
+assert.equal(calls.at(-1).order.p_lines[0].order_unit,"case");
 const imports=createImportService(backend);
 assert.equal(await imports.duplicateInvoice({organizationId:"o1",vendorId:"v1",invoiceNumber:"42",rawText:""}),false);
 assert.deepEqual(calls.at(-1).eq.at(-1),["invoice_number","42"]);

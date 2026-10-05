@@ -140,8 +140,12 @@ export function createCatalogService(backend){
           otherVendorPresent:!!vendorId&&linked.some(vi=>vi.vendor_id&&vi.vendor_id!==vendorId)};
       });
       // Identifiers come first: they settle identity without wording.
+      // When the matched entry already has a different vendor, do not link
+      // automatically — the identifier proves the product is the same thing,
+      // but cross-vendor equivalence still requires the client's decision.
+      // Fall through to create a new entry; carry the suggestion for Item Catalog.
       const proven=identifierMatch({gtin,manufacturerCode,brand,packSize,vendorId},candidates);
-      if(proven?.track==="exact"){
+      if(proven?.track==="exact"&&!proven.catalogItem.otherVendorPresent){
         const evidence=associationEvidence({description,packSize,brand,gtin,manufacturerCode},proven.catalogItem);
         if(evidence.exact)return {catalogItemId:proven.catalogItem.id,track:"exact",score:1,method:"identifier",reason:proven.reason};
       }
@@ -149,10 +153,11 @@ export function createCatalogService(backend){
       // Brand is part of a verified identity. Unknown brand does not prove
       // equality to a named brand; differing brands can be proposed for
       // substitution, but never placed in the same exact-price comparison.
-      const brandVerified=match&&(!brand&&!match.catalogItem.knownBrand||brandsMatch(brand,match.catalogItem.knownBrand));
-      if(match?.track==="exact"&&brandVerified&&match.catalogItem.otherVendorPresent&&
-        associationEvidence({description,packSize,brand,gtin,manufacturerCode},match.catalogItem).exact)
-        return {catalogItemId:match.catalogItem.id,track:"exact",score:1};
+      // When the best match is on an entry that already has a different vendor,
+      // do not attach this item to that entry automatically — even at review.
+      // Create a new entry instead and carry the suggestion so Item Catalog
+      // can show it as a proposed cross-vendor link for the client to act on.
+      // (The proven/match variable is still used below as the suggestion.)
       const suggestion=match||bestPurchasingSuggestion(description,packSize,candidates);
       const placement=await this.placeInCategory({organizationId,description,categoryId,categories,catalogItems});
       const created=await this.createItem({organizationId,name:description,categoryId:placement.category?.id||null,categoryReview:placement.review,categoryReason:placement.reason,catalogItems,categories});
@@ -213,14 +218,11 @@ export function createCatalogService(backend){
       for(const id of catalogItemIds){await this.confirmCategory(id);confirmed++;}
       return confirmed;
     },
-    async splitMapping({organizationId,mappingId,description,catalogItems,categories}){
-      const placement=await this.placeInCategory({organizationId,description,categories,catalogItems});
-      const created=await this.createItem({organizationId,name:description,categoryId:placement.category?.id||null,categoryReview:placement.review,categoryReason:placement.reason,catalogItems,categories});
-      const mapping=await run(table("item_mappings").select("vendor_item_id").eq("id",mappingId).single(),"Could not read the current association");
-      const vendorItem=await run(table("vendor_items").select("*").eq("id",mapping.vendor_item_id).single(),"Could not read the vendor product");
-      const verification=mappingVerification(vendorItem,created);
-      await run(table("item_mappings").update({catalog_item_id:created.id,...verification}).eq("id",mappingId),"Could not point the vendor item at it");
-      return created;
+    async splitMapping({organizationId,mappingId}){
+      if(!backend.catalog?.splitMapping)throw new Error("This data provider does not support unlinking yet.");
+      const mapping=await run(table("item_mappings").select("vendor_item_id").eq("organization_id",organizationId).eq("id",mappingId).single(),"Read current association");
+      const vendorItem=await run(table("vendor_items").select("row_revision").eq("organization_id",organizationId).eq("id",mapping.vendor_item_id).single(),"Read vendor product revision");
+      return backend.catalog.splitMapping({organizationId,mappingId,expectedRevision:vendorItem.row_revision||0});
     },
     confirmMapping(mappingId,verification){
       if(!verification)throw new Error("Check this product against the catalog and its vendor packs before confirming.");

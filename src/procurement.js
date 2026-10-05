@@ -46,10 +46,12 @@ const UNIT_DEFINITIONS = {
   IN:{dimension:"length",base:"MM",factor:25.4,aliases:["in","inch","inches"]},
   FT:{dimension:"length",base:"MM",factor:304.8,aliases:["ft","foot","feet"]},
   YD:{dimension:"length",base:"MM",factor:914.4,aliases:["yd","yard","yards"]},
+
+  // Agricultural dry measure. dimension:"bushel" is intentionally isolated so BU never
+  // converts to or compares with gallons, liters, or any other volume unit.
+  BU:{dimension:"bushel",base:"BU",factor:1,aliases:["bu","bus","bushel","bushels"]},
   // count -> each
   EA:{dimension:"count",base:"EA",factor:1,aliases:["ea","each","piece","pieces","pc","pcs","pce","pces"]},
-  // agricultural volume -> liters (1 US bushel = 35.2391 liters)
-  BU:{dimension:"volume",base:"ML",factor:35239.07,aliases:["bu","bus","bushel","bushels"]},
   CT:{dimension:"count",base:"EA",factor:1,aliases:["ct","count"]},
   DOZ:{dimension:"count",base:"EA",factor:12,aliases:["doz","dozen","dz"]},
 };
@@ -239,9 +241,21 @@ function measurement(quantity, unitRaw) {
 // pack of the same nominal size are different purchasing configurations.
 const CATCH_WEIGHT_RE=/\b(?:av|avg|ave|average|approx|approximately|catch\s*wt|catch\s*weight|c\/w|cw|rw|random\s*wt|random\s*weight|var(?:iable)?\s*wt|var(?:iable)?\s*weight)\.?$/i;
 
+
+// Normalize mixed-number fractions so the pack parser can read them.
+// "1-1/9 bu" -> "1.111111 bu". The raw original is kept on the row.
+// Bushels never convert to other units; this only normalises the notation.
+function normalizeMixedFraction(str){
+  if(!str) return str;
+  return String(str).replace(/(\d+)-(\d+)\/(\d+)/g, function(m, w, n, d){
+    // Keep six decimal places for repeating fractions; preserve the original text
+    return (Number(w) + Number(n)/Number(d)).toFixed(6).replace(/\.?0+$/, "");
+  });
+}
 function parsePackSize(raw) {
   if (!raw || !String(raw).trim()) return null;
-  const source=normalizeMixedFraction(String(raw).trim());
+  const originalRaw=String(raw).trim();
+  const source=normalizeMixedFraction(originalRaw);
   // "4/10 LBAV", "4/10 LB AVG", "2/10# AVG": the marker is read and then
   // set aside so the rest parses as an ordinary pack.
   let working=source.toLowerCase().replace(/(lb|lbs)(av|avg)\b/g,"$1 $2");
@@ -294,7 +308,7 @@ function parsePackSize(raw) {
   if (!measure) return null;
   const total=outerQty*innerQty;
   return {
-    raw:source,parsed:true,caseQty:outerQty,unitQty:innerQty,unit:measure.unit,total,catchWeight,qualifiers:context.qualifiers,
+    raw:source,originalRaw,parsed:true,caseQty:outerQty,unitQty:innerQty,unit:measure.unit,total,catchWeight,qualifiers:context.qualifiers,
     dimension:measure.dimension,baseUnit:measure.baseUnit,baseTotal:round(outerQty*measure.baseQuantity),
     levels: outerQty>1 ? [{quantity:outerQty,type:"PACKAGE"},{quantity:innerQty,type:measure.unit}] : [{quantity:innerQty,type:measure.unit}],
     eachStr:`${innerQty} ${measure.unit}`,caseStr:outerQty>1?`${outerQty}/${innerQty} ${measure.unit}`:`${innerQty} ${measure.unit}`,
@@ -695,13 +709,5 @@ export {
   unitsForDimension, pricePerUnit, brandsMatch, priceBasisFor, casePriceFromQuote, quotePriceOnBasis, normalizeGtin, normalizeManufacturerCode, packFromDescription, isAbbreviationOf, abbreviationPairs,
   normalizeForMatch, wordsMatch, classifyCategory, suggestCategory, nextCategoryRange,
   safeProductScore, productIdentity, compareProductIdentity, comparePurchasingPack, commonPurchasingPack, bestPurchasingMatch, bestPurchasingSuggestion, quoteStatus, bestCatalogMatch, bestInvoiceMatch, assertKnownPriceBasis,
+  normalizeMixedFraction,
 };
-
-// Normalize mixed-number pack fractions like "1-1/9 bu" to decimal.
-// Standard in produce: 1-1/9 bu pepper, 1-1/9 bu eggplant.
-export function normalizeMixedFraction(str){
-  if(!str)return str;
-  return String(str).replace(/(\d+)-(\d+)\/(\d+)/g,function(m,w,n,d){
-    return (Number(w)+Number(n)/Number(d)).toFixed(3).replace(/\.?0+$/,"");
-  });
-}
