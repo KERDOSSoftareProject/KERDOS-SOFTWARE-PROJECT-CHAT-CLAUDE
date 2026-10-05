@@ -1,7 +1,8 @@
+import {matchExistingProduct} from "./core/product-linking.js";
+import {associationTarget} from "./core/alternative-groups.js";
 import {createImportService} from "./services/imports.js";
 import {automaticAlternativeVerified} from "./core/alternative-groups.js";
 import {defaultComparisonUnit} from "./core/quote-controls.js";
-import {AssociateAlternatives} from "./pages/AssociateAlternatives.jsx";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { backend } from "./backend/index.js";
 import { createSessionController } from "./session.js";
@@ -69,7 +70,6 @@ function r2(n) { return Math.round(n * 100) / 100; }
 
 // ── LANDING ───────────────────────────────────────────────────────────
 export default function App() {
-  const [alternativeSelections,setAlternativeSelections]=useState(new Set());
   const [session,setSession]=useState(undefined);
   const [org,setOrg]=useState(null);
   const [organizations,setOrganizations]=useState([]);
@@ -269,6 +269,27 @@ export default function App() {
     // The engine reads this org's vocabulary from here on - before any
     // matching, parsing, or per-unit pricing in this session runs.
     configureProcurement({industry:o.industry,vocabulary:snapshot.vocabulary});
+    // Reconcile older engine-created entries as well as new imports. Explicit
+    // client links and rejected pairs survive. A stable target prevents cycles.
+    if(!usingLocal&&["owner","manager"].includes(o.role)&&backend.catalog.matchVendorItem){
+      const ordered=[...snapshot.catalogItems].sort((a,b)=>a.id===b.id?0:associationTarget([a,b])===a?-1:1);
+      const priority=new Map(ordered.map((item,index)=>[item.id,index]));
+      let changed=false;
+      try{
+        for(const mapping of snapshot.mappings){
+          if(mapping.match_method==="manual")continue;
+          const row=snapshot.vendorItems.find(v=>v.id===mapping.vendor_item_id);
+          if(!row||row.field_resolutions?.catalog_item_id?.confirmedBy)continue;
+          const candidates=snapshot.catalogItems.filter(i=>priority.get(i.id)<priority.get(mapping.catalog_item_id));
+          const match=matchExistingProduct(row,candidates,snapshot.vendorItems,snapshot.mappings);
+          if(!match)continue;
+          await backend.catalog.matchVendorItem({organizationId:id,mappingId:mapping.id,expectedCatalogItemId:mapping.catalog_item_id,targetCatalogItemId:match.catalogItemId,expectedRevision:row.row_revision||0,track:match.track});
+          mapping.catalog_item_id=match.catalogItemId;mapping.comparison_track=match.track;mapping.confidence_score=match.track==="exact"?100:70;
+          row.row_revision=(row.row_revision||0)+1;changed=true;
+        }
+      }catch(error){setImportNotice({message:"Product matching needs attention: "+error.message});}
+      if(changed){snapshot=await backend.workspace.snapshot(id);void saveSnapshot(snapshotKey,snapshot);}
+    }
     setVocabulary(snapshot.vocabulary);
     setVendors(snapshot.vendors);
     setCatalogItems(snapshot.catalogItems);
@@ -985,7 +1006,6 @@ export default function App() {
                 </div>
               )}
 
-              {["owner","manager"].includes(org.role)&&<AssociateAlternatives orgId={org.id} selectedVendorIds={productList.filter(i=>alternativeSelections.has(i.catalogItemId)).flatMap(i=>i.options.map(o=>o.vendorItemId))} vendorItems={vendorItems} catalogItems={catalogItems} mappings={mappings} vendors={vendors} onUpdated={()=>loadData()} onClear={()=>setAlternativeSelections(new Set())}/>}
               {filtered.map(group=>(
                 <div key={group.category} style={{marginBottom:8}}>
                   <div style={{fontSize:11,fontWeight:800,color:"rgba(255,255,255,0.75)",letterSpacing:"0.08em",textTransform:"uppercase",margin:"14px 0 6px"}}>{group.category}</div>
@@ -1046,7 +1066,6 @@ export default function App() {
                             title={activeBlocked?undefined:"Drag onto a vendor basket to order from that vendor"}
                             style={{minWidth:0,padding:"8px 8px 8px 2px",borderTop:"1px solid #F2F2F2",cursor:activeBlocked?"default":"grab",opacity:dragItem?.key===activeKey?0.5:1}}>
                             <div style={{fontWeight:600,fontSize:12.5,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                              {["owner","manager"].includes(org.role)&&<input type="checkbox" aria-label={`Select ${item.name} for alternatives`} checked={alternativeSelections.has(item.catalogItemId)} onChange={()=>setAlternativeSelections(prev=>{const next=new Set(prev);if(next.has(item.catalogItemId))next.delete(item.catalogItemId);else next.add(item.catalogItemId);return next;})} style={{marginRight:6}}/>}
                               {item.name}
                               {hasEach&&<span title="Available by case or by each" style={{marginLeft:5,fontSize:9,background:"#E0F2F1",color:"#00695C",padding:"2px 5px",borderRadius:4,fontWeight:800}}>CASE + EACH</span>}
                               {linkedVendorCount>1&&<span title={`${linkedVendorCount} vendors linked to this item`} style={{marginLeft:5,fontSize:9,background:"#E8F1FF",color:"#1565C0",padding:"2px 5px",borderRadius:4,fontWeight:400}}>{linkedVendorCount} VENDORS</span>}
