@@ -9,7 +9,7 @@ import {createCategoryService} from "../services/categories.js";
 import {createDocumentService} from "../services/documents.js";
 import {createImportService} from "../services/imports.js";
 import {createOrganizationService} from "../services/organization.js";
-import {rememberedLayout,withRememberedLayout} from "../core/sheet-layout.js";
+import {COLUMN_ROLE_LABELS,COLUMN_ROLES_FOR_CHOICE,rememberedLayout,withRememberedLayout} from "../core/sheet-layout.js";
 import {formatMoney} from "../localization.js";
 import {explainImportRow} from "../core/import-evidence.js";
 import {importResolutions,unitChoices} from "../core/catalog-fields.js";
@@ -141,6 +141,7 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
   // organization's settings, plus any given during this import.
   const organizationService=useMemo(()=>createOrganizationService(backend),[]);
   const [layoutAnswers,setLayoutAnswers]=useState({});   // fingerprint -> {columnIndex: role}
+  const [columnPopup,setColumnPopup]=useState(null); // {fp,file,columns,draft,resolve}
   function answersFor(fingerprint){
     return {...rememberedLayout(orgSettings,vendorId,fingerprint),...(layoutAnswers[fingerprint]||{})};
   }
@@ -262,7 +263,8 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
     if(mode==="pricelist"){
       const workingCatalogItems=[...catalogItems];
       const workingCategories=[...categories];
-      const workingVendorItems=[...vendorItems];
+      // Scope to this vendor so matchOrCreate never scans all vendors.
+      const workingVendorItems=[...vendorItems.filter(vi=>vi.vendor_id===vendorId)];
       const workingMappings=[...mappings];
       const importBatchTime=new Date().toISOString();
       async function applySelectedCategory(catalogItemId,categoryId){
@@ -372,11 +374,11 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
           priceUnavailable:!!row.priceUnavailable||needsBasis,effectiveDate:importBatchTime,
           quoteValidUntil:group.quoteValidUntil,sourceFilePath,
           sourceFileName:group.name,sourceLine:row.sourceLine||null,sourceDocumentId,
-          importRow:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:needsBasis,reviewFields:prepared.reviewFields,conflicts:prepared.reasons,changes:row.changes||[]},
+          importRow:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:needsBasis,conflicts:prepared.reasons,changes:row.changes||[]},
           fieldResolutions:importResolutions(sourceRow,ex||{}),
         });
         if(needsBasis&&ex){
-          const {error}=await backend.records.query("vendor_items").update({import_row:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,reviewFields:prepared.reviewFields,changes:row.changes||[],conflicts:prepared.reasons}}).eq("id",ex.id).eq("organization_id",orgId);
+          const {error}=await backend.records.query("vendor_items").update({import_row:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,changes:row.changes||[],conflicts:prepared.reasons}}).eq("id",ex.id).eq("organization_id",orgId);
           if(error)throw new Error(`Could not save the incoming quote for review: ${error.message}`);
         }
         if(ex&&!needsBasis) updated++; else if(!ex) created++;
@@ -435,6 +437,13 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
         // exist. Checkpoint each row before moving to the next one.
         await importService.recordProgress(sourceDocumentId,[...completedKeys,completedKey]);
         completedKeys.add(completedKey);
+        // Keep the local list current so the next row finds this item
+        // without a database round-trip.
+        if(vendorItemId&&!workingVendorItems.some(vi=>vi.id===vendorItemId)){
+          workingVendorItems.push({id:vendorItemId,vendor_id:vendorId,organization_id:orgId,
+            description:row.description,brand:row.brand||null,pack_size:row.packSize||null,
+            price:row.price,selling_unit:row.sellingUnit||null,price_unavailable:!!row.priceUnavailable});
+        }
         }catch(err){
           // Report the first failure verbatim and count the rest; a row
           // that failed is never counted as updated or created.
@@ -781,6 +790,31 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
           </div>
         </>}
 
+          {columnPopup&&(
+            <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              <div style={{background:"white",borderRadius:10,padding:24,maxWidth:480,width:"90%",boxShadow:"0 12px 40px rgba(0,0,0,0.3)"}}>
+                <h3 style={{margin:"0 0 6px",color:"#003584",fontSize:16}}>Unknown column — decide before continuing</h3>
+                <p style={{fontSize:13,color:"#49617C",margin:"0 0 14px"}}>
+                  The sheet <b>{columnPopup.file}</b> has {columnPopup.columns.length} column heading{columnPopup.columns.length===1?"":"s"} KERDOS doesn't recognise.
+                  Choose what each one means. The answer is remembered for this vendor so you won't be asked again.
+                </p>
+                {columnPopup.columns.map(col=>(
+                  <label key={col.index} style={{display:"block",fontSize:13,fontWeight:700,marginBottom:10}}>
+                    Column "{col.label}"
+                    <select style={{...inp,marginTop:4,fontSize:12}}
+                      value={columnPopup.draft[col.index]||"ignore"}
+                      onChange={e=>setColumnPopup(prev=>({...prev,draft:{...prev.draft,[col.index]:e.target.value}}))}>
+                      {COLUMN_ROLES_FOR_CHOICE.map(role=><option key={role} value={role}>{COLUMN_ROLE_LABELS[role]}</option>)}
+                    </select>
+                  </label>
+                ))}
+                <div style={{display:"flex",gap:10,marginTop:16}}>
+                  <button style={{...btn("#003584","white",{flex:1})}} onClick={()=>columnPopup.resolve({...columnPopup.draft})}>Use these columns</button>
+                  <button style={{...btn("#E8F1FB","#003584",{flex:1})}} onClick={()=>columnPopup.resolve(Object.fromEntries(columnPopup.columns.map(h=>[h.index,"ignore"])))}>Ignore all</button>
+                </div>
+              </div>
+            </div>
+          )}
         {step===4&&result&&(
           <div style={{textAlign:"center",padding:"24px 0 8px"}}>
             <div style={{fontSize:40,marginBottom:10}}>✅</div>

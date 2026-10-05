@@ -1,4 +1,3 @@
-import {AssociateAlternatives} from "./AssociateAlternatives.jsx";
 import {useMemo,useState} from "react";
 import {createCatalogRowsService} from "../services/catalog-rows.js";
 import {CatalogRows} from "./CatalogRows.jsx";
@@ -327,8 +326,12 @@ export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,cat
     setAddingBusy(false);
   }
 
+  // This memo runs an identity comparison for every unresolved mapping.
+  // Limit to 50 at a time so opening the catalog tab never stalls on a
+  // large dataset. The rest are computed when the user pages deeper.
+  const MAX_SUGGESTION_ROWS=50;
   const lowConfidenceMatches=useMemo(()=>
-    mappings.filter(m=>m.comparison_track!=="exact"||m.confidence_score!==100||productList.some(item=>item.catalogItemId===m.catalog_item_id&&item.options.some(option=>option.mappingId===m.id&&option.unverified))).map(m=>{
+    mappings.filter(m=>m.comparison_track!=="exact"||m.confidence_score!==100||productList.some(item=>item.catalogItemId===m.catalog_item_id&&item.options.some(option=>option.mappingId===m.id&&option.unverified))).slice(0,MAX_SUGGESTION_ROWS).map(m=>{
       const vi=viMap.get(m.vendor_item_id); const ci=ciMap.get(m.catalog_item_id);
       const v=vi?vMap.get(vi.vendor_id):null;
       const others=catalogItems.filter(c=>c.id!==m.catalog_item_id);
@@ -553,7 +556,6 @@ export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,cat
         <div style={{background:"white",borderRadius:10,padding:12,marginBottom:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",
           display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",position:"sticky",top:8,zIndex:5}}>
           <span style={{fontSize:13,fontWeight:700,color:"#003584"}}>{selectedIds.size} selected</span>
-          <AssociateAlternatives orgId={orgId} selectedVendorIds={mappings.filter(m=>selectedIds.has(m.catalog_item_id)).map(m=>m.vendor_item_id)} vendorItems={vendorItems} catalogItems={catalogItems} mappings={mappings} vendors={vendors} onUpdated={onUpdated} onClear={()=>setSelectedIds(new Set())}/>
           <select defaultValue="" disabled={bulkBusy} onChange={e=>{handleBulkAssign(e.target.value);e.target.value="";}}
             style={{...inp,fontSize:12,padding:"7px 9px",width:"auto",flex:"0 1 220px"}}>
             <option value="" disabled>{bulkBusy?"Moving...":"Move all to..."}</option>
@@ -686,16 +688,7 @@ export function ItemCatalogPanel({industry="",orgId,role,productList,vendors,cat
                       return (
                         <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"flex-end",background:"white",border:"1px solid #EEE",borderRadius:6,padding:"8px 10px",marginBottom:8}}>
                           <div>
-                            <label style={{display:"block",fontSize:12}}><input type="checkbox" checked={item.comparisonMode!=="exact"} onChange={e=>handleItemSetting(item.catalogItemId,{comparison_mode:e.target.checked?"alternatives":"exact"})}/> Accept client-approved alternatives across brands</label>
-                            <small>To add an alternative, set its KERDOS number to this item's number in Edit catalog rows, then Apply. Each vendor keeps its description, brand and pack.</small>
-                          </div>
-                          <div>
-                            <label style={{display:"block",fontSize:12}}><input type="checkbox" checked={!!item.preferredBrand} disabled={!brands.length} onChange={e=>handleItemSetting(item.catalogItemId,{preferred_brand:e.target.checked?brands[0]:null})}/> Prefer a brand</label>
-                            {item.preferredBrand&&<select aria-label={`Preferred brand for ${item.name}`} style={sel} value={item.preferredBrand} onChange={e=>handleItemSetting(item.catalogItemId,{preferred_brand:e.target.value})}>{[...new Set([item.preferredBrand,...brands])].map(b=><option key={b} value={b}>{b}</option>)}</select>}
-                            <small style={{display:"block"}}>Alternatives remain available.</small>
-                          </div>
-                          <div>
-                            <div style={lbl}>Require this brand</div>
+                            <div style={lbl}>Brand lock</div>
                             {brands.length?(
                               <select style={sel} value={item.lockedBrand||""}
                                 onChange={e=>handleItemSetting(item.catalogItemId,{brand_locked:!!e.target.value,locked_brand:e.target.value||null})}>

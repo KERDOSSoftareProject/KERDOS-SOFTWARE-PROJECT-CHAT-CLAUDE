@@ -11,7 +11,9 @@ const requiredMigrations=[
   "migration_010_catalog_rows.sql",
   "migration_011_document_deletion.sql",
   "migration_012_vendor_nvim.sql","migration_013_invoice_mapping.sql",
-  "migration_014_item_name.sql","migration_015_recoverable_imports.sql","migration_021_comparison_preferences.sql","migration_022_associate_alternatives.sql","migration_023_automatic_alternatives.sql",
+  "migration_014_item_name.sql","migration_015_recoverable_imports.sql",
+  "migration_016_manual_catalog_association.sql","migration_017_unit_cost_display.sql",
+  "migration_018_atomic_order.sql",
 ];
 for(const file of requiredMigrations) assert.ok(fs.statSync(path.join(root,"knowledge",file)).size>100,`${file} missing or empty`);
 
@@ -30,8 +32,8 @@ const importModal=fs.readFileSync(path.join(root,"src/pages/ImportModal.jsx"),"u
 assert.match(importModal,/if\(mode==="invoice"&&\(missingInvoiceDates\.length\|\|needsReview\.length\)\) return;/,"price-sheet auto-save must not be gated on row issues");
 assert.ok(!/if\(unsafeDocuments\.length\|\|missingInvoiceDates\.length\|\|needsReview\.length\) return;/.test(importModal),"old price-sheet review gate must be gone");
 assert.match(importModal,/preparePriceImport\(row,ex,priorMapping,rowNeedsReview\?rowIssues:\[\]\)/,"document issues must reach the row review decision");
-assert.match(importModal,/reviewRequired:needsBasis,reviewFields:prepared\.reviewFields,conflicts:prepared\.reasons/,"row issues and identity/pack warnings must be saved for new catalog rows");
-assert.match(importModal,/reviewRequired:true,reviewFields:prepared\.reviewFields,changes:row\.changes\|\|\[\],conflicts:prepared\.reasons/,"repeat row warnings must be saved without replacing the accepted quote");
+assert.match(importModal,/reviewRequired:needsBasis,conflicts:prepared\.reasons/,"row issues and identity/pack warnings must be saved for new catalog rows");
+assert.match(importModal,/reviewRequired:true,changes:row\.changes\|\|\[\],conflicts:prepared\.reasons/,"repeat row warnings must be saved without replacing the accepted quote");
 
 // Every adapter parameter of the quote RPC must exist in the migrated function signature.
 for(const param of [...adapter.matchAll(/\bp_[a-z_]+(?=:)/g)].map(m=>m[0]))
@@ -50,7 +52,7 @@ for(const guard of [
 const combined=fs.readFileSync(path.join(root,"KERDOS_DATABASE_UPDATE_CLEAN.sql"),"utf8");
 assert.match(combined,/^begin;$/m,"combined database update lacks transaction start");
 assert.match(combined,/^commit;$/m,"combined database update lacks transaction commit");
-for(const file of requiredMigrations.filter(name=>!name.startsWith("migration_021")&&!name.startsWith("migration_022")&&!name.startsWith("migration_023")))
+for(const file of requiredMigrations)
   assert.ok(combined.includes(fs.readFileSync(path.join(root,"knowledge",file),"utf8").trim()),`${file} differs from combined database update`);
 
 for(const requiredUi of [

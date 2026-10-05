@@ -10,7 +10,17 @@ function query(table){
   const chain={select(value){state.select=value;return chain;},insert(value){state.insert=value;return chain;},update(value){state.update=value;return chain;},delete(){state.delete=true;return chain;},eq(column,value){(state.eq??=[]).push([column,value]);return chain;},in(column,value){state.in=[column,value];return chain;},lte(column,value){state.lte=[column,value];return chain;},order(column,options){(state.order??=[]).push([column,options]);return chain;},range(from,to){state.range=[from,to];return chain;},limit(value){state.limit=value;return chain;},maybeSingle(){state.maybeSingle=true;return chain;},single(){state.single=true;return chain;},then(resolve){calls.push({...state});resolve({data:state.single?{id:"created"}:state.maybeSingle?null:[],error:null});}};
   return chain;
 }
-const backend={records:{query}};
+// backend.operations.submitOrder is the new atomic path; route it
+// through the same call recorder so existing assertions still work.
+const backendOps={
+  submitOrder(p){
+    // Translate the RPC params back to an insert call for the assertions.
+    const lines=p.p_lines||[];
+    calls.push({table:"purchase_order_lines",insert:lines});
+    return Promise.resolve({id:"order1",vendor_id:p.p_vendor_id,status:"submitted",total_amount:p.p_total_amount});
+  }
+};
+const backend={records:{query},operations:backendOps};
 const vendors=createVendorService(backend);
 await vendors.add({organizationId:"o1",name:" Vendor ",email:"",minimumDollar:"100",minimumUnits:"5"});
 assert.equal(calls.at(-1).insert.name,"Vendor");

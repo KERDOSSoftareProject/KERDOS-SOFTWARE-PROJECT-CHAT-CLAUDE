@@ -1,11 +1,9 @@
-import {automaticAlternativeVerified} from "./alternative-groups.js";
-import {vendorListingLabel} from "./vendor-listing.js";
 import {calculatedUnitCost} from "./quote-controls.js";
 import {casePriceFromQuote,parsePackSize,priceBasisFor,compareProductIdentity,comparePurchasingPack,suggestCategory,quoteStatus,brandsMatch} from "../procurement.js";
 import {mappingVerification} from "../services/catalog.js";
 
 export const CATALOG_COLUMNS=[
-  ["itemNumber","KERDOS item #"],["vendor","Vendor name"],["vendorItemNumber","Vendor item number"],["category","Category"],
+  ["itemNumber","KERDOS item #"],["vendor","Vendor"],["category","Category"],
   ["itemName","Item name"],["product","Vendor description"],["brand","Brand"],["pack","Pack"],
   ["price","Quoted price"],["sellingUnit","Quoted per"],["unitCost","Unit cost"],
 ];
@@ -67,7 +65,6 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   const manual=vi.field_resolutions||{};
   const byClient=(key)=>Object.hasOwn(manual,key);
   const otherVendors=peers.filter(p=>p.vendor_id&&p.vendor_id!==vi.vendor_id);
-  const comparableAlternatives=automaticAlternativeVerified(vi,item,peers);
   const source=(key,rawKey)=>manual[key]?.sourceValue??row[rawKey];
   // A second vendor on the same catalog item is not automatically an
   // independent witness. Require a matching trade identifier first.
@@ -84,12 +81,11 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
       packAcc=byClient("pack_size")?STATED:provenance.packSource==="description"?DERIVED:provenance.packSource==="column"||!provenance.packSource?STATED:DERIVED;
       packWhy=byClient("pack_size")?"Set by you":provenance.packSource==="description"?"Read from the end of the description":provenance.packSource==="invoice"?"Filled from the vendor's invoice":"Read from the sheet";
       if(basis?.basis==="measure"&&pack.dimension!=="unknown"&&casePrice==null){packAcc=Math.min(packAcc,DOUBTFUL);packWhy+="; doesn't fit a price quoted per "+(basis.unit||vi.selling_unit);}
-      const disagree=!comparableAlternatives&&otherVendors.find(p=>p.pack_size&&parsePackSize(p.pack_size)?.parsed&&comparePurchasingPack(vi.pack_size,p.pack_size).status!=="same");
+      const disagree=otherVendors.find(p=>p.pack_size&&parsePackSize(p.pack_size)?.parsed&&comparePurchasingPack(vi.pack_size,p.pack_size).status!=="same");
       if(disagree){packAcc=Math.min(packAcc,GUESSED);packWhy+=`; another vendor lists ${disagree.pack_size}`;}
       else if(provenPeers.length&&provenPeers.every(p=>comparePurchasingPack(vi.pack_size,p.pack_size).status==="same")){
         packAcc=100;packWhy+="; corroborated by another vendor";
       }
-      if(comparableAlternatives)packWhy+="; alternatives may use different purchasing packs";
       const sourcePack=source("pack_size","packSize");
       if(byClient("pack_size")&&sourcePack&&comparePurchasingPack(vi.pack_size,sourcePack).status!=="same"){
         packAcc=Math.min(packAcc,GUESSED);packWhy+="; differs from the original source";
@@ -206,20 +202,19 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   const priceField=clientField("price",hasPrice?amount:null,priceAcc,priceWhy||"No price");
   const unitField=clientField("selling_unit",vi.selling_unit||"",unitAcc,unitWhy||"Choose what the quoted price is per");
   // Unit cost is as sure as the least sure of the three it comes from.
-  const costAccuracy=per?.manual?100:per?Math.min(packField.accuracy??0,unitField.accuracy??0,priceField.accuracy??0):null;
+  const costAccuracy=per?Math.min(packField.accuracy??0,unitField.accuracy??0,priceField.accuracy??0):null;
 
   return {
     itemNumber:{...field(item.master_item_number,numAcc,numWhy),label:manualLink?"Manual":"Automated"},
     vendor:field(vendor?.name||"",vendor?STATED:null,"Vendor selected at import"),
-    vendorItemNumber:field(String(vi.vendor_item_code||"").trim()||vendorListingLabel(vi)||"",vi.vendor_item_code||vendorListingLabel(vi)?100:null,"Vendor code or persistent NVIM number"),
-    category:clientField("category_id",category?.name||"Uncategorized",catAcc,catWhy||"No category yet"),
-    itemName:clientField("item_name",item.name||"",nameAcc,nameWhy),
+    category:field(category?.name||"Uncategorized",catAcc,catWhy||"No category yet"),
+    itemName:field(item.name||"",nameAcc,nameWhy),
     product:clientField("description",vi.description,descAcc,descWhy),
     brand:clientField("brand",vi.brand||"",brandAcc,brandWhy||"Blank when absent"),
     pack:packField,
     price:priceField,
     sellingUnit:unitField,
-    unitCost:{...field(per?.price??null,costAccuracy,per?.manual?`Client-approved unit cost per ${per.unit}`:per?`Calculated per ${per.unit}${pack?.catchWeight?"; case weight is an estimate":""}`:"Needs a readable pack and a compatible quoted unit"),unit:per?.unit||null},
+    unitCost:{...field(per?.price??null,costAccuracy,per?`Calculated per ${per.unit}${pack?.catchWeight?"; case weight is an estimate":""}`:"Needs a readable pack and a compatible quoted unit"),unit:per?.unit||null},
   };
 }
 
@@ -241,10 +236,7 @@ export function orderGuideAssessment(input){
   // A category only has to be a real one; a best-guess placement is still a
   // placement and the price is no less right for it. The other required
   // cells must be worked out from strong evidence or better.
-  const clientApproved=mapping.comparison_track==="exact"&&mapping.confidence_score===100&&mapping.match_method==="manual"&&!!vendorItem.field_resolutions?.row_approval;
-  const override=clientApproved&&!!vendorItem.field_resolutions?.unit_cost_override?.value;
-  const blockers=REQUIRED_FIELDS.filter(key=>key==="category"?(!category||category.is_holding_pen||evidence.category.accuracy==null):(evidence[key].accuracy??0)<DERIVED);
-  if(override){for(const key of ["pack","sellingUnit"])if(blockers.includes(key))blockers.splice(blockers.indexOf(key),1);}
+  const blockers=REQUIRED_FIELDS.filter(key=>key==="category"?evidence.category.accuracy==null:(evidence[key].accuracy??0)<DERIVED);
   if(evidence.unitCost.value==null&&!blockers.includes("pack")&&!blockers.includes("sellingUnit")&&!blockers.includes("price"))blockers.push("unitCost");
   const status=quoteStatus(vendorItem,settings,now);
   if(status!=="current")blockers.push(status==="expired"?"expired":"quote");
@@ -252,7 +244,7 @@ export function orderGuideAssessment(input){
   if(item.brand_locked&&!brandsMatch(vendorItem.brand,item.locked_brand))blockers.push("brand");
   const fieldsReady=blockers.length===0;
   const approved=mapping.comparison_track==="exact"&&mapping.confidence_score===100;
-  const verification=approved&&((clientApproved&&item.comparison_mode!=="exact")||automaticAlternativeVerified(vendorItem,item,peers)||!peers.length)?mapping:mappingVerification(vendorItem,item,peers);
+  const verification=approved&&!peers.length?mapping:mappingVerification(vendorItem,item,peers);
   if(verification.comparison_track!=="exact")blockers.push("association");
   return {ready:blockers.length===0,fieldsReady,blockers,evidence,verification};
 }
@@ -338,7 +330,6 @@ export function importResolutions(row,prior={},date=new Date().toISOString()){
   // A fresh quote replaces the amount evidence; old price edits are not
   // permanent product corrections.
   delete fields.price;
-  delete fields.unit_cost_override;
   for(const input of row.manualFields||[]){
     const key=FIELDS[input]||(input==="sellingUnit"?"selling_unit":input==="price"?"price":null);
     if(key)fields[key]={value:row[input]??"",sourceValue:row.originalFields?.[input]??prior.import_row?.row?.[input]??row[input]??"",confirmedAt:date};

@@ -14,7 +14,6 @@ export function serializePack(parts){
   if(!parts.type)return '';
   const count=parts.type==='each'?1:Number(parts.count),size=Number(parts.size);
   const countOK=Number.isInteger(count)&&count>0,sizeOK=Number.isFinite(size)&&size>0;
-  if(countOK&&sizeOK&&/^#\d+(?:\.\d+)? CAN$/.test(parts.unit)&&size===1)return `${count}/${parts.unit.replace(' CAN',' CN')}`;
   if(countOK&&sizeOK&&parts.unit)return parts.type==='each'?`${size} ${parts.unit}${parts.catchWeight?' AVG':''}`:`${count}/${size} ${parts.unit}${parts.catchWeight?' AVG':''}`;
   return `${parts.type==='each'?'EACH':'CASE'}:${countOK?count:'?'}/${sizeOK?size:'?'} ${parts.unit||'?'}`;
 }

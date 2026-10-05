@@ -48,6 +48,8 @@ const UNIT_DEFINITIONS = {
   YD:{dimension:"length",base:"MM",factor:914.4,aliases:["yd","yard","yards"]},
   // count -> each
   EA:{dimension:"count",base:"EA",factor:1,aliases:["ea","each","piece","pieces","pc","pcs","pce","pces"]},
+  // agricultural volume -> liters (1 US bushel = 35.2391 liters)
+  BU:{dimension:"volume",base:"ML",factor:35239.07,aliases:["bu","bus","bushel","bushels"]},
   CT:{dimension:"count",base:"EA",factor:1,aliases:["ct","count"]},
   DOZ:{dimension:"count",base:"EA",factor:12,aliases:["doz","dozen","dz"]},
 };
@@ -239,7 +241,7 @@ const CATCH_WEIGHT_RE=/\b(?:av|avg|ave|average|approx|approximately|catch\s*wt|c
 
 function parsePackSize(raw) {
   if (!raw || !String(raw).trim()) return null;
-  const source=String(raw).trim();
+  const source=normalizeMixedFraction(String(raw).trim());
   // "4/10 LBAV", "4/10 LB AVG", "2/10# AVG": the marker is read and then
   // set aside so the rest parses as an ordinary pack.
   let working=source.toLowerCase().replace(/(lb|lbs)(av|avg)\b/g,"$1 $2");
@@ -407,7 +409,7 @@ function normalizeManufacturerCode(raw){
 // the pack column is empty, the tail of the description is the pack if
 // KERDOS can read it as one; the description itself is left untouched.
 function packFromDescription(description){
-  const text=String(description||"").trim();
+  const text=normalizeMixedFraction(String(description||"").trim());
   if(!text) return null;
   const tail=text.match(/(?:^|\s)((?:\d+(?:\.\d+)?\s*[\/x×-]\s*)?\d+(?:\.\d+)?\s*(?:#|[a-z]{1,8}(?:\s+[a-z]{1,8})?)\.?)\s*$/i);
   if(!tail) return null;
@@ -694,3 +696,12 @@ export {
   normalizeForMatch, wordsMatch, classifyCategory, suggestCategory, nextCategoryRange,
   safeProductScore, productIdentity, compareProductIdentity, comparePurchasingPack, commonPurchasingPack, bestPurchasingMatch, bestPurchasingSuggestion, quoteStatus, bestCatalogMatch, bestInvoiceMatch, assertKnownPriceBasis,
 };
+
+// Normalize mixed-number pack fractions like "1-1/9 bu" to decimal.
+// Standard in produce: 1-1/9 bu pepper, 1-1/9 bu eggplant.
+export function normalizeMixedFraction(str){
+  if(!str)return str;
+  return String(str).replace(/(\d+)-(\d+)\/(\d+)/g,function(m,w,n,d){
+    return (Number(w)+Number(n)/Number(d)).toFixed(3).replace(/\.?0+$/,"");
+  });
+}

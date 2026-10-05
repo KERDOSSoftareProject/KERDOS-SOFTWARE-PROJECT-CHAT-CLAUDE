@@ -10,7 +10,16 @@ export function pdfTextLines(items) {
   }
   groups.sort((a,b)=>b.y-a.y);
   const heading=groups.find(g=>g.words.filter(w=>/^product$/i.test(w.str)).length>=2 && g.words.filter(w=>/^price$/i.test(w.str)).length>=2);
-  if(!heading)return groups.map(g=>g.words.sort((a,b)=>a.x-b.x).map(w=>w.str).join(' '));
+  if(!heading){
+    const rawLines=groups.map(g=>g.words.sort((a,b)=>a.x-b.x).map(w=>w.str).join(' '));
+    const merged=[];
+    for(let i=0;i<rawLines.length;i++){
+      const next=rawLines[i+1]||"";
+      if(next&&/^\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$/.test(next.trim())){merged.push(rawLines[i]+"  "+next.trim());i++;}
+      else merged.push(rawLines[i]);
+    }
+    return merged;
+  }
   const products=heading.words.filter(w=>/^product$/i.test(w.str)).sort((a,b)=>a.x-b.x);
   const prices=heading.words.filter(w=>/^price$/i.test(w.str)).sort((a,b)=>a.x-b.x);
   const boundary=(prices[0].x+products[1].x)/2;
@@ -21,5 +30,21 @@ export function pdfTextLines(items) {
       if(segment.length)lanes[lane].push(segment.map(w=>w.str).join(' '));
     }
   }
-  return lanes.flat();
+  // Each lane has alternating description and price lines because the PDF
+  // draws each on its own baseline. Merge each description+price pair
+  // into one line so the parser sees them together.
+  return lanes.map(lane=>{
+    const merged=[];
+    for(let i=0;i<lane.length;i++){
+      const line=lane[i];
+      const next=lane[i+1]||"";
+      if(next&&/^\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$/.test(next.trim())){
+        merged.push(line+"  "+next.trim());
+        i++;
+      } else {
+        merged.push(line);
+      }
+    }
+    return merged;
+  }).flat();
 }

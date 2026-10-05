@@ -438,7 +438,16 @@ function extractRow(cells, columnMap, priceHeader="") {
   // The pack column wins; when it is empty, a pack written at the end of
   // the description is used and its origin recorded for review.
   const columnPack = normalizeColumnPack(unmangleExcelDatePack((get("packSize") || "").trim())) || null;
-  const descriptionPack = columnPack ? null : packFromDescription(description);
+  const descriptionPackRaw = columnPack ? null : packFromDescription(description);
+  // When the pack came from the description, strip it from the description
+  // so "APPLE GALA 80 (USA) 40 lb." becomes "APPLE GALA 80 (USA)" with
+  // pack "40 lb." — otherwise the pack ends up duplicated in the item name.
+  let descriptionPack = null;
+  if(descriptionPackRaw&&!columnPack){
+    descriptionPack = descriptionPackRaw;
+    const packPos=description.lastIndexOf(descriptionPackRaw);
+    if(packPos>4) description=description.slice(0,packPos).replace(/[,\s]+$/,"").trim();
+  }
   const packSize = columnPack || descriptionPack;
   const packSource = columnPack ? "column" : descriptionPack ? "description" : null;
   const qty = parseMoneyLenient(get("qty"));
@@ -485,8 +494,12 @@ function extractRow(cells, columnMap, priceHeader="") {
 // Keep price and document metadata distinct. A bare integer in a date,
 // item code, quantity, or pack cannot be interpreted as a monetary quote.
 const METADATA_LINE = /^(?:from|to|cc|bcc|subject|sent|reply-to|invoice(?:\s*(?:no\.?|number|#|date))?|inv\s*#|date|delivery\s+date|due\s+date|phone|fax|email|bill\s+to|ship\s+to|purchase\s+order|po\s*#|account|customer|tax|balance|payment|subtotal|total|grand\s+total|page|thank\s+you|terms)\b\s*[:#-]?/i;
+// Charges and packaging items that appear on price sheets but are not
+// orderable products. Universal — not food-specific.
+const NON_PRODUCT_LINE = /^(?:fuel\s+surcharge|surcharge|delivery\s+(?:fee|charge)|freight|packaging|box\s+\w+|misc(?:ellaneous)?|shipping|handling)\b/i;
 function isDocumentMetadata(line){
-  return METADATA_LINE.test(line.trim()) || /^(?:https?:\/\/|www\.|@)/i.test(line.trim());
+  const t=line.trim();
+  return METADATA_LINE.test(t)||NON_PRODUCT_LINE.test(t)||/^(?:https?:\/\/|www\.|@)/i.test(t);
 }
 function contextualFreeformRow(line){
   if(isDocumentMetadata(line)) return null;
@@ -519,11 +532,18 @@ function contextualFreeformRow(line){
   const price=Number((prior||chosen).raw.replace(/[$,\s]/g,''));
   const amount=Number(chosen.raw.replace(/[$,\s]/g,''));
   if(!Number.isFinite(price)||price<=0||price>1000000||!Number.isFinite(amount))return null;
-  const packMatch=description.match(/(?:^|\s)(\d+(?:\/\d+)?\s*(?:LB|LBS|KG|G|OZ|GAL|QT|PT|CT|EA|PACK|CASE|CS|SHEET|SHEETS))\s*$/i);
+  // Use the full pack parser to pull a trailing pack from the description.
+  let cfDescription=description;
+  let cfPack=null;
+  const cfPackStr=packFromDescription(description);
+  if(cfPackStr){
+    const cfIdx=description.lastIndexOf(cfPackStr);
+    if(cfIdx>4){cfPack=cfPackStr;cfDescription=description.slice(0,cfIdx).replace(/[,\s]+$/,"").trim();}
+  }
   const issues=[];
   if(prior&&qty!=null&&Math.abs(qty*price-amount)>0.02)issues.push("Quantity x unit price does not equal the stated line total");
   if(!prior&&qty!=null&&qty>1)issues.push("Only one price is listed; unit price versus extended total is ambiguous");
-  return {code:null,description:description.slice(0,120),packSize:packMatch?packMatch[1].trim():null,
+  return {code:null,description:cfDescription.slice(0,120),packSize:cfPack,packSource:cfPack?"description":null,
     qty,price,amount:prior?amount:null,priceUnavailable:false,sourceLine:line,issues};
 }
 
@@ -756,13 +776,27 @@ function extractRowFreeform(line) {
     head = head.slice(codeMatch[0].length);
   }
 
-  const description = head.trim();
-  if (description.length < 2) return null;
+  let rawDescription = head.trim();
+  if (rawDescription.length < 2) return null;
+
+  // Pull a trailing pack out of the description so "APPLE GALA 80 (USA) 40 lb."
+  // becomes description "APPLE GALA 80 (USA)" with packSize "40 lb".
+  // This is the standard Carbonella / two-column PDF format.
+  let freeformPack = null;
+  const packStr = packFromDescription(rawDescription);
+  if (packStr) {
+    const packIdx = rawDescription.lastIndexOf(packStr);
+    if (packIdx > 4) {
+      freeformPack = packStr;
+      rawDescription = rawDescription.slice(0, packIdx).replace(/[,\s]+$/, "").trim();
+    }
+  }
 
   return {
     code,
-    description: description.slice(0, 120),
-    packSize: null,
+    description: rawDescription.slice(0, 120),
+    packSize: freeformPack,
+    packSource: freeformPack ? "description" : null,
     qty,
     price: priceTok.value,
     amount: amountTok.value,
@@ -966,10 +1000,22 @@ function extractLabeledFields(line) {
   description = description.trim().replace(/[,;:]+$/, "");
   if (description.length < 2) return null;
 
+  // Pull a trailing pack out of the description (contextual path).
+  let ctxPack = null;
+  const ctxPackStr = packFromDescription(description);
+  if (ctxPackStr) {
+    const ctxIdx = description.lastIndexOf(ctxPackStr);
+    if (ctxIdx > 4) {
+      ctxPack = ctxPackStr;
+      description = description.slice(0, ctxIdx).replace(/[,\s]+$/, "").trim();
+    }
+  }
+
   return {
     code: matches.code ? matches.code.value : null,
     description: description.slice(0, 120),
-    packSize: null,
+    packSize: ctxPack,
+    packSource: ctxPack ? "description" : null,
     qty: matches.qty ? parseFloat(matches.qty.value) : null,
     price: price !== null ? price : amount,
     amount: amount !== null ? amount : price,
