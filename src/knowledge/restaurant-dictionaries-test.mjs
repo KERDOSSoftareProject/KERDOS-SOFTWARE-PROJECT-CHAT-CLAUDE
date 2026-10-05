@@ -73,8 +73,8 @@ const service=createCatalogService({records:{query(t){
   return chain;
 }}});
 const result=await service.matchOrCreate({organizationId:"org",vendorId:"vendor-c",description:"YUKON GOLD",packSize:"50 LB",catalogItems:catalog,categories,vendorItems:peers,mappings});
-assert.ok(result.catalogItemId!=="c","third vendor gets its own new KERDOS entry, not attached to existing");
-assert.ok(["review","new"].includes(result.track),"track is review or new, not exact");
+assert.equal(result.catalogItemId,"c","third vendor shares the existing understood product and pack");
+assert.equal(result.track,"exact");
 assert.equal(mappingVerification({id:"c",description:"YUKON GOLD",pack_size:"50 LB"},catalog[0],peers).comparison_track,"exact");
 assert.equal(mappingVerification({id:"c",description:"YUKON GOLD A",pack_size:"50 LB"},catalog[0],peers).comparison_track,"review");
 

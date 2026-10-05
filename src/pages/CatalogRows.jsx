@@ -1,4 +1,6 @@
-import {AssociateAlternatives} from "./AssociateAlternatives.jsx";
+import {associationTarget} from "../core/alternative-groups.js";
+import {compareCatalogRows} from "../core/catalog-row-order.js";
+import {createCatalogService} from "../services/catalog.js";
 import {unitLabel} from "../core/unit-labels.js";
 import {editablePack,serializePack} from "../core/pack-editor.js";
 import {QuotedPerControl} from "./QuotedPerControl.jsx";
@@ -12,6 +14,7 @@ import {formatMoney} from "../localization.js";
 import {btn,inp} from "../ui/styles.js";
 
 const service=createCatalogRowsService(backend);
+const catalogService=createCatalogService(backend);
 const cellStyle={padding:8,borderBottom:"1px solid #DEE7F0",verticalAlign:"top"};
 const inputStyle={...inp,fontSize:12,padding:6,width:"100%",minWidth:85,boxSizing:"border-box"};
 // A percentage only where there is a value; an empty cell is simply empty.
@@ -71,6 +74,21 @@ function EditableRow({selected,onSelect,industry,allCatalogItems,allVendorItems,
     setPackParts(parts);
     edit("pack_size",serializePack(parts));
   }
+  const availableBrands=[...new Set([current.brand,...peers.map(p=>p.brand)].map(b=>String(b||"").trim()).filter(Boolean))];
+  async function setBrandRequirement(required,brand=null){
+    setBusy(true);setError("");
+    try{
+      const selectedBrand=required?String(brand||current.brand||availableBrands[0]||"").trim():null;
+      if(required&&!selectedBrand)throw new Error("Enter a brand before requiring it.");
+      await catalogService.updateItemSettings(item.id,{brand_locked:required,locked_brand:selectedBrand});
+      await onUpdated();
+    }catch(err){setError(err.message);}finally{setBusy(false);}
+  }
+  async function unlink(){
+    setBusy(true);setError("");
+    try{await catalogService.splitMapping({organizationId:orgId,mappingId:mapping.id});await onUpdated();}
+    catch(err){setError(err.message);}finally{setBusy(false);}
+  }
   async function save(override=null){
     if(!override&&!calculatedUnitCost(current,{industry})){
       setOverridePackPrice(String(current.price||""));setOverrideOpen(true);return;
@@ -120,6 +138,13 @@ function EditableRow({selected,onSelect,industry,allCatalogItems,allVendorItems,
           {!parsedPack?.parsed&&current.pack_size&&!/^(CASE|EACH):/.test(current.pack_size)&&<small style={{display:"block"}}>From sheet: {current.pack_size}</small>}
         </>;
         else if(key==="itemName")content=<input aria-label={`Item name for ${item.master_item_number}`} style={{...inputStyle,minWidth:180,fontWeight:400}} disabled={!canManage||busy||linkDirty} value={linkDirty?displayItem.name:nameDraft??item.name??""} placeholder="Your name for this product" onChange={e=>{setBase(b=>b||vendorItem);setNameDraft(e.target.value);setSaved(false);setError("");}} />;
+        else if(key==="brand")content=<>
+          <input aria-label={`brand for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:95}} disabled={!canManage||busy} value={current.brand||""} placeholder="Blank if absent" onChange={e=>edit("brand",e.target.value)}/>
+          <label style={{display:"block",fontSize:11,marginTop:5,whiteSpace:"nowrap"}}><input type="checkbox" aria-label={`Brand matters for KERDOS ${item.master_item_number}`} checked={!!item.brand_locked} disabled={!canManage||busy||dirty||linkDirty||(!item.brand_locked&&!availableBrands.length)} onChange={e=>setBrandRequirement(e.target.checked)}/> Brand matters</label>
+          {item.brand_locked&&<select aria-label={`Required brand for KERDOS ${item.master_item_number}`} style={{...inputStyle,marginTop:4}} disabled={!canManage||busy||dirty||linkDirty} value={item.locked_brand||""} onChange={e=>setBrandRequirement(true,e.target.value)}>
+            <option value="" disabled>Choose brand</option>{[...new Set([item.locked_brand,...availableBrands].filter(Boolean))].map(brand=><option key={brand} value={brand}>{brand}</option>)}
+          </select>}
+        </>;
         else if(fields[key])content=<input aria-label={`${key} for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:key==="product"?220:95}} disabled={!canManage||busy} type={key==="price"?"number":"text"} step={key==="price"?"any":undefined} min={key==="price"?"0":undefined} value={current[fields[key]]??""} placeholder={key==="brand"?"Blank if absent":""} onChange={e=>edit(fields[key],e.target.value)} />;
         else if(key==="sellingUnit")content=<QuotedPerControl industry={industry} vocabulary={vocabulary} label={`Quoted per for ${vendorItem.vendor_item_code}`} style={{...inputStyle,minWidth:130}} disabled={!canManage||busy} value={current.selling_unit||""} onChange={value=>edit("selling_unit",value)}/>;
         else content=<>
@@ -137,6 +162,9 @@ function EditableRow({selected,onSelect,industry,allCatalogItems,allVendorItems,
       })}
       <td style={{...cellStyle,minWidth:115}}>
         {canManage&&<button disabled={busy} onClick={()=>save()} style={{...btn("#003584","white",{fontSize:11,padding:6})}}>{busy?"Applying…":"Apply"}</button>}
+        {canManage&&!dirty&&assessment.ready&&(mapping.comparison_track!=="exact"||mapping.confidence_score!==100)&&<button disabled={busy} onClick={()=>save()} style={{...btn("#276742","white",{fontSize:11,padding:6,marginTop:5})}}>Migrate</button>}
+        {canManage&&peers.length>0&&<button disabled={busy||dirty} onClick={unlink} style={{...btn("#FFF3E0","#875200",{fontSize:11,padding:6,marginTop:5})}}>Unlink</button>}
+        {!dirty&&!assessment.ready&&<small style={{display:"block",color:"#875200",marginTop:5}}>Waiting: {assessment.blockers.map(code=>BLOCKER_LABELS[code]).join("; ")}</small>}
         {dirty&&<button disabled={busy} onClick={()=>{setDraft({});setNameDraft(null);setNumberDraft(null);setBase(null);setPackParts(null);setError("");}} style={{border:0,background:"none",cursor:"pointer",fontSize:11}}>Undo edits</button>}
         <button onClick={()=>setDetails(!details)} style={{display:"block",marginTop:6,border:0,background:"none",cursor:"pointer",color:"#245785"}}>Details</button>
         {vendorItem.import_row?.reviewRequired&&<small style={{display:"block",color:"#9B4400"}}>New quote needs review</small>}
@@ -177,7 +205,19 @@ function EditableRow({selected,onSelect,industry,allCatalogItems,allVendorItems,
 export function CatalogRows({industry="",orgId,items,catalogItems,vendorItems,mappings,vendors,categories,vocabulary,canManage,onUpdated,onDetails,settings={},editors={}}){
   const summary=useMemo(()=>qualificationSummary({catalogItems,vendorItems,mappings,vendors,categories,settings}),[catalogItems,vendorItems,mappings,vendors,categories,settings]);
   const [selected,setSelected]=useState(new Set());
-  const [sort,setSort]=useState({key:"product",direction:1});
+  const [sort,setSort]=useState({key:"family",direction:1});
+  const [linkBusy,setLinkBusy]=useState(false),[linkError,setLinkError]=useState("");
+  async function linkSelected(){
+    setLinkBusy(true);setLinkError("");
+    try{
+      const chosen=vendorItems.filter(v=>selected.has(v.id));
+      const ids=new Set(mappings.filter(m=>selected.has(m.vendor_item_id)).map(m=>m.catalog_item_id));
+      const target=associationTarget(catalogItems.filter(i=>ids.has(i.id)));
+      if(!target||chosen.length<2)throw new Error("Select at least two vendor rows");
+      await backend.catalog.associateAlternatives({organizationId:orgId,vendorItemIds:chosen.map(v=>v.id),targetCatalogItemId:target.id,name:target.name,preferredBrand:target.preferred_brand||"",revisions:Object.fromEntries(chosen.map(v=>[v.id,v.row_revision||0]))});
+      setSelected(new Set());await onUpdated();
+    }catch(err){setLinkError(err.message);}finally{setLinkBusy(false);}
+  }
   const catalog=new Map(catalogItems.map(i=>[i.id,i])),viById=new Map(vendorItems.map(v=>[v.id,v])),vendorById=new Map(vendors.map(v=>[v.id,v]));
   const visible=new Set(items.map(i=>i.catalogItemId));
   const rows=mappings.filter(m=>visible.has(m.catalog_item_id)).flatMap(mapping=>{
@@ -187,6 +227,7 @@ export function CatalogRows({industry="",orgId,items,catalogItems,vendorItems,ma
     const peers=mappings.filter(o=>o.catalog_item_id===mapping.catalog_item_id&&o.id!==mapping.id).map(o=>viById.get(o.vendor_item_id)).filter(Boolean);
     return [{mapping,item,vendorItem,vendor,peers,evidence:catalogRowEvidence({item,vendorItem,vendor,mapping,category,peers,categories})}];
   }).sort((a,b)=>{
+    if(sort.key==="family")return compareCatalogRows(a,b,settings);
     const av=a.evidence[sort.key].value,bv=b.evidence[sort.key].value;
     if(av==null)return bv==null?0:1;if(bv==null)return -1;
     return sort.direction*(typeof av==="number"&&typeof bv==="number"?av-bv:String(av).localeCompare(String(bv),undefined,{numeric:true}));
@@ -199,7 +240,7 @@ export function CatalogRows({industry="",orgId,items,catalogItems,vendorItems,ma
         <ul>{summary.blockers.map(blocker=><li key={blocker.code}>{blocker.label}: {blocker.count}</li>)}</ul>
       </details>
     </div>
-    {canManage&&<AssociateAlternatives orgId={orgId} selectedVendorIds={[...selected]} vendorItems={vendorItems} catalogItems={catalogItems} mappings={mappings} vendors={vendors} onUpdated={onUpdated} onClear={()=>setSelected(new Set())}/>}
+    {canManage&&<div style={{padding:8,display:"flex",gap:8,alignItems:"center"}}><button disabled={selected.size<2||linkBusy} onClick={linkSelected} style={btn("#003584","white")}>{linkBusy?"Linking…":`Link selected (${selected.size})`}</button><button onClick={()=>setSelected(new Set())}>Clear selection</button><button onClick={()=>setSort({key:"family",direction:1})}>Group related products</button>{linkError&&<span role="alert" style={{color:"#A32B20"}}>{linkError}</span>}</div>}
     <table style={{borderCollapse:"collapse",width:"100%",minWidth:1250,fontSize:12}}><thead><tr><th style={cellStyle}>Select</th>{CATALOG_COLUMNS.map(([key,label])=><th key={key} style={{...cellStyle,textAlign:"left",background:"#E8F0FA"}} aria-sort={sort.key===key?sort.direction===1?"ascending":"descending":"none"}><button style={{border:0,background:"none",fontWeight:700,cursor:"pointer"}} onClick={()=>setSort(s=>({key,direction:s.key===key?-s.direction:1}))}>{label}{sort.key===key?sort.direction===1?" ↑":" ↓":""}</button></th>)}<th style={cellStyle}>Actions</th></tr></thead>
       <tbody>{rows.map(row=><EditableRow selected={selected.has(row.vendorItem.id)} onSelect={()=>setSelected(prior=>{const next=new Set(prior);if(next.has(row.vendorItem.id))next.delete(row.vendorItem.id);else next.add(row.vendorItem.id);return next;})} industry={industry} allCatalogItems={catalogItems} allVendorItems={vendorItems} allMappings={mappings} settings={settings} editors={editors} key={row.vendorItem.id} {...row} orgId={orgId} categories={categories} vocabulary={vocabulary} canManage={canManage} onUpdated={onUpdated} onDetails={()=>onDetails(row.item.id)} />)}
       {items.filter(i=>!linked.has(i.catalogItemId)).map(i=><tr key={i.catalogItemId}><td style={cellStyle}/><td style={cellStyle}>#{i.masterItemNumber}</td><td colSpan={CATALOG_COLUMNS.length-1} style={cellStyle}>{i.name} · No vendor listing linked yet.</td><td><button onClick={()=>onDetails(i.catalogItemId)}>Details</button></td></tr>)}

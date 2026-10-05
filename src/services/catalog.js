@@ -1,8 +1,9 @@
+import {matchExistingProduct,productDescription} from "../core/product-linking.js";
 // Catalog writes expressed in KERDOS business language. The service depends
 // only on the provider's generic table capability; UI code never names or
 // imports a database vendor.
 import {prepareCatalogCorrection} from "./catalog-rows.js";
-import {bestPurchasingMatch,bestPurchasingSuggestion,suggestCategory,nextCategoryRange,compareProductIdentity,comparePurchasingPack,commonPurchasingPack,brandsMatch,parsePackSize,abbreviationPairs} from "../procurement.js";
+import {suggestCategory,nextCategoryRange,compareProductIdentity,comparePurchasingPack,brandsMatch,parsePackSize,abbreviationPairs} from "../procurement.js";
 
 // An association is a customer's assertion about identity. Ordering eligibility
 // additionally requires agreement with the existing vendor product's pack and
@@ -10,13 +11,10 @@ import {bestPurchasingMatch,bestPurchasingSuggestion,suggestCategory,nextCategor
 export function mappingVerification(vendorItem,catalogItem,linkedVendorItems=[]){
   if(!vendorItem||!catalogItem)throw new Error("Choose a vendor product and a catalog item.");
   const peers=linkedVendorItems.filter(peer=>peer.id!==vendorItem.id);
-  const descriptions=peers.length?peers.map(peer=>peer.description):[catalogItem.name];
-  const identity=descriptions.map(description=>compareProductIdentity(vendorItem.description,description));
+  const descriptions=peers.length?peers.map(peer=>productDescription(peer)):[productDescription({description:catalogItem.name,brand:vendorItem.brand})];
+  const identity=descriptions.map(description=>compareProductIdentity(productDescription(vendorItem),productDescription({description})));
   const packs=peers.map(peer=>comparePurchasingPack(vendorItem.pack_size,peer.pack_size));
-  const brandsAgree=peers.every(peer=>!vendorItem.brand&&!peer.brand||brandsMatch(vendorItem.brand,peer.brand));
-  const identifiersAgree=peers.every(peer=>(!vendorItem.gtin||!peer.gtin||vendorItem.gtin===peer.gtin)&&
-    (!vendorItem.manufacturer_code||!peer.manufacturer_code||vendorItem.manufacturer_code===peer.manufacturer_code));
-  const exact=!!parsePackSize(vendorItem.pack_size)?.parsed&&brandsAgree&&identifiersAgree&&identity.every(result=>result.status==="same")&&packs.every(result=>result.status==="same");
+  const exact=(!catalogItem.brand_locked||brandsMatch(vendorItem.brand,catalogItem.locked_brand))&&!!parsePackSize(vendorItem.pack_size)?.parsed&&identity.every(result=>result.status==="same")&&packs.every(result=>result.status==="same");
   return {comparison_track:exact?"exact":"review",confidence_score:exact?100:null,match_method:"manual"};
 }
 async function run(promise,operation){
@@ -49,7 +47,7 @@ export function mappingGap(vendorItem,catalogItem,peers=[]){
       :{code:"single-vendor-detail",label:GAP_LABELS["single-vendor-detail"],detail:identity.reason};
   }
   const brandClash=others.find(peer=>vendorItem.brand&&peer.brand&&!brandsMatch(vendorItem.brand,peer.brand));
-  if(brandClash)return {code:"brand-conflict",label:GAP_LABELS["brand-conflict"],detail:`${vendorItem.brand} vs ${brandClash.brand}`};
+  if(catalogItem.brand_locked&&brandClash)return {code:"brand-conflict",label:GAP_LABELS["brand-conflict"],detail:`${vendorItem.brand} vs ${brandClash.brand}`};
   const packClash=others.map(peer=>({peer,result:comparePurchasingPack(vendorItem.pack_size,peer.pack_size)})).find(entry=>entry.result.status!=="same");
   if(packClash)return {code:"pack-conflict",label:GAP_LABELS["pack-conflict"],detail:`${vendorItem.pack_size} vs ${packClash.peer.pack_size||"none"}`};
   const wordClash=others.map(peer=>compareProductIdentity(vendorItem.description,peer.description)).find(result=>result.status!=="same");
@@ -130,39 +128,12 @@ export function createCatalogService(backend){
   const table=backend.records.query;
   return {
     async matchOrCreate({organizationId,vendorId,description,packSize,brand=null,gtin=null,manufacturerCode=null,categoryId=null,catalogItems,categories,vendorItems=[],mappings=[]}){
-      const byId=new Map(vendorItems.map(vi=>[vi.id,vi]));
-      const candidates=catalogItems.map(ci=>{
-        const linked=mappings.map(m=>m.catalog_item_id===ci.id?byId.get(m.vendor_item_id):null).filter(Boolean);
-        const knownPack=commonPurchasingPack(linked.map(vi=>vi.pack_size));
-        const knownBrands=[...new Set(linked.map(vi=>vi.brand).filter(Boolean))];
-        return {...ci,pack_size:knownPack,knownBrand:knownBrands.length===1?knownBrands[0]:null,
-          linkedVendorItems:linked,
-          otherVendorPresent:!!vendorId&&linked.some(vi=>vi.vendor_id&&vi.vendor_id!==vendorId)};
-      });
-      // Identifiers come first: they settle identity without wording.
-      // When the matched entry already has a different vendor, do not link
-      // automatically — the identifier proves the product is the same thing,
-      // but cross-vendor equivalence still requires the client's decision.
-      // Fall through to create a new entry; carry the suggestion for Item Catalog.
-      const proven=identifierMatch({gtin,manufacturerCode,brand,packSize,vendorId},candidates);
-      if(proven?.track==="exact"&&!proven.catalogItem.otherVendorPresent){
-        const evidence=associationEvidence({description,packSize,brand,gtin,manufacturerCode},proven.catalogItem);
-        if(evidence.exact)return {catalogItemId:proven.catalogItem.id,track:"exact",score:1,method:"identifier",reason:proven.reason};
-      }
-      const match=proven||bestPurchasingMatch(description,packSize,candidates);
-      // Brand is part of a verified identity. Unknown brand does not prove
-      // equality to a named brand; differing brands can be proposed for
-      // substitution, but never placed in the same exact-price comparison.
-      // When the best match is on an entry that already has a different vendor,
-      // do not attach this item to that entry automatically — even at review.
-      // Create a new entry instead and carry the suggestion so Item Catalog
-      // can show it as a proposed cross-vendor link for the client to act on.
-      // (The proven/match variable is still used below as the suggestion.)
-      const suggestion=match||bestPurchasingSuggestion(description,packSize,candidates);
+      const match=matchExistingProduct({description,pack_size:packSize,brand,gtin,manufacturer_code:manufacturerCode,vendor_id:vendorId},catalogItems,vendorItems,mappings);
+      if(match)return {catalogItemId:match.catalogItemId,track:match.track,score:match.score,reason:match.reason,method:"rule_based"};
       const placement=await this.placeInCategory({organizationId,description,categoryId,categories,catalogItems});
       const created=await this.createItem({organizationId,name:description,categoryId:placement.category?.id||null,categoryReview:placement.review,categoryReason:placement.reason,catalogItems,categories});
       catalogItems.push(created);
-      return {catalogItemId:created.id,track:suggestion?"review":"new",score:suggestion?.score??null,reason:match?.reason||"Possible product; verify defining details before linking"};
+      return {catalogItemId:created.id,track:"new",score:null,reason:"No suitable existing product and pack match"};
     },
     // Most likely category first, holding pen last. A guessed placement is
     // flagged for review so the client confirms or moves it, instead of

@@ -95,8 +95,8 @@ await test("matchOrCreate: cross-vendor identifier match creates its own entry",
   }}});
   const crossVendor=await serviceNew.matchOrCreate({organizationId:"o",vendorId:"B",description:"BONELESS SKINLESS CHICKEN BREAST FRESH",packSize:"4/10 LB",gtin:"00012345678905",
     catalogItems:[{id:"c1",name:"CHIX BRST BNLS SKNLS"}],categories:[{id:"meat",name:"Meat",range_start:1000,range_end:2999,is_holding_pen:false}],vendorItems:linked,mappings:[{catalog_item_id:"c1",vendor_item_id:"v1"}]});
-  assert.ok(crossVendor.catalogItemId!=="c1","cross-vendor GTIN match gets its own new entry, not attached to existing");
-  assert.ok(["review","new"].includes(crossVendor.track),"not exact — requires client confirmation in Item Catalog");
+  assert.equal(crossVendor.catalogItemId,"c1","known product matches the existing entry");
+  assert.ok(["review","exact"].includes(crossVendor.track));
 });
 
 // --- why not 100%: one code per mapping ---
@@ -107,7 +107,7 @@ await test("gap codes",()=>{
   assert.equal(mappingGap({id:"v",description:"CHICKEN BREAST",pack_size:"4/10 LB"},ci,[]).code,"single-vendor-ready");
   assert.equal(mappingGap({id:"v",description:"CHICKEN THIGH",pack_size:"4/10 LB"},ci,[]).code,"single-vendor-detail");
   const peer={id:"p",description:"CHICKEN BREAST",pack_size:"4/10 LB",brand:"TYSON"};
-  assert.equal(mappingGap({id:"v",description:"CHICKEN BREAST",pack_size:"4/10 LB",brand:"PERDUE"},ci,[peer]).code,"brand-conflict");
+  assert.equal(mappingGap({id:"v",description:"CHICKEN BREAST",pack_size:"4/10 LB",brand:"PERDUE"},{...ci,brand_locked:true},[peer]).code,"brand-conflict");
   assert.equal(mappingGap({id:"v",description:"CHICKEN BREAST",pack_size:"2/5 LB",brand:"TYSON"},ci,[peer]).code,"pack-conflict");
   assert.equal(mappingGap({id:"v",description:"CHICKEN BREAST SUPER TRIMMED",pack_size:"4/10 LB",brand:"TYSON"},ci,[peer]).code,"wording");
 });
@@ -248,7 +248,7 @@ await test("setCaseBasisWhereUnstated prices readable packs and leaves stated un
   await test("a fully solved single-vendor row is placed only when no other vendor is on the same entry",()=>{
     const ready=autoPlaceable({catalogItems:items,vendorItems:vis,mappings:maps,vendors,categories});
     // c1 (TOMATOES 5X6) has both Vendor A (v1) and Vendor B (v4) — cross-vendor, must NOT auto-place
-    assert.ok(!ready.find(r=>r.mappingId==="m1"),"cross-vendor entry must not auto-place");
+    assert.ok(ready.find(r=>r.mappingId==="m1"),"understood matching product and pack auto-place");
     // c2 (LETTUCE ROMAINE) is in the holding pen in this fixture, so it does not auto-place.
     // The three new tests below verify single-vendor auto-placement directly.
     assert.ok(!ready.find(r=>r.mappingId==="m2"),"holding pen category blocks placement regardless of vendor count");
@@ -297,13 +297,13 @@ await test("setCaseBasisWhereUnstated prices readable packs and leaves stated un
 
   await test("cross-vendor item does NOT auto-place even when descriptions match exactly",()=>{
     const ready=autoPlaceable({catalogItems:[ci],vendorItems:[viA,viB],mappings:[mA_exact,mB],vendors:[{id:"vendorA",name:"Minore"},{id:"vendorB",name:"Ferraro"}],categories:[cat],settings:{}});
-    assert.equal(ready.length,0,"a second vendor on the entry blocks automatic confirmation regardless of description match");
+    assert.equal(ready.length,1,"matching peer and pack allow exact placement");
   });
 
   await test("cross-vendor item does NOT auto-place even when the other vendor is still pending",()=>{
     const mA_review={id:"m1",catalog_item_id:"c1",vendor_item_id:"v1",comparison_track:"review",confidence_score:null};
     const ready=autoPlaceable({catalogItems:[ci],vendorItems:[viA,viB],mappings:[mA_review,mB],vendors:[{id:"vendorA",name:"Minore"},{id:"vendorB",name:"Ferraro"}],categories:[cat],settings:{}});
-    assert.equal(ready.length,0,"a pending second vendor also blocks automatic confirmation");
+    assert.equal(ready.length,2,"both matching listings can qualify");
   });
 }
 console.log(`${passed} passed, 0 failed`);

@@ -19,7 +19,7 @@ const service=createCatalogService({records:{query},catalog:{saveRow:async reque
 const verified=mappingVerification({id:"v2",description:"American cheese",pack_size:"120 CT"},{id:"c1",name:"American cheese"},[{id:"v1",description:"American cheese",pack_size:"120 CT"}]);
 assert.equal(verified.comparison_track,"exact");
 assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:"160 CT"},{id:"c1",name:"American cheese"},[{id:"v1",description:"American cheese",pack_size:"120 CT"}]).comparison_track,"review");
-assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:"120 CT",brand:"A"},{id:"c1",name:"American cheese"},[{id:"v1",description:"American cheese",pack_size:"120 CT",brand:"B"}]).comparison_track,"review");
+assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:"120 CT",brand:"A"},{id:"c1",name:"American cheese"},[{id:"v1",description:"American cheese",pack_size:"120 CT",brand:"B"}]).comparison_track,"exact");
 assert.equal(mappingVerification({id:"v2",description:"American cheese sliced",pack_size:"120 CT"},{id:"c1",name:"American cheese"},[{id:"v1",description:"American cheese slab",pack_size:"120 CT"}]).comparison_track,"review");
 assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:null},{id:"c1",name:"American cheese"},[]).comparison_track,"review");
 assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:"1-40# CB"},{id:"c1",name:"American cheese"},[]).comparison_track,"review");
@@ -57,23 +57,24 @@ const exact=await service.matchOrCreate({organizationId:"o1",vendorId:"vendor-b"
 // The incoming item gets its own orderable KERDOS number. The suggestion
 // of the existing entry is carried in track:"review" so Item Catalog can
 // show it as a proposed link for the client to act on.
-assert.ok(exact.catalogItemId!=="c1","cross-vendor item gets its own new KERDOS entry");
-assert.ok(["review","new"].includes(exact.track),"track is review or new, not exact");
+assert.equal(exact.catalogItemId,"c1","same product and pack use existing number");
+assert.equal(exact.track,"exact");
 const mixedPeers=[{id:"v1",vendor_id:"vendor-a",description:"American cheese",pack_size:"120 CT"},
   {id:"v2",vendor_id:"vendor-c",description:"American cheese",pack_size:"160 CT"}];
 const conflicted=await service.matchOrCreate({organizationId:"o1",vendorId:"vendor-b",description:"American cheese",packSize:"120 CT",catalogItems:[...established],categories:[],vendorItems:mixedPeers,mappings:[...mappings,{catalog_item_id:"c1",vendor_item_id:"v2"}]});
-assert.notEqual(conflicted.catalogItemId,"c1","a conflicting linked pack cannot become an exact association");
+assert.equal(conflicted.catalogItemId,"c1","matches one peer; attach for conflict review");
+assert.equal(conflicted.track,"review");
 assert.equal(associationEvidence({description:"American cheese",packSize:"120 CT"},{linkedVendorItems:mixedPeers}).exact,false);
 const singleVendor=await service.matchOrCreate({organizationId:"o1",vendorId:"vendor-a",description:"American cheese",packSize:"120 CT",catalogItems:[...established],categories:[],vendorItems,mappings});
-assert.equal(singleVendor.track,"review","another listing from the same vendor cannot prove a cross-vendor match");
+assert.equal(singleVendor.track,"exact","product and pack are the identity across all vendors");
 const differentBrand=await service.matchOrCreate({organizationId:"o1",description:"American cheese",packSize:"120 CT",brand:"B",catalogItems:[...established],categories:[],vendorItems:[{id:"v1",description:"American cheese",pack_size:"120 CT",brand:"A"}],mappings});
-assert.equal(differentBrand.track,"review");
+assert.equal(differentBrand.track,"exact");
 const reviewed=await service.matchOrCreate({organizationId:"o1",description:"American cheese",packSize:"160 CT",catalogItems:[...established],categories:[],vendorItems,mappings});
-assert.equal(reviewed.track,"review");
+assert.equal(reviewed.track,"new");
 assert.notEqual(reviewed.catalogItemId,"c1");
 const differingWords=await service.matchOrCreate({organizationId:"o1",description:"CHEESE AMER SLI 160 WHITE",packSize:"4/5 LB",catalogItems:[{id:"c2",name:"CHEESE AMERICAN 160CT WHITE",matching_behavior:"flexible"}],categories:[],vendorItems:[{id:"v2",description:"CHEESE AMERICAN 160CT WHITE",pack_size:"4/5 LB"}],mappings:[{catalog_item_id:"c2",vendor_item_id:"v2"}]});
 assert.equal(differingWords.track,"review");
-assert.notEqual(differingWords.catalogItemId,"c2");
+assert.equal(differingWords.catalogItemId,"c2","close wording and same pack attaches at review");
 console.log("KERDOS provider-neutral catalog-service tests passed");
 
-assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:"120 CT",gtin:"111"},{id:"c1",name:"American cheese"},[{id:"v1",description:"American cheese",pack_size:"120 CT",gtin:"222"}]).comparison_track,"review","conflicting identifiers cannot share an exact comparison");
+assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:"120 CT",gtin:"111"},{id:"c1",name:"American cheese"},[{id:"v1",description:"American cheese",pack_size:"120 CT",gtin:"222"}]).comparison_track,"exact","supplier identifiers do not replace product/pack identity");

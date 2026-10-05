@@ -46,5 +46,18 @@ assert.equal((await db.query('select catalog_item_id from item_mappings where id
 await approve({[va]:1,[vb]:0});
 assert.deepEqual((await db.query('select field_resolutions from vendor_items where id=$1',[va])).rows[0].field_resolutions.rejected_vendor_item_ids,[]);
 assert.equal((await db.query('select count(*) n from item_mappings where catalog_item_id=$1',[item])).rows[0].n,2);
+await db.exec(fs.readFileSync(new URL('../../knowledge/migration_026_product_matching.sql',import.meta.url),'utf8'));
+await db.exec(fs.readFileSync(new URL('../../knowledge/migration_026_product_matching.sql',import.meta.url),'utf8'));
+// Simulate separate engine-created entries from older imports.
+await db.query("update item_mappings set catalog_item_id=$1,match_method='rule_based' where id=$2",[split,ma]);
+const revision=(await db.query('select row_revision from vendor_items where id=$1',[va])).rows[0].row_revision;
+const match=(organizationId=org,target=item,rev=revision)=>db.query("select kerdos_match_vendor_item($1,$2,$3,$4,$5,'review')",[organizationId,ma,split,target,rev]);
+await assert.rejects(match(id(99)),/access/);
+await assert.rejects(match(org,id(99)),/outside/);
+await assert.rejects(match(org,item,99),/changed/);
+await match();
+assert.equal((await db.query('select comparison_track from item_mappings where id=$1',[ma])).rows[0].comparison_track,'review');
+assert.equal((await db.query('select catalog_item_id from item_mappings where id=$1',[ma])).rows[0].catalog_item_id,item);
+assert.equal((await db.query('select field_resolutions from vendor_items where id=$1',[va])).rows[0].field_resolutions.row_approval.catalogItemId,item,'engine matching does not fabricate a new client decision');
 await db.close();
 console.log('Atomic unlink, preserved fields/history, category renumbering, rejection reversal and bulk revision guards passed');

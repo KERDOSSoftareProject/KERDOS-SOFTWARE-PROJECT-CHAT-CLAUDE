@@ -11,7 +11,7 @@ const requiredMigrations=[
   "migration_010_catalog_rows.sql",
   "migration_011_document_deletion.sql",
   "migration_012_vendor_nvim.sql","migration_013_invoice_mapping.sql",
-  "migration_014_item_name.sql","migration_015_recoverable_imports.sql","migration_021_comparison_preferences.sql","migration_022_associate_alternatives.sql","migration_023_automatic_alternatives.sql","migration_024_atomic_orders.sql","migration_025_explicit_associations.sql",
+  "migration_014_item_name.sql","migration_015_recoverable_imports.sql","migration_021_comparison_preferences.sql","migration_022_associate_alternatives.sql","migration_023_automatic_alternatives.sql","migration_024_atomic_orders.sql","migration_025_explicit_associations.sql","migration_026_product_matching.sql",
 ];
 for(const file of requiredMigrations) assert.ok(fs.statSync(path.join(root,"knowledge",file)).size>100,`${file} missing or empty`);
 
