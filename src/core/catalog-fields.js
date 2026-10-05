@@ -67,6 +67,7 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   const manual=vi.field_resolutions||{};
   const byClient=(key)=>Object.hasOwn(manual,key);
   const otherVendors=peers.filter(p=>p.vendor_id&&p.vendor_id!==vi.vendor_id);
+  const comparableAlternatives=automaticAlternativeVerified(vi,item,peers);
   const source=(key,rawKey)=>manual[key]?.sourceValue??row[rawKey];
   // A second vendor on the same catalog item is not automatically an
   // independent witness. Require a matching trade identifier first.
@@ -83,11 +84,12 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
       packAcc=byClient("pack_size")?STATED:provenance.packSource==="description"?DERIVED:provenance.packSource==="column"||!provenance.packSource?STATED:DERIVED;
       packWhy=byClient("pack_size")?"Set by you":provenance.packSource==="description"?"Read from the end of the description":provenance.packSource==="invoice"?"Filled from the vendor's invoice":"Read from the sheet";
       if(basis?.basis==="measure"&&pack.dimension!=="unknown"&&casePrice==null){packAcc=Math.min(packAcc,DOUBTFUL);packWhy+="; doesn't fit a price quoted per "+(basis.unit||vi.selling_unit);}
-      const disagree=otherVendors.find(p=>p.pack_size&&parsePackSize(p.pack_size)?.parsed&&comparePurchasingPack(vi.pack_size,p.pack_size).status!=="same");
+      const disagree=!comparableAlternatives&&otherVendors.find(p=>p.pack_size&&parsePackSize(p.pack_size)?.parsed&&comparePurchasingPack(vi.pack_size,p.pack_size).status!=="same");
       if(disagree){packAcc=Math.min(packAcc,GUESSED);packWhy+=`; another vendor lists ${disagree.pack_size}`;}
       else if(provenPeers.length&&provenPeers.every(p=>comparePurchasingPack(vi.pack_size,p.pack_size).status==="same")){
         packAcc=100;packWhy+="; corroborated by another vendor";
       }
+      if(comparableAlternatives)packWhy+="; alternatives may use different purchasing packs";
       const sourcePack=source("pack_size","packSize");
       if(byClient("pack_size")&&sourcePack&&comparePurchasingPack(vi.pack_size,sourcePack).status!=="same"){
         packAcc=Math.min(packAcc,GUESSED);packWhy+="; differs from the original source";

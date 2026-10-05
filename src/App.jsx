@@ -1006,6 +1006,7 @@ export default function App() {
                         const caseQty=quantities[caseKey]||0;
                         const eachQty=quantities[eachKey]||0;
                         const hasEach=item.options.some(o=>o.eachPrice);
+                        const linkedVendorCount=new Set(item.options.map(o=>o.vendorId)).size;
                         const cheapest=item.options[0];
                         const selectedUnit=hasEach?(unitSelection[item.catalogItemId]||"case"):"case";
                         const activeKey=selectedUnit==="case"?caseKey:eachKey;
@@ -1053,6 +1054,7 @@ export default function App() {
                               {["owner","manager"].includes(org.role)&&<input type="checkbox" aria-label={`Select ${item.name} for alternatives`} checked={alternativeSelections.has(item.catalogItemId)} onChange={()=>setAlternativeSelections(prev=>{const next=new Set(prev);if(next.has(item.catalogItemId))next.delete(item.catalogItemId);else next.add(item.catalogItemId);return next;})} style={{marginRight:6}}/>}
                               {item.name}
                               {hasEach&&<span title="Available by case or by each" style={{marginLeft:5,fontSize:9,background:"#E0F2F1",color:"#00695C",padding:"2px 5px",borderRadius:4,fontWeight:800}}>CASE + EACH</span>}
+                              {linkedVendorCount>1&&<span title={`${linkedVendorCount} vendors linked to this item`} style={{marginLeft:5,fontSize:9,background:"#E8F1FF",color:"#1565C0",padding:"2px 5px",borderRadius:4,fontWeight:400}}>{linkedVendorCount} VENDORS</span>}
                               {item.lockedBrand&&<span title={`Locked to ${item.lockedBrand} - other brands are never ordered for this item`} style={{marginLeft:4,fontSize:9,background:"#E3F2FD",color:"#1565C0",padding:"1px 4px",borderRadius:4,fontWeight:700}}>🔒 {item.lockedBrand}</span>}
                               {["similar","review"].includes(activeMatchTrack)&&(
                                 <span title="Auto-matched to this product below full confidence - worth double-checking it's really the same item"

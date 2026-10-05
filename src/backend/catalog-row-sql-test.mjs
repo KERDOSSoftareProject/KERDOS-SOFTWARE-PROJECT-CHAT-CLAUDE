@@ -240,9 +240,11 @@ await db.exec(fs.readFileSync(root+'/knowledge/migration_023_automatic_alternati
 await db.exec(fs.readFileSync(root+'/knowledge/migration_023_automatic_alternatives.sql','utf8'));
 const {alternativeKey,automaticAlternativeVerified,alternativeGroups}=await import('../core/alternative-groups.js');
 const autoIds=[];
+const autoOtherVendor='00000000-0000-0000-0000-000000000093';
+await db.query('insert into vendors values($1,$2)',[autoOtherVendor,org]);
 for(const [index,brand] of ['BrandA','BrandB'].entries()){
  const ci=(await db.query("insert into catalog_items(id,organization_id,name,category_id) values(gen_random_uuid(),$1,'Tongol tuna',$2) returning id",[org,cat])).rows[0].id;
- const row=(await db.query("insert into vendor_items(organization_id,vendor_id,description,brand,pack_size,selling_unit,price_basis,price,price_source,last_updated) values($1,$2,$3,$4,$5,'CS','case',50,'price_list',now()) returning *",[org,vendor,index?'Tongol tuna BrandB':'BrandA tuna tongol',brand,index?'1/10 LB':'6/66.5 OZ'])).rows[0];
+ const row=(await db.query("insert into vendor_items(organization_id,vendor_id,description,brand,pack_size,selling_unit,price_basis,price,price_source,last_updated) values($1,$2,$3,$4,$5,'CS','case',50,'price_list',now()) returning *",[org,index?autoOtherVendor:vendor,index?'Tongol tuna BrandB':'BrandA tuna tongol',brand,index?'1/10 LB':'6/66.5 OZ'])).rows[0];
  await db.query("insert into item_mappings values(gen_random_uuid(),$1,$2,$3,'review',70,'rule_based')",[org,row.id,ci]);
  autoIds.push({ci,row});
 }
@@ -266,6 +268,17 @@ assert.equal(new Set(autoMappings.map(m=>m.catalog_item_id)).size,1);
 assert.equal(alternativeGroups({vendorItems:autoRows,catalogItems:[autoItem],mappings:autoMappings}).length,0,'refresh does not reapply the group');
 const readyAuto=orderGuideAssessment({item:autoItem,vendorItem:autoRows[0],mapping:autoMappings.find(m=>m.vendor_item_id===autoRows[0].id),category:{id:cat,name:'General'},peers:autoRows.filter(r=>r.id!==autoRows[0].id)});
 assert.equal(readyAuto.ready,true,'clear alternatives become orderable with existing field evidence');
+for(const row of autoRows){
+ const input={item:autoItem,vendorItem:row,mapping:autoMappings.find(m=>m.vendor_item_id===row.id),category:{id:cat,name:'General'},peers:autoRows.filter(r=>r.id!==row.id)};
+ const assessment=orderGuideAssessment(input);
+ assert.equal(assessment.ready,true,'each distinct vendor qualifies independently despite different pack sizes');
+ assert.equal(assessment.evidence.pack.accuracy,90,'automatic alternatives keep stated pack evidence without inventing client approval');
+ const missingBasis=orderGuideAssessment({...input,vendorItem:{...row,selling_unit:null,price_basis:null,price_unavailable:true}});
+ assert.equal(missingBasis.ready,false,'grouping does not invent a missing price basis');
+ assert.ok(missingBasis.blockers.includes('sellingUnit'));
+ assert.equal(orderGuideAssessment({...input,item:{...autoItem,comparison_mode:'exact'}}).ready,false,'strict exact comparisons still flag different packs');
+}
+
 assert.equal(orderGuideAssessment({item:autoItem,vendorItem:{...autoRows[0],import_row:{reviewRequired:true}},mapping:autoMappings.find(m=>m.vendor_item_id===autoRows[0].id),category:{id:cat,name:'General'},peers:autoRows.filter(r=>r.id!==autoRows[0].id)}).ready,false,'source conflicts remain blocked');
 await db.query('select kerdos_separate_automatic_alternatives($1,$2)',[org,autoItem.id]);
 autoRows=(await db.query('select * from vendor_items where id=any($1::uuid[])',[autoIds.map(x=>x.row.id)])).rows;
