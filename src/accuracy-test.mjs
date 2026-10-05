@@ -114,3 +114,18 @@ await test("a prepared vegetable saved as Produce is flagged even when manually 
  const e=catalogRowEvidence({item:{...item,category_id:"p"},vendorItem:{...base,description:"BREADED EGGPLANT"},mapping,vendor,category:categories[0],categories});
  assert.equal(e.category.accuracy,70);
 });
+
+// Apply approval and override must retain their JSON types through preparation.
+{
+ const input={organizationId:"o",vendorItem:{id:"vi",organization_id:"o",description:"Foil",price:44.3,pack_size:"",selling_unit:"",row_revision:2},mapping:{id:"m",organization_id:"o",vendor_item_id:"vi"}};
+ const approved=prepareCatalogCorrection({...input,patch:{approve_row:true,unit_cost_override:null}});
+ assert.equal(approved.patch.approve_row,true);
+ assert.equal(approved.patch.unit_cost_override,null);
+ const override=prepareCatalogCorrection({...input,patch:{approve_row:true,unit_cost_override:{price:"0.0886",unit:"FT",packPrice:"44.3"}}});
+ const transported=JSON.parse(JSON.stringify(override.patch));
+ assert.equal(transported.approve_row,true);
+ assert.deepEqual(transported.unit_cost_override,{price:0.0886,unit:"FT",packPrice:44.3});
+ assert.throws(()=>prepareCatalogCorrection({...input,patch:{approve_row:false}}),/approval/);
+ assert.throws(()=>prepareCatalogCorrection({...input,patch:{approve_row:true,unit_cost_override:{price:0,unit:"FT",packPrice:44.3}}}),/positive/);
+ console.log("Apply approval and override retain their JSON types.");
+}

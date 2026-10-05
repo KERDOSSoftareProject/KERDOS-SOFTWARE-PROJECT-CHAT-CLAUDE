@@ -4,6 +4,16 @@ import {parsePackSize} from '../procurement.js';
 // items. Brand and the separately recorded purchasing pack may differ. All
 // other stated words and numbers remain significant, including qualifiers.
 const words=value=>String(value||'').toLowerCase().replace(/[^a-z0-9%]+/g,' ').trim().split(/\s+/).filter(Boolean);
+export function associationRejected(left,right){
+  return (left.field_resolutions?.rejected_vendor_item_ids||[]).includes(right.id)||
+    (right.field_resolutions?.rejected_vendor_item_ids||[]).includes(left.id);
+}
+export function associationTarget(items){
+  return [...items].sort((a,b)=>{
+    const at=Date.parse(a.created_at),bt=Date.parse(b.created_at);
+    return (Number.isFinite(at)?at:Infinity)-(Number.isFinite(bt)?bt:Infinity)||String(a.id).localeCompare(String(b.id));
+  })[0];
+}
 export function alternativeKey(row){
   let text=words(row.description).join(' ');
   const pack=words(row.pack_size).join(' ');
@@ -34,7 +44,8 @@ export function alternativeGroups({vendorItems=[],catalogItems=[],mappings=[]}){
     bucket.rows.push(row);bucket.catalogIds.add(item.id);buckets.set(id,bucket);
   }
   return [...buckets.values()].filter(g=>g.rows.length>=2&&g.rows.length<=100&&g.dimension!=='unknown'&&g.catalogIds.size>1)
-    .map(g=>({...g,targetCatalogItemId:[...g.catalogIds].sort((a,b)=>Number(items.get(a).master_item_number)-Number(items.get(b).master_item_number)||a.localeCompare(b))[0]}));
+    .filter(g=>!g.rows.some((left,index)=>g.rows.slice(index+1).some(right=>associationRejected(left,right))))
+    .map(g=>({...g,targetCatalogItemId:associationTarget([...g.catalogIds].map(id=>items.get(id))).id}));
 }
 
 export function suggestedAlternativeGroups({vendorItems=[],catalogItems=[],mappings=[]}){
@@ -51,7 +62,7 @@ export function suggestedAlternativeGroups({vendorItems=[],catalogItems=[],mappi
       const y=new Set(words(alternativeKey(right))),candidates=new Set();
       for(const word of y)for(const left of (index.get(word)||[]).slice(-200))candidates.add(left);
       for(const left of candidates){
-        if(mapped.get(left.id)===mapped.get(right.id))continue;
+        if(mapped.get(left.id)===mapped.get(right.id)||associationRejected(left,right))continue;
         const x=new Set(words(alternativeKey(left))),shared=[...x].filter(w=>y.has(w));
         if(!shared.length||shared.length/Math.max(x.size,y.size)<0.5)continue;
         result.push({rows:[left,right],reason:'Shared terms: '+shared.join(', ')+'. Check the remaining details before approving.'});

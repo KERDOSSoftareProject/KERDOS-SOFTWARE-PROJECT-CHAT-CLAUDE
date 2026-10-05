@@ -13,3 +13,8 @@ assert.equal(serializePack({...partial,size:5,unit:'LB'}),'4/5 LB');
 assert.equal(serializePack({...partial,type:'each',size:5,unit:'LB'}),'5 LB');
 assert.equal(unitLabel('FT'),'Feet');assert.equal(unitLabel('LB'),'Pounds');assert.equal(unitLabel('OZ'),'Ounces');
 console.log('Pack editor checks passed: two levels retained, partial edits durable, complete each/case and full unit names.');
+
+const can=serializePack({...editablePack('6/#10 CN'),count:12});
+assert.equal(can,'12/#10 CN');
+assert.equal(parsePackSize(can).parsed,true);
+assert.equal(parsePackSize(can).caseQty,12);

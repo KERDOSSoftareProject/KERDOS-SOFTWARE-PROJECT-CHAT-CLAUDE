@@ -6,8 +6,8 @@ const SNAPSHOT_QUERIES = Object.freeze([
   ["vendors", c=>c.from("vendors").select("*").eq("is_active",true).order("name")],
   ["catalogItems", c=>c.from("catalog_items").select("*,catalog_categories(name)").order("master_item_number")],
   ["categories", c=>c.from("catalog_categories").select("*").order("name")],
-  ["vendorItems", c=>c.from("vendor_items").select("*")],
-  ["mappings", c=>c.from("item_mappings").select("*")],
+  ["vendorItems", c=>c.from("vendor_items").select("*").order("id")],
+  ["mappings", c=>c.from("item_mappings").select("*").order("id")],
   ["invoices", c=>c.from("invoices").select("*,vendors(name),invoice_lines(*)").order("invoice_date",{ascending:false,nullsFirst:false}).order("created_at",{ascending:false}).limit(30)],
   ["purchaseOrders", c=>c.from("purchase_orders").select("*,purchase_order_lines(*)").order("created_at",{ascending:false}).limit(30)],
   ["priceHistory", c=>c.from("price_history").select("*").order("effective_date",{ascending:false}).order("id",{ascending:false}).limit(2000)],
@@ -40,28 +40,26 @@ export function createSupabaseBackend({url,anonKey}) {
         return providerResult(client.from("organization_members").select("organization_id,role,organizations(*)").eq("user_id",userId),"Load organizations");
       },
       async snapshot(organizationId){
-        const entries=await Promise.all(SNAPSHOT_QUERIES.map(async ([name,build])=>{
-          const query=build(client).eq("organization_id",organizationId);
-          return [name,await providerResult(query,`Load ${name}`) || []];
-        }));
-        return Object.fromEntries(entries);
+        return loadWorkspaceSnapshot(client,organizationId);
       },
     },
+    orders:{submit(row){return providerResult(client.rpc("kerdos_submit_order",row),"Record order");}},
     documents:{
       upload(path,file,options){return providerResult(client.storage.from("documents").upload(path,file,options),"Upload document");},
       signedUrl(path,seconds=3600){return providerResult(client.storage.from("documents").createSignedUrl(path,seconds),"Open document");},
       remove(paths){return providerResult(client.storage.from("documents").remove(paths),"Remove document");},
       deletePriceSheet(organizationId,documentId){return providerResult(client.rpc("kerdos_delete_price_sheet",{p_organization_id:organizationId,p_document_id:documentId}),"Delete price sheet");},
       deleteInvoiceRecord(organizationId,invoiceId){return providerResult(client.rpc("kerdos_delete_invoice_record",{p_organization_id:organizationId,p_invoice_id:invoiceId}),"Delete invoice");},
-      submitOrder(p){return providerResult(client.rpc("kerdos_submit_order",p),"Submit order");},
     },
     realtime:{
       subscribeToOrganization(organizationId,onChange){
+        let timer;
+        const schedule=()=>{clearTimeout(timer);timer=setTimeout(onChange,300);};
         const channel=client.channel(`kerdos:${organizationId}`)
-          .on("postgres_changes",{event:"*",schema:"public",table:"vendor_items",filter:`organization_id=eq.${organizationId}`},onChange)
-          .on("postgres_changes",{event:"*",schema:"public",table:"invoices",filter:`organization_id=eq.${organizationId}`},onChange)
+          .on("postgres_changes",{event:"*",schema:"public",table:"vendor_items",filter:`organization_id=eq.${organizationId}`},schedule)
+          .on("postgres_changes",{event:"*",schema:"public",table:"invoices",filter:`organization_id=eq.${organizationId}`},schedule)
           .subscribe();
-        return ()=>client.removeChannel(channel);
+        return ()=>{clearTimeout(timer);client.removeChannel(channel);};
       },
     },
     pricing:{
@@ -92,6 +90,10 @@ export function createSupabaseBackend({url,anonKey}) {
       },
     },
     catalog:{
+      splitMapping(row){return providerResult(client.rpc("kerdos_unlink_vendor_item",{p_organization_id:row.organizationId,p_mapping_id:row.mappingId,p_expected_revision:row.expectedRevision}),"Unlink vendor product");},
+      groupAutomaticAlternatives(row){return providerResult(client.rpc("kerdos_group_automatic_alternatives",{p_organization_id:row.organizationId,p_vendor_item_ids:row.vendorItemIds,p_target_catalog_item_id:row.targetCatalogItemId,p_key:row.key,p_dimension:row.dimension,p_revisions:row.revisions}),"Group automatic alternatives");},
+      separateAutomaticAlternatives(row){return providerResult(client.rpc("kerdos_separate_automatic_alternatives",{p_organization_id:row.organizationId,p_target_catalog_item_id:row.targetCatalogItemId}),"Separate automatic alternatives");},
+      associateAlternatives(row){return providerResult(client.rpc("kerdos_associate_alternatives",{p_organization_id:row.organizationId,p_vendor_item_ids:row.vendorItemIds,p_target_catalog_item_id:row.targetCatalogItemId,p_name:row.name,p_preferred_brand:row.preferredBrand||null,p_revisions:row.revisions}),"Associate selected alternatives");},
       saveRow(row){return providerResult(client.rpc("kerdos_save_catalog_row",{
         p_organization_id:row.organizationId,p_vendor_item_id:row.vendorItemId,p_mapping_id:row.mappingId,
         p_expected_revision:row.expectedRevision,p_patch:row.patch,p_price_basis:row.priceBasis,p_price_available:row.priceAvailable,
@@ -129,4 +131,19 @@ export function executeSupabaseRecordQuery(client,spec) {
   if(spec.limit!==undefined) query=query.limit(spec.limit);
   if(spec.cardinality) query=query[spec.cardinality]();
   return query;
+}
+
+export async function loadWorkspaceSnapshot(client,organizationId){
+        const entries=await Promise.all(SNAPSHOT_QUERIES.map(async ([name,build])=>{
+          const paged=["catalogItems","vendorItems","mappings","categories","vendors","vocabulary"].includes(name);
+          if(!paged)return [name,await providerResult(build(client).eq("organization_id",organizationId),`Load ${name}`)||[]];
+          const rows=[];
+          for(let offset=0;;offset+=500){
+            const batch=await providerResult(build(client).eq("organization_id",organizationId).order("id").range(offset,offset+499),`Load ${name}`)||[];
+            rows.push(...batch);
+            if(batch.length<500)break;
+          }
+          return [name,rows];
+        }));
+        return Object.fromEntries(entries);
 }

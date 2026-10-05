@@ -1,5 +1,5 @@
 -- KERDOS DATABASE UPDATE
--- Generated from knowledge/migration_003 through migration_018 (008 is unused and intentionally excluded).
+-- Generated from knowledge/migration_003 through migration_025 (008 is unused and intentionally excluded).
 -- Do not hand-edit this combined file; update the individual migration and regenerate.
 
 begin;
@@ -1561,67 +1561,659 @@ revoke all on function public.kerdos_save_catalog_row(uuid,uuid,uuid,bigint,json
 grant execute on function public.kerdos_save_catalog_row(uuid,uuid,uuid,bigint,jsonb,text,boolean) to authenticated;
 
 -- ============================================================
--- migration_018_atomic_order.sql
+-- migration_018_field_review.sql
 -- ============================================================
 
--- Migration 018: atomic order submission.
--- The order header and all its lines save together. A dropped connection
--- or a failed line write can no longer leave an orphaned order header.
--- The function returns the new purchase_order row.
-
-create or replace function public.kerdos_submit_order(
-  p_organization_id uuid,
-  p_vendor_id uuid,
-  p_created_by uuid,
-  p_total_amount numeric,
-  p_notes text default null,
-  p_lines jsonb default '[]'
+-- Persist each field confirmation and resolve source reviews field by field.
+-- No data is deleted; original rows and conflict notes remain available.
+alter table public.vendor_items add column if not exists unit_cost_unit text;
+create or replace function public.kerdos_save_catalog_row(
+  p_organization_id uuid, p_vendor_item_id uuid, p_mapping_id uuid,
+  p_expected_revision bigint, p_patch jsonb, p_price_basis text,
+  p_price_available boolean
 ) returns jsonb
 language plpgsql
 set search_path = public
 as $$
 declare
-  v_order purchase_orders%rowtype;
+  v_old vendor_items%rowtype;
+  v_new vendor_items%rowtype;
+  v_mapping item_mappings%rowtype;
+  v_category uuid;
+  v_target uuid;
+  v_relinked boolean := false;
+  v_key text;
+  v_source_key text;
+  v_price_changed boolean;
+  v_identity_changed boolean;
+  v_review_fields text[] := array[]::text[];
+  v_reason text;
+  v_field text;
+  v_review jsonb;
 begin
   if auth.uid() is null then raise exception 'Authentication is required'; end if;
-  if not exists (
-    select 1 from organization_members
-    where organization_id=p_organization_id and user_id=auth.uid()
-      and role in ('owner','manager','employee')
-  ) then raise exception 'Organization membership is required'; end if;
-  if not exists (
-    select 1 from vendors where id=p_vendor_id and organization_id=p_organization_id
-  ) then raise exception 'Vendor is outside the requested organization'; end if;
-  if jsonb_array_length(p_lines)=0 then raise exception 'An order needs at least one line item'; end if;
+  if not exists (select 1 from organization_members where organization_id=p_organization_id and user_id=auth.uid() and role in ('owner','manager')) then
+    raise exception 'Owner or manager access is required for this organization';
+  end if;
+  if p_patch is null or jsonb_typeof(p_patch)<>'object' then raise exception 'A field patch is required'; end if;
+  if exists (select 1 from jsonb_object_keys(p_patch) k where k not in ('description','brand','pack_size','price','selling_unit','category_id','item_name','catalog_item_id','unit_cost_unit')) then
+    raise exception 'Unsupported catalog field';
+  end if;
+  select * into v_old from vendor_items where id=p_vendor_item_id and organization_id=p_organization_id for update;
+  if not found then raise exception 'Vendor item is outside the requested organization'; end if;
+  if p_expected_revision is null or v_old.row_revision<>p_expected_revision then
+    raise exception 'This item changed since you opened it. Reload its saved values before saving your changes.';
+  end if;
+  select * into v_mapping from item_mappings where id=p_mapping_id and vendor_item_id=v_old.id and organization_id=p_organization_id for update;
+  if not found then raise exception 'Catalog association changed; reload this row'; end if;
+  perform 1 from catalog_items where id=v_mapping.catalog_item_id and organization_id=p_organization_id for update;
+  if not found then raise exception 'Catalog item is outside the requested organization'; end if;
+  if p_patch ? 'catalog_item_id' then
+    if p_patch ?| array['category_id','item_name'] then
+      raise exception 'Save item name/category changes separately from an association change';
+    end if;
+    v_target := (p_patch->>'catalog_item_id')::uuid;
+    perform 1 from catalog_items where id=v_target and organization_id=p_organization_id for update;
+    if not found then raise exception 'Destination catalog item is outside the requested organization'; end if;
+    v_relinked := v_target is distinct from v_mapping.catalog_item_id;
+    if v_relinked then
+      update item_mappings set catalog_item_id=v_target,comparison_track='review',confidence_score=null,match_method='manual'
+        where id=v_mapping.id and organization_id=p_organization_id;
+      v_mapping.catalog_item_id := v_target;
+    end if;
+  end if;
+  v_new := v_old;
+  if p_patch ? 'description' then v_new.description:=btrim(p_patch->>'description'); end if;
+  if nullif(v_new.description,'') is null then raise exception 'Enter a product description'; end if;
+  if p_patch ? 'brand' then v_new.brand:=nullif(btrim(p_patch->>'brand'),''); end if;
+  if p_patch ? 'pack_size' then v_new.pack_size:=nullif(btrim(p_patch->>'pack_size'),''); end if;
+  if p_patch ? 'selling_unit' then v_new.selling_unit:=nullif(btrim(p_patch->>'selling_unit'),''); end if;
+  if p_patch ? 'unit_cost_unit' then v_new.unit_cost_unit:=nullif(btrim(p_patch->>'unit_cost_unit'),''); end if;
+  if p_patch ? 'price' then v_new.price:=(p_patch->>'price')::numeric; end if;
+  if v_new.price is not null and v_new.price<=0 then raise exception 'Enter a positive quoted amount'; end if;
+  if p_price_basis is not null and p_price_basis not in ('case','each','measure') then raise exception 'Unknown price basis'; end if;
+  v_price_changed:=p_patch ?| array['price','selling_unit','pack_size'];
+  v_identity_changed:=v_new.description is distinct from v_old.description or v_new.brand is distinct from v_old.brand or v_new.pack_size is distinct from v_old.pack_size;
+  for v_key in select jsonb_object_keys(p_patch) loop
+    if v_key in ('description','brand','pack_size','selling_unit','price','category_id','item_name','catalog_item_id') then
+      v_source_key:=case v_key when 'pack_size' then 'packSize' when 'selling_unit' then 'sellingUnit' else v_key end;
+      v_new.field_resolutions:=jsonb_set(v_new.field_resolutions,array[v_key],jsonb_build_object(
+        'value',p_patch->v_key,'confirmedAt',now(),'confirmedBy',auth.uid(),
+        'sourceValue',coalesce(v_old.field_resolutions->v_key->'sourceValue',v_old.import_row->'row'->v_source_key,to_jsonb(v_old)->v_key)));
+    end if;
+  end loop;
+  -- The client's item name, saved in the same write as the row.
+  if p_patch ? 'item_name' then
+    if nullif(btrim(p_patch->>'item_name'),'') is null then raise exception 'Enter an item name'; end if;
+    update catalog_items set name=left(btrim(p_patch->>'item_name'),120) where id=v_mapping.catalog_item_id and organization_id=p_organization_id;
+  end if;
+  if p_patch ? 'category_id' then
+    v_category:=(p_patch->>'category_id')::uuid;
+    if not exists (select 1 from catalog_categories where id=v_category and organization_id=p_organization_id) then raise exception 'Choose a category from this organization'; end if;
+    update catalog_items set category_id=v_category,
+      category_review=(select is_holding_pen from catalog_categories where id=v_category),category_reason=null
+      where id=v_mapping.catalog_item_id and organization_id=p_organization_id;
+  end if;
+  if v_identity_changed or v_relinked then
+    update item_mappings set comparison_track='review',confidence_score=null,match_method='manual' where id=v_mapping.id;
+    -- A sole listing supplies its catalog label ONLY while that label is
+    -- still the vendor's wording. A name the client set stays theirs.
+    if not v_relinked and v_new.description is distinct from v_old.description and not exists (
+      select 1 from item_mappings where catalog_item_id=v_mapping.catalog_item_id and id<>v_mapping.id
+    ) and not (p_patch ? 'item_name') then update catalog_items set name=left(v_new.description,120)
+         where id=v_mapping.catalog_item_id and (name is null or name=left(v_old.description,120)); end if;
+  end if;
+  v_review := coalesce(v_old.import_row,'{}'::jsonb);
+  if coalesce((v_review->>'reviewRequired')::boolean,false) then
+    if jsonb_typeof(v_review->'reviewFields')='array' then
+      select coalesce(array_agg(value),array[]::text[]) into v_review_fields
+        from jsonb_array_elements_text(v_review->'reviewFields');
+    else
+      -- Existing imports predate field-scoped reviews. Recover the fields
+      -- from their preserved changes and reasons without accepting them.
+      for v_field in select value->>'field' from jsonb_array_elements(coalesce(v_review->'changes','[]'::jsonb)) loop
+        v_review_fields := array_append(v_review_fields,case v_field when 'packSize' then 'pack_size' when 'sellingUnit' then 'selling_unit' when 'gtin' then 'identifiers' when 'manufacturerCode' then 'identifiers' else v_field end);
+      end loop;
+      for v_reason in select value from jsonb_array_elements_text(coalesce(v_review->'conflicts','[]'::jsonb)) loop
+        v_field := case
+          when v_reason ~* 'barcode|manufacturer code|gtin' then 'identifiers'
+          when v_reason ~* 'pack' then 'pack_size'
+          when v_reason ~* 'sellingUnit|quoted unit|price basis|selling unit|quoted units' then 'selling_unit'
+          when v_reason ~* 'brand' then 'brand'
+          when v_reason ~* 'product|description|wording' then 'description'
+          when v_reason ~* 'price|amount' then 'price'
+          else null end;
+        if v_field is null then v_review_fields := v_review_fields || array['description','brand','pack_size','selling_unit','price'];
+        else v_review_fields := array_append(v_review_fields,v_field); end if;
+      end loop;
+      if v_review->'row'->>'price' is not null and v_old.price is not null
+         and (v_review->'row'->>'price')::numeric is distinct from v_old.price then
+        v_review_fields := array_append(v_review_fields,'price');
+      end if;
+      if cardinality(v_review_fields)=0 then
+        v_review_fields := array['description','brand','pack_size','selling_unit','price'];
+      end if;
+    end if;
+    -- Only fields in this patch were explicitly confirmed in this save.
+    for v_key in select jsonb_object_keys(p_patch) loop
+      v_review_fields := array_remove(v_review_fields,v_key);
+    end loop;
+    select coalesce(array_agg(distinct value),array[]::text[]) into v_review_fields
+      from unnest(v_review_fields) value where value is not null;
+    v_review := jsonb_set(v_review,'{reviewFields}',to_jsonb(v_review_fields));
+    v_review := jsonb_set(v_review,'{reviewRequired}',to_jsonb(cardinality(v_review_fields)>0));
+    if cardinality(v_review_fields)=0 then
+      -- The accepted baseline uses saved cells; history retains the source.
+      v_review := jsonb_set(v_review,'{baseline}',jsonb_build_object(
+        'description',v_new.description,'brand',v_new.brand,'packSize',v_new.pack_size,
+        'sellingUnit',v_new.selling_unit,'price',v_new.price,
+        'gtin',v_new.gtin,'manufacturerCode',v_new.manufacturer_code));
+    end if;
+  end if;
+  update vendor_items set description=v_new.description,brand=v_new.brand,pack_size=v_new.pack_size,
+    price=v_new.price,selling_unit=v_new.selling_unit,unit_cost_unit=v_new.unit_cost_unit,
+    price_basis=case when v_price_changed then p_price_basis else price_basis end,
+    price_unavailable=case when v_price_changed then not (coalesce(p_price_available,false) and coalesce(v_new.price>0,false) and v_new.selling_unit is not null and v_new.pack_size is not null and p_price_basis is not null) else price_unavailable end,
+    field_resolutions=v_new.field_resolutions,import_row=v_review,row_revision=row_revision+1,
+    last_updated=case when p_patch ? 'price' then now() else last_updated end
+    where id=v_old.id returning * into v_new;
+  if v_price_changed and not v_new.price_unavailable then
+    insert into price_history(vendor_item_id,organization_id,price,source,effective_date,quote_valid_until,
+      source_file_name,source_line,source_description,selling_unit,price_basis)
+    values (v_new.id,p_organization_id,v_new.price,'price_list',now(),v_new.price_quote_valid_until,
+      'Catalog field correction',v_old.import_row->'row'->>'sourceLine',v_new.description,v_new.selling_unit,v_new.price_basis);
+  end if;
+  return to_jsonb(v_new);
+end;
+$$;
+revoke all on function public.kerdos_save_catalog_row(uuid,uuid,uuid,bigint,jsonb,text,boolean) from public;
+grant execute on function public.kerdos_save_catalog_row(uuid,uuid,uuid,bigint,jsonb,text,boolean) to authenticated;
 
-  insert into purchase_orders(
-    organization_id,vendor_id,created_by,status,total_amount,notes
-  ) values (
-    p_organization_id,p_vendor_id,p_created_by,'submitted',p_total_amount,p_notes
-  ) returning * into v_order;
+-- ============================================================
+-- migration_019_client_approval.sql
+-- ============================================================
 
-  insert into purchase_order_lines(
-    purchase_order_id,catalog_item_id,vendor_item_id,
-    vendor_item_code,description,quantity,unit_price,line_total,
-    pack_size,selling_unit
-  )
-  select
-    v_order.id,
-    (line->>'catalog_item_id')::uuid,
-    (line->>'vendor_item_id')::uuid,
-    line->>'vendor_item_code',
-    line->>'description',
-    (line->>'quantity')::numeric,
-    (line->>'unit_price')::numeric,
-    (line->>'line_total')::numeric,
-    line->>'pack_size',
-    line->>'selling_unit'
-  from jsonb_array_elements(p_lines) as line;
+-- Persist each field confirmation and resolve source reviews field by field.
+-- No data is deleted; original rows and conflict notes remain available.
+alter table public.vendor_items add column if not exists unit_cost_unit text;
+create or replace function public.kerdos_save_catalog_row(
+  p_organization_id uuid, p_vendor_item_id uuid, p_mapping_id uuid,
+  p_expected_revision bigint, p_patch jsonb, p_price_basis text,
+  p_price_available boolean
+) returns jsonb
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_old vendor_items%rowtype;
+  v_new vendor_items%rowtype;
+  v_mapping item_mappings%rowtype;
+  v_category uuid;
+  v_target uuid;
+  v_relinked boolean := false;
+  v_key text;
+  v_source_key text;
+  v_price_changed boolean;
+  v_identity_changed boolean;
+  v_review_fields text[] := array[]::text[];
+  v_reason text;
+  v_field text;
+  v_review jsonb;
+begin
+  if auth.uid() is null then raise exception 'Authentication is required'; end if;
+  if not exists (select 1 from organization_members where organization_id=p_organization_id and user_id=auth.uid() and role in ('owner','manager')) then
+    raise exception 'Owner or manager access is required for this organization';
+  end if;
+  if p_patch is null or jsonb_typeof(p_patch)<>'object' then raise exception 'A field patch is required'; end if;
+  if exists (select 1 from jsonb_object_keys(p_patch) k where k not in ('description','brand','pack_size','price','selling_unit','category_id','item_name','catalog_item_id','unit_cost_unit','approve_row','unit_cost_override')) then
+    raise exception 'Unsupported catalog field';
+  end if;
+  select * into v_old from vendor_items where id=p_vendor_item_id and organization_id=p_organization_id for update;
+  if not found then raise exception 'Vendor item is outside the requested organization'; end if;
+  if p_expected_revision is null or v_old.row_revision<>p_expected_revision then
+    raise exception 'This item changed since you opened it. Reload its saved values before saving your changes.';
+  end if;
+  select * into v_mapping from item_mappings where id=p_mapping_id and vendor_item_id=v_old.id and organization_id=p_organization_id for update;
+  if not found then raise exception 'Catalog association changed; reload this row'; end if;
+  perform 1 from catalog_items where id=v_mapping.catalog_item_id and organization_id=p_organization_id for update;
+  if not found then raise exception 'Catalog item is outside the requested organization'; end if;
+  if p_patch ? 'catalog_item_id' then
+    if p_patch ?| array['category_id','item_name'] then
+      raise exception 'Save item name/category changes separately from an association change';
+    end if;
+    v_target := (p_patch->>'catalog_item_id')::uuid;
+    perform 1 from catalog_items where id=v_target and organization_id=p_organization_id for update;
+    if not found then raise exception 'Destination catalog item is outside the requested organization'; end if;
+    v_relinked := v_target is distinct from v_mapping.catalog_item_id;
+    if v_relinked then
+      update item_mappings set catalog_item_id=v_target,comparison_track='review',confidence_score=null,match_method='manual'
+        where id=v_mapping.id and organization_id=p_organization_id;
+      v_mapping.catalog_item_id := v_target;
+    end if;
+  end if;
+  v_new := v_old;
+  if p_patch ? 'description' then v_new.description:=btrim(p_patch->>'description'); end if;
+  if nullif(v_new.description,'') is null then raise exception 'Enter a product description'; end if;
+  if p_patch ? 'brand' then v_new.brand:=nullif(btrim(p_patch->>'brand'),''); end if;
+  if p_patch ? 'pack_size' then v_new.pack_size:=nullif(btrim(p_patch->>'pack_size'),''); end if;
+  if p_patch ? 'selling_unit' then v_new.selling_unit:=nullif(btrim(p_patch->>'selling_unit'),''); end if;
+  if p_patch ? 'unit_cost_unit' then v_new.unit_cost_unit:=nullif(btrim(p_patch->>'unit_cost_unit'),''); end if;
+  if p_patch ? 'price' then v_new.price:=(p_patch->>'price')::numeric; end if;
+  if v_new.price is not null and v_new.price<=0 then raise exception 'Enter a positive quoted amount'; end if;
+  if p_price_basis is not null and p_price_basis not in ('case','each','measure') then raise exception 'Unknown price basis'; end if;
+  v_price_changed:=p_patch ?| array['price','selling_unit','pack_size'];
+  v_identity_changed:=v_new.description is distinct from v_old.description or v_new.brand is distinct from v_old.brand or v_new.pack_size is distinct from v_old.pack_size;
+  for v_key in select jsonb_object_keys(p_patch) loop
+    if v_key in ('description','brand','pack_size','selling_unit','price','category_id','item_name','catalog_item_id') then
+      v_source_key:=case v_key when 'pack_size' then 'packSize' when 'selling_unit' then 'sellingUnit' else v_key end;
+      v_new.field_resolutions:=jsonb_set(v_new.field_resolutions,array[v_key],jsonb_build_object(
+        'value',p_patch->v_key,'confirmedAt',now(),'confirmedBy',auth.uid(),
+        'sourceValue',coalesce(v_old.field_resolutions->v_key->'sourceValue',v_old.import_row->'row'->v_source_key,to_jsonb(v_old)->v_key)));
+    end if;
+  end loop;
+  -- The client's item name, saved in the same write as the row.
+  if p_patch ? 'item_name' then
+    if nullif(btrim(p_patch->>'item_name'),'') is null then raise exception 'Enter an item name'; end if;
+    update catalog_items set name=left(btrim(p_patch->>'item_name'),120) where id=v_mapping.catalog_item_id and organization_id=p_organization_id;
+  end if;
+  if p_patch ? 'category_id' then
+    v_category:=(p_patch->>'category_id')::uuid;
+    if not exists (select 1 from catalog_categories where id=v_category and organization_id=p_organization_id) then raise exception 'Choose a category from this organization'; end if;
+    update catalog_items set category_id=v_category,
+      category_review=(select is_holding_pen from catalog_categories where id=v_category),category_reason=null
+      where id=v_mapping.catalog_item_id and organization_id=p_organization_id;
+  end if;
+  if v_identity_changed or v_relinked then
+    update item_mappings set comparison_track='review',confidence_score=null,match_method='manual' where id=v_mapping.id;
+    -- A sole listing supplies its catalog label ONLY while that label is
+    -- still the vendor's wording. A name the client set stays theirs.
+    if not v_relinked and v_new.description is distinct from v_old.description and not exists (
+      select 1 from item_mappings where catalog_item_id=v_mapping.catalog_item_id and id<>v_mapping.id
+    ) and not (p_patch ? 'item_name') then update catalog_items set name=left(v_new.description,120)
+         where id=v_mapping.catalog_item_id and (name is null or name=left(v_old.description,120)); end if;
+  end if;
+  v_review := coalesce(v_old.import_row,'{}'::jsonb);
+  if coalesce((v_review->>'reviewRequired')::boolean,false) then
+    if jsonb_typeof(v_review->'reviewFields')='array' then
+      select coalesce(array_agg(value),array[]::text[]) into v_review_fields
+        from jsonb_array_elements_text(v_review->'reviewFields');
+    else
+      -- Existing imports predate field-scoped reviews. Recover the fields
+      -- from their preserved changes and reasons without accepting them.
+      for v_field in select value->>'field' from jsonb_array_elements(coalesce(v_review->'changes','[]'::jsonb)) loop
+        v_review_fields := array_append(v_review_fields,case v_field when 'packSize' then 'pack_size' when 'sellingUnit' then 'selling_unit' when 'gtin' then 'identifiers' when 'manufacturerCode' then 'identifiers' else v_field end);
+      end loop;
+      for v_reason in select value from jsonb_array_elements_text(coalesce(v_review->'conflicts','[]'::jsonb)) loop
+        v_field := case
+          when v_reason ~* 'barcode|manufacturer code|gtin' then 'identifiers'
+          when v_reason ~* 'pack' then 'pack_size'
+          when v_reason ~* 'sellingUnit|quoted unit|price basis|selling unit|quoted units' then 'selling_unit'
+          when v_reason ~* 'brand' then 'brand'
+          when v_reason ~* 'product|description|wording' then 'description'
+          when v_reason ~* 'price|amount' then 'price'
+          else null end;
+        if v_field is null then v_review_fields := v_review_fields || array['description','brand','pack_size','selling_unit','price'];
+        else v_review_fields := array_append(v_review_fields,v_field); end if;
+      end loop;
+      if v_review->'row'->>'price' is not null and v_old.price is not null
+         and (v_review->'row'->>'price')::numeric is distinct from v_old.price then
+        v_review_fields := array_append(v_review_fields,'price');
+      end if;
+      if cardinality(v_review_fields)=0 then
+        v_review_fields := array['description','brand','pack_size','selling_unit','price'];
+      end if;
+    end if;
+    -- Only fields in this patch were explicitly confirmed in this save.
+    for v_key in select jsonb_object_keys(p_patch) loop
+      v_review_fields := array_remove(v_review_fields,v_key);
+    end loop;
+    select coalesce(array_agg(distinct value),array[]::text[]) into v_review_fields
+      from unnest(v_review_fields) value where value is not null;
+    v_review := jsonb_set(v_review,'{reviewFields}',to_jsonb(v_review_fields));
+    v_review := jsonb_set(v_review,'{reviewRequired}',to_jsonb(cardinality(v_review_fields)>0));
+    if cardinality(v_review_fields)=0 then
+      -- The accepted baseline uses saved cells; history retains the source.
+      v_review := jsonb_set(v_review,'{baseline}',jsonb_build_object(
+        'description',v_new.description,'brand',v_new.brand,'packSize',v_new.pack_size,
+        'sellingUnit',v_new.selling_unit,'price',v_new.price,
+        'gtin',v_new.gtin,'manufacturerCode',v_new.manufacturer_code));
+    end if;
+  end if;
+  if p_patch ? 'unit_cost_override' then
+    if p_patch->'unit_cost_override'='null'::jsonb then
+      v_new.field_resolutions:=v_new.field_resolutions-'unit_cost_override';
+    else
+      if coalesce((p_patch->'unit_cost_override'->>'price')::numeric,0)<=0 or coalesce((p_patch->'unit_cost_override'->>'packPrice')::numeric,0)<=0 or nullif(p_patch->'unit_cost_override'->>'unit','') is null then raise exception 'Enter positive unit cost and purchasing pack price, and a measurement'; end if;
+      v_new.field_resolutions:=jsonb_set(v_new.field_resolutions,'{unit_cost_override}',jsonb_build_object('value',p_patch->'unit_cost_override','confirmedAt',now(),'confirmedBy',auth.uid()));
+    end if;
+  end if;
+  if coalesce((p_patch->>'approve_row')::boolean,false) then
+    v_new.field_resolutions:=jsonb_set(v_new.field_resolutions,'{row_approval}',jsonb_build_object('confirmedAt',now(),'confirmedBy',auth.uid(),'catalogItemId',v_mapping.catalog_item_id));
+    update item_mappings set comparison_track='exact',confidence_score=100,match_method='manual' where id=v_mapping.id;
+    v_review:=jsonb_set(jsonb_set(v_review,'{reviewRequired}','false'::jsonb),'{reviewFields}','[]'::jsonb);
+    v_review:=jsonb_set(v_review,'{baseline}',jsonb_build_object('description',v_new.description,'brand',v_new.brand,'packSize',v_new.pack_size,'sellingUnit',v_new.selling_unit,'price',v_new.price,'gtin',v_new.gtin,'manufacturerCode',v_new.manufacturer_code));
+  end if;
+  update vendor_items set description=v_new.description,brand=v_new.brand,pack_size=v_new.pack_size,
+    price=v_new.price,selling_unit=v_new.selling_unit,unit_cost_unit=v_new.unit_cost_unit,
+    price_source=case when coalesce((p_patch->>'approve_row')::boolean,false) then 'price_list' else price_source end,
+    price_expired_at=case when coalesce((p_patch->>'approve_row')::boolean,false) then null else price_expired_at end,
+    price_quote_valid_until=case when coalesce((p_patch->>'approve_row')::boolean,false) then null else price_quote_valid_until end,
+    price_basis=case when v_price_changed then p_price_basis else price_basis end,
+    price_unavailable=case when coalesce((p_patch->>'approve_row')::boolean,false) and v_new.field_resolutions ? 'unit_cost_override' and v_new.price>0 then false when v_price_changed then not (coalesce(p_price_available,false) and coalesce(v_new.price>0,false) and v_new.selling_unit is not null and v_new.pack_size is not null and p_price_basis is not null) else price_unavailable end,
+    field_resolutions=v_new.field_resolutions,import_row=v_review,row_revision=row_revision+1,
+    last_updated=case when p_patch ? 'price' or coalesce((p_patch->>'approve_row')::boolean,false) then now() else last_updated end
+    where id=v_old.id returning * into v_new;
+  if v_price_changed and not v_new.price_unavailable then
+    insert into price_history(vendor_item_id,organization_id,price,source,effective_date,quote_valid_until,
+      source_file_name,source_line,source_description,selling_unit,price_basis)
+    values (v_new.id,p_organization_id,v_new.price,'price_list',now(),v_new.price_quote_valid_until,
+      'Catalog field correction',v_old.import_row->'row'->>'sourceLine',v_new.description,v_new.selling_unit,v_new.price_basis);
+  end if;
+  return to_jsonb(v_new);
+end;
+$$;
+revoke all on function public.kerdos_save_catalog_row(uuid,uuid,uuid,bigint,jsonb,text,boolean) from public;
+grant execute on function public.kerdos_save_catalog_row(uuid,uuid,uuid,bigint,jsonb,text,boolean) to authenticated;
 
-  return to_jsonb(v_order);
+-- ============================================================
+-- migration_020_category_numbers.sql
+-- ============================================================
+
+-- Category-scoped display numbers. UUIDs and vendor links never change.
+create table if not exists public.catalog_number_history (
+  organization_id uuid not null,
+  master_item_number bigint not null,
+  catalog_item_id uuid not null,
+  category_id uuid,
+  assigned_at timestamptz not null default now(),
+  primary key (organization_id,master_item_number)
+);
+alter table public.catalog_number_history enable row level security;
+drop policy if exists catalog_number_history_members on public.catalog_number_history;
+create policy catalog_number_history_members on public.catalog_number_history for select to authenticated
+  using (exists(select 1 from public.organization_members m where m.organization_id=catalog_number_history.organization_id and m.user_id=auth.uid()));
+grant select on public.catalog_number_history to authenticated;
+insert into public.catalog_number_history(organization_id,master_item_number,catalog_item_id,category_id)
+ select organization_id,master_item_number,id,category_id from public.catalog_items where master_item_number is not null
+ on conflict do nothing;
+
+create or replace function public.kerdos_assign_category_number() returns trigger
+language plpgsql security definer set search_path=public as $$
+declare v_start bigint; v_end bigint; v_number bigint;
+begin
+  if tg_op='UPDATE' then
+    if new.organization_id is distinct from old.organization_id then raise exception 'An item cannot move between organizations'; end if;
+    if new.category_id is not distinct from old.category_id and exists (
+      select 1 from public.catalog_categories c where c.id=new.category_id and c.organization_id=new.organization_id
+       and old.master_item_number between c.range_start and c.range_end
+    ) then
+      new.master_item_number:=old.master_item_number;
+      return new;
+    end if;
+  end if;
+  if new.category_id is null then raise exception 'Choose a category before assigning a KERDOS item number'; end if;
+  -- Serialize numbering within the organization, including overlapping ranges.
+  perform pg_advisory_xact_lock(hashtextextended(new.organization_id::text,20));
+  select range_start,range_end into v_start,v_end from public.catalog_categories
+   where id=new.category_id and organization_id=new.organization_id;
+  if not found or v_start is null or v_start<=0 or v_end is null or v_end<v_start then raise exception 'This category needs a valid item-number range'; end if;
+  if tg_op='UPDATE' and old.master_item_number is not null then
+    insert into public.catalog_number_history(organization_id,master_item_number,catalog_item_id,category_id)
+      values(old.organization_id,old.master_item_number,old.id,old.category_id) on conflict do nothing;
+  end if;
+  select coalesce(max(n)+1,v_start) into v_number from (
+    select master_item_number n from public.catalog_number_history where organization_id=new.organization_id and master_item_number between v_start and v_end
+    union all
+    select master_item_number from public.catalog_items where organization_id=new.organization_id and master_item_number between v_start and v_end
+  ) used;
+  if v_number>v_end then raise exception 'This category item-number range is full; extend its range before moving or creating the item'; end if;
+  new.master_item_number:=v_number;
+  insert into public.catalog_number_history(organization_id,master_item_number,catalog_item_id,category_id)
+    values(new.organization_id,v_number,new.id,new.category_id);
+  return new;
+end;
+$$;
+revoke all on function public.kerdos_assign_category_number() from public;
+drop trigger if exists kerdos_category_number on public.catalog_items;
+create trigger kerdos_category_number before insert or update on public.catalog_items
+ for each row execute function public.kerdos_assign_category_number();
+
+-- Repair old out-of-range numbers, including the legacy single-digit fallback.
+-- Categories lacking ranges are left intact until their range is configured.
+update public.catalog_items i set category_id=i.category_id
+ from public.catalog_categories c
+ where c.id=i.category_id and c.organization_id=i.organization_id
+   and c.range_start is not null and c.range_end>=c.range_start
+   and (i.master_item_number is null or i.master_item_number<c.range_start or i.master_item_number>c.range_end);
+
+-- ============================================================
+-- migration_021_comparison_preferences.sql
+-- ============================================================
+
+-- Industry-neutral client comparison preferences; existing brand locks remain.
+alter table public.catalog_items add column if not exists preferred_brand text;
+alter table public.catalog_items add column if not exists comparison_mode text not null default 'alternatives';
+do $$ begin
+ if not exists(select 1 from pg_constraint where conname='catalog_items_comparison_mode_check' and conrelid='public.catalog_items'::regclass) then
+  alter table public.catalog_items add constraint catalog_items_comparison_mode_check check(comparison_mode in ('exact','alternatives'));
+ end if;
+end $$;
+
+-- ============================================================
+-- migration_022_associate_alternatives.sql
+-- ============================================================
+
+-- One atomic approval of specifically selected vendor alternatives.
+create or replace function public.kerdos_associate_alternatives(p_organization_id uuid,p_vendor_item_ids uuid[],p_target_catalog_item_id uuid,p_name text,p_preferred_brand text,p_revisions jsonb)
+returns jsonb language plpgsql set search_path=public as $$
+declare v_item catalog_items%rowtype; v_vendor vendor_items%rowtype; v_key text; v_value jsonb; v_count integer; v_resolutions jsonb;
+begin
+ if auth.uid() is null or not exists(select 1 from organization_members where organization_id=p_organization_id and user_id=auth.uid() and role in ('owner','manager')) then raise exception 'Owner or manager access is required'; end if;
+ select count(distinct id) into v_count from unnest(p_vendor_item_ids) id;
+ if v_count<2 or v_count>100 then raise exception 'Select between 2 and 100 vendor products'; end if;
+ if nullif(btrim(p_name),'') is null then raise exception 'Enter the shared item type'; end if;
+ perform 1 from vendor_items where id=any(p_vendor_item_ids) and organization_id=p_organization_id order by id for update;
+ if (select count(*) from vendor_items where id=any(p_vendor_item_ids) and organization_id=p_organization_id)<>v_count then raise exception 'A selected product is outside this organization'; end if;
+ select * into v_item from catalog_items where id=p_target_catalog_item_id and organization_id=p_organization_id for update;
+ if not found then raise exception 'Choose an existing item in this organization'; end if;
+ if not exists(select 1 from item_mappings where catalog_item_id=v_item.id and vendor_item_id=any(p_vendor_item_ids) and organization_id=p_organization_id) then raise exception 'Choose a target from the selected items'; end if;
+ if (select count(distinct vendor_item_id) from item_mappings where vendor_item_id=any(p_vendor_item_ids) and organization_id=p_organization_id)<>v_count then raise exception 'A selected association changed; refresh and select again'; end if;
+ for v_vendor in select * from vendor_items where id=any(p_vendor_item_ids) and organization_id=p_organization_id order by id loop
+  if (p_revisions->>v_vendor.id::text)::bigint is null or (p_revisions->>v_vendor.id::text)::bigint<>v_vendor.row_revision then raise exception 'A selected product changed; refresh and select again'; end if;
+  v_resolutions:=coalesce(v_vendor.field_resolutions,'{}'::jsonb)-'automatic_group';
+  for v_key,v_value in select key,value from jsonb_each(jsonb_build_object('description',v_vendor.description,'brand',v_vendor.brand,'pack_size',v_vendor.pack_size,'selling_unit',v_vendor.selling_unit,'price',v_vendor.price,'catalog_item_id',v_item.id,'category_id',v_item.category_id)) loop
+   v_resolutions:=jsonb_set(v_resolutions,array[v_key],jsonb_build_object('value',v_value,'confirmedAt',now(),'confirmedBy',auth.uid(),'sourceValue',coalesce(v_resolutions->v_key->'sourceValue',v_value)));
+  end loop;
+  v_resolutions:=jsonb_set(v_resolutions,'{row_approval}',jsonb_build_object('confirmedAt',now(),'confirmedBy',auth.uid(),'catalogItemId',v_item.id));
+  update vendor_items set field_resolutions=v_resolutions,row_revision=row_revision+1 where id=v_vendor.id;
+ end loop;
+ update item_mappings set catalog_item_id=v_item.id,comparison_track='exact',confidence_score=100,match_method='manual' where organization_id=p_organization_id and vendor_item_id=any(p_vendor_item_ids);
+ update catalog_items set name=left(btrim(p_name),120),comparison_mode='alternatives',preferred_brand=nullif(btrim(p_preferred_brand),''),brand_locked=false,locked_brand=null where id=v_item.id;
+ return jsonb_build_object('catalogItemId',v_item.id,'masterItemNumber',v_item.master_item_number,'associated',v_count);
+end;
+$$;
+revoke all on function public.kerdos_associate_alternatives(uuid,uuid[],uuid,text,text,jsonb) from public;
+grant execute on function public.kerdos_associate_alternatives(uuid,uuid[],uuid,text,text,jsonb) to authenticated;
+
+-- ============================================================
+-- migration_023_automatic_alternatives.sql
+-- ============================================================
+
+-- Automatic alternatives do not fabricate client approvals or field evidence.
+create or replace function public.kerdos_alternative_key(p_description text,p_brand text,p_pack text)
+returns text language sql immutable set search_path=public as $$
+ with normalized as (
+  select btrim(regexp_replace(lower(coalesce(p_description,'')),'[^a-z0-9%]+',' ','g')) description,
+   btrim(regexp_replace(lower(coalesce(p_brand,'')),'[^a-z0-9%]+',' ','g')) brand,
+   btrim(regexp_replace(lower(coalesce(p_pack,'')),'[^a-z0-9%]+',' ','g')) pack
+ ), tokens as (
+  select token,brand from normalized,
+   lateral regexp_split_to_table(case when pack='' then description else replace(' '||description||' ',' '||pack||' ',' ') end,'\s+') token
+ ) select coalesce(string_agg(token,' ' order by token collate "C"),'') from tokens
+ where token<>'' and token not in ('and','the','of') and not(token=any(regexp_split_to_array(brand,'\s+')));
+$$;
+
+create or replace function public.kerdos_group_automatic_alternatives(p_organization_id uuid,p_vendor_item_ids uuid[],p_target_catalog_item_id uuid,p_key text,p_dimension text,p_revisions jsonb)
+returns integer language plpgsql set search_path=public as $$
+declare v_item catalog_items%rowtype; v_row vendor_items%rowtype; v_mapping item_mappings%rowtype; v_count integer;
+begin
+ if auth.uid() is null or not exists(select 1 from organization_members where organization_id=p_organization_id and user_id=auth.uid() and role in ('owner','manager')) then raise exception 'Owner or manager access is required'; end if;
+ perform pg_advisory_xact_lock(hashtextextended(p_organization_id::text,23));
+ select count(distinct id) into v_count from unnest(p_vendor_item_ids) id;
+ if v_count<2 or v_count>100 or length(p_key)<4 or p_key is null or p_dimension is null or p_dimension='unknown' then raise exception 'Automatic grouping needs clear product details'; end if;
+ perform 1 from vendor_items where organization_id=p_organization_id and id=any(p_vendor_item_ids) order by id for update;
+ if (select count(*) from vendor_items where organization_id=p_organization_id and id=any(p_vendor_item_ids))<>v_count then raise exception 'Product is outside this organization'; end if;
+ perform 1 from item_mappings where organization_id=p_organization_id and vendor_item_id=any(p_vendor_item_ids) order by id for update;
+ select * into v_item from catalog_items where id=p_target_catalog_item_id and organization_id=p_organization_id for update;
+ if not found or v_item.category_id is null or v_item.brand_locked or v_item.preferred_brand is not null or v_item.comparison_mode='exact' then raise exception 'This item does not allow automatic alternatives'; end if;
+ if not exists(select 1 from item_mappings where organization_id=p_organization_id and catalog_item_id=v_item.id and vendor_item_id=any(p_vendor_item_ids)) then raise exception 'Target is outside the selected products'; end if;
+ for v_row in select * from vendor_items where organization_id=p_organization_id and id=any(p_vendor_item_ids) order by id loop
+  if (p_revisions->>v_row.id::text)::bigint is null or (p_revisions->>v_row.id::text)::bigint<>v_row.row_revision then raise exception 'Product changed; refresh and retry'; end if;
+  if v_row.field_resolutions ? 'automatic_group_excluded' or v_row.field_resolutions ? 'unit_cost_override' or nullif(btrim(v_row.pack_size),'') is null or kerdos_alternative_key(v_row.description,v_row.brand,v_row.pack_size)<>p_key then raise exception 'Product details do not support automatic grouping'; end if;
+  select * into v_mapping from item_mappings where organization_id=p_organization_id and vendor_item_id=v_row.id;
+  if not found then raise exception 'Product association is missing'; end if;
+  if not exists(select 1 from catalog_items where id=v_mapping.catalog_item_id and organization_id=p_organization_id and category_id=v_item.category_id and not coalesce(brand_locked,false) and comparison_mode='alternatives' and preferred_brand is null) then raise exception 'Category or comparison preference differs'; end if;
+  if exists(select 1 from item_mappings m join vendor_items v on v.id=m.vendor_item_id where m.organization_id=p_organization_id and m.catalog_item_id=v_mapping.catalog_item_id and (kerdos_alternative_key(v.description,v.brand,v.pack_size)<>p_key or v.field_resolutions ? 'automatic_group_excluded' or v.field_resolutions ? 'unit_cost_override')) then raise exception 'Existing group contains different products'; end if;
+ end loop;
+ for v_row in select * from vendor_items where organization_id=p_organization_id and id=any(p_vendor_item_ids) order by id loop
+  select * into v_mapping from item_mappings where organization_id=p_organization_id and vendor_item_id=v_row.id;
+  update vendor_items set field_resolutions=jsonb_set(coalesce(field_resolutions,'{}'),'{automatic_group}',jsonb_build_object(
+   'originalCatalogItemId',coalesce(field_resolutions->'automatic_group'->>'originalCatalogItemId',v_mapping.catalog_item_id::text),
+   'catalogItemId',v_item.id,'key',p_key,'dimension',p_dimension,'groupedAt',now(),'groupedBy',auth.uid())),row_revision=row_revision+1 where id=v_row.id;
+  update item_mappings set catalog_item_id=v_item.id,comparison_track='exact',confidence_score=100,match_method='rule_based' where id=v_mapping.id;
+ end loop;
+ return v_count;
+end;
+$$;
+
+create or replace function public.kerdos_separate_automatic_alternatives(p_organization_id uuid,p_target_catalog_item_id uuid)
+returns integer language plpgsql set search_path=public as $$
+declare v_row vendor_items%rowtype; v_original uuid; v_count integer:=0;
+begin
+ if auth.uid() is null or not exists(select 1 from organization_members where organization_id=p_organization_id and user_id=auth.uid() and role in ('owner','manager')) then raise exception 'Owner or manager access is required'; end if;
+ perform pg_advisory_xact_lock(hashtextextended(p_organization_id::text,23));
+ for v_row in select v.* from vendor_items v join item_mappings m on m.vendor_item_id=v.id and m.organization_id=v.organization_id
+  where v.organization_id=p_organization_id and m.catalog_item_id=p_target_catalog_item_id and m.match_method='rule_based' and v.field_resolutions->'automatic_group'->>'catalogItemId'=p_target_catalog_item_id::text order by v.id for update of v,m loop
+  v_original:=(v_row.field_resolutions->'automatic_group'->>'originalCatalogItemId')::uuid;
+  if not exists(select 1 from catalog_items where id=v_original and organization_id=p_organization_id) then raise exception 'Original item is unavailable; use the catalog link editor'; end if;
+  update item_mappings set catalog_item_id=v_original,comparison_track='review',confidence_score=null,match_method='manual' where organization_id=p_organization_id and vendor_item_id=v_row.id;
+  update vendor_items set field_resolutions=jsonb_set(field_resolutions-'automatic_group','{automatic_group_excluded}','true'),row_revision=row_revision+1 where id=v_row.id;
+  v_count:=v_count+1;
+ end loop;
+ return v_count;
+end;
+$$;
+revoke all on function public.kerdos_group_automatic_alternatives(uuid,uuid[],uuid,text,text,jsonb) from public;
+revoke all on function public.kerdos_separate_automatic_alternatives(uuid,uuid) from public;
+grant execute on function public.kerdos_group_automatic_alternatives(uuid,uuid[],uuid,text,text,jsonb) to authenticated;
+grant execute on function public.kerdos_separate_automatic_alternatives(uuid,uuid) to authenticated;
+
+-- ============================================================
+-- migration_024_atomic_orders.sql
+-- ============================================================
+
+-- Record an order and all lines in a single transaction.
+alter table public.purchase_order_lines add column if not exists order_unit text;
+alter table public.purchase_order_lines add column if not exists pack_size text;
+create or replace function public.kerdos_submit_order(
+ p_organization_id uuid,p_vendor_id uuid,p_created_by uuid,p_total_amount numeric,
+ p_notes text default null,p_lines jsonb default '[]'::jsonb
+) returns jsonb language plpgsql set search_path=public as $$
+declare v_order public.purchase_orders%rowtype; v_line jsonb; v_total numeric:=0;
+begin
+ if auth.uid() is null or p_created_by is distinct from auth.uid() then raise exception 'Authentication must match the order creator'; end if;
+ if not exists(select 1 from organization_members where organization_id=p_organization_id and user_id=auth.uid() and role in ('owner','manager','employee')) then raise exception 'Organization membership is required'; end if;
+ if not exists(select 1 from vendors where id=p_vendor_id and organization_id=p_organization_id) then raise exception 'Vendor is outside the organization'; end if;
+ if p_lines is null or jsonb_typeof(p_lines)<>'array' or jsonb_array_length(p_lines)=0 then raise exception 'An order needs line items'; end if;
+ for v_line in select value from jsonb_array_elements(p_lines) loop
+  if coalesce((v_line->>'quantity')::numeric,0)<=0 or coalesce((v_line->>'unit_price')::numeric,0)<=0 or coalesce(v_line->>'order_unit','') not in ('case','each') then raise exception 'Each line needs a positive quantity, price and purchasing unit'; end if;
+  if not exists(select 1 from vendor_items vi join item_mappings m on m.vendor_item_id=vi.id join catalog_items ci on ci.id=m.catalog_item_id where vi.id=(v_line->>'vendor_item_id')::uuid and vi.vendor_id=p_vendor_id and vi.organization_id=p_organization_id and m.organization_id=p_organization_id and ci.id=(v_line->>'catalog_item_id')::uuid and ci.organization_id=p_organization_id) then raise exception 'Order line is outside the vendor or catalog'; end if;
+  if (v_line->>'line_total')::numeric is distinct from round((v_line->>'quantity')::numeric*(v_line->>'unit_price')::numeric,2) then raise exception 'Order line total does not match its quantity and price'; end if;
+  v_total:=v_total+(v_line->>'line_total')::numeric;
+ end loop;
+ if p_total_amount is distinct from round(v_total,2) then raise exception 'Order total does not match its lines'; end if;
+ insert into purchase_orders(organization_id,vendor_id,created_by,status,total_amount,notes)
+ values(p_organization_id,p_vendor_id,auth.uid(),'submitted',v_total,p_notes) returning * into v_order;
+ insert into purchase_order_lines(purchase_order_id,catalog_item_id,vendor_item_id,quantity,unit_price,line_total,order_unit,pack_size)
+ select v_order.id,(line->>'catalog_item_id')::uuid,(line->>'vendor_item_id')::uuid,
+ (line->>'quantity')::numeric,(line->>'unit_price')::numeric,(line->>'line_total')::numeric,line->>'order_unit',line->>'pack_size'
+ from jsonb_array_elements(p_lines) line;
+ return to_jsonb(v_order);
 end;
 $$;
 revoke all on function public.kerdos_submit_order(uuid,uuid,uuid,numeric,text,jsonb) from public;
 grant execute on function public.kerdos_submit_order(uuid,uuid,uuid,numeric,text,jsonb) to authenticated;
+
+-- ============================================================
+-- migration_025_explicit_associations.sql
+-- ============================================================
+
+-- Individual unlinking is atomic, retains the vendor record, and remembers
+-- rejected vendor pairs. Explicit reassociation can reverse that decision.
+create or replace function public.kerdos_unlink_vendor_item(p_organization_id uuid,p_mapping_id uuid,p_expected_revision bigint)
+returns jsonb language plpgsql set search_path=public as $$
+declare v_mapping item_mappings%rowtype; v_vendor vendor_items%rowtype; v_item catalog_items%rowtype;
+ v_new catalog_items%rowtype; v_rejected jsonb; v_resolutions jsonb; v_peers uuid[];
+begin
+ if auth.uid() is null or not exists(select 1 from organization_members where organization_id=p_organization_id and user_id=auth.uid() and role in ('owner','manager')) then raise exception 'Owner or manager access is required'; end if;
+ -- Same vendor-row lock order as association approval avoids inverted locks.
+ select * into v_mapping from item_mappings where id=p_mapping_id and organization_id=p_organization_id;
+ if not found then raise exception 'Association not found'; end if;
+ perform 1 from vendor_items where organization_id=p_organization_id and id in (select vendor_item_id from item_mappings where catalog_item_id=v_mapping.catalog_item_id and organization_id=p_organization_id) order by id for update;
+ select * into v_mapping from item_mappings where id=p_mapping_id and organization_id=p_organization_id for update;
+ select * into v_vendor from vendor_items where id=v_mapping.vendor_item_id and organization_id=p_organization_id;
+ if not found or p_expected_revision is null or v_vendor.row_revision<>p_expected_revision then raise exception 'This product changed; refresh before unlinking'; end if;
+ select * into v_item from catalog_items where id=v_mapping.catalog_item_id and organization_id=p_organization_id for update;
+ if not found then raise exception 'Catalog item not found'; end if;
+ select array_agg(vendor_item_id) into v_peers from item_mappings where catalog_item_id=v_item.id and organization_id=p_organization_id and vendor_item_id<>v_vendor.id;
+ if coalesce(cardinality(v_peers),0)=0 then return jsonb_build_object('catalogItemId',v_item.id,'masterItemNumber',v_item.master_item_number); end if;
+ insert into catalog_items(organization_id,category_id,name,category_review,category_reason,matching_behavior,comparison_mode,brand_locked)
+ values(p_organization_id,v_item.category_id,left(v_vendor.description,120),v_item.category_review,v_item.category_reason,'flexible','alternatives',false) returning * into v_new;
+ select coalesce(jsonb_agg(distinct value),'[]'::jsonb) into v_rejected from jsonb_array_elements_text(coalesce(v_vendor.field_resolutions->'rejected_vendor_item_ids','[]'::jsonb)||to_jsonb(v_peers));
+ v_resolutions:=coalesce(v_vendor.field_resolutions,'{}'::jsonb)-'automatic_group';
+ v_resolutions:=jsonb_set(v_resolutions,'{rejected_vendor_item_ids}',v_rejected);
+ v_resolutions:=jsonb_set(v_resolutions,'{catalog_item_id}',jsonb_build_object('value',v_new.id,'confirmedAt',now(),'confirmedBy',auth.uid()));
+ v_resolutions:=jsonb_set(v_resolutions,'{row_approval}',jsonb_build_object('catalogItemId',v_new.id,'confirmedAt',now(),'confirmedBy',auth.uid()));
+ update vendor_items set field_resolutions=v_resolutions,row_revision=row_revision+1 where id=v_vendor.id;
+ update item_mappings set catalog_item_id=v_new.id,comparison_track='exact',confidence_score=100,match_method='manual' where id=p_mapping_id;
+ return jsonb_build_object('catalogItemId',v_new.id,'masterItemNumber',v_new.master_item_number);
+end;
+$$;
+revoke all on function public.kerdos_unlink_vendor_item(uuid,uuid,bigint) from public;
+grant execute on function public.kerdos_unlink_vendor_item(uuid,uuid,bigint) to authenticated;
+
+-- One atomic approval of specifically selected vendor alternatives.
+create or replace function public.kerdos_associate_alternatives(p_organization_id uuid,p_vendor_item_ids uuid[],p_target_catalog_item_id uuid,p_name text,p_preferred_brand text,p_revisions jsonb)
+returns jsonb language plpgsql set search_path=public as $$
+declare v_item catalog_items%rowtype; v_vendor vendor_items%rowtype; v_key text; v_value jsonb; v_count integer; v_resolutions jsonb;
+begin
+ if auth.uid() is null or not exists(select 1 from organization_members where organization_id=p_organization_id and user_id=auth.uid() and role in ('owner','manager')) then raise exception 'Owner or manager access is required'; end if;
+ select count(distinct id) into v_count from unnest(p_vendor_item_ids) id;
+ if v_count<2 or v_count>100 then raise exception 'Select between 2 and 100 vendor products'; end if;
+ if nullif(btrim(p_name),'') is null then raise exception 'Enter the shared item type'; end if;
+ perform 1 from vendor_items where id=any(p_vendor_item_ids) and organization_id=p_organization_id order by id for update;
+ if (select count(*) from vendor_items where id=any(p_vendor_item_ids) and organization_id=p_organization_id)<>v_count then raise exception 'A selected product is outside this organization'; end if;
+ select * into v_item from catalog_items where id=p_target_catalog_item_id and organization_id=p_organization_id for update;
+ if not found then raise exception 'Choose an existing item in this organization'; end if;
+ if not exists(select 1 from item_mappings where catalog_item_id=v_item.id and vendor_item_id=any(p_vendor_item_ids) and organization_id=p_organization_id) then raise exception 'Choose a target from the selected items'; end if;
+ if (select count(distinct vendor_item_id) from item_mappings where vendor_item_id=any(p_vendor_item_ids) and organization_id=p_organization_id)<>v_count then raise exception 'A selected association changed; refresh and select again'; end if;
+ for v_vendor in select * from vendor_items where id=any(p_vendor_item_ids) and organization_id=p_organization_id order by id loop
+  if (p_revisions->>v_vendor.id::text)::bigint is null or (p_revisions->>v_vendor.id::text)::bigint<>v_vendor.row_revision then raise exception 'A selected product changed; refresh and select again'; end if;
+  v_resolutions:=coalesce(v_vendor.field_resolutions,'{}'::jsonb)-'automatic_group';
+  -- A new explicit approval overrides earlier rejection only for these rows.
+  v_resolutions:=jsonb_set(v_resolutions,'{rejected_vendor_item_ids}',coalesce((select jsonb_agg(value) from jsonb_array_elements_text(coalesce(v_resolutions->'rejected_vendor_item_ids','[]'::jsonb)) where not (value::uuid=any(p_vendor_item_ids))),'[]'::jsonb));
+  for v_key,v_value in select key,value from jsonb_each(jsonb_build_object('description',v_vendor.description,'brand',v_vendor.brand,'pack_size',v_vendor.pack_size,'selling_unit',v_vendor.selling_unit,'price',v_vendor.price,'catalog_item_id',v_item.id,'category_id',v_item.category_id)) loop
+   v_resolutions:=jsonb_set(v_resolutions,array[v_key],jsonb_build_object('value',v_value,'confirmedAt',now(),'confirmedBy',auth.uid(),'sourceValue',coalesce(v_resolutions->v_key->'sourceValue',v_value)));
+  end loop;
+  v_resolutions:=jsonb_set(v_resolutions,'{row_approval}',jsonb_build_object('confirmedAt',now(),'confirmedBy',auth.uid(),'catalogItemId',v_item.id));
+  update vendor_items set field_resolutions=v_resolutions,row_revision=row_revision+1 where id=v_vendor.id;
+ end loop;
+ update item_mappings set catalog_item_id=v_item.id,comparison_track='exact',confidence_score=100,match_method='manual' where organization_id=p_organization_id and vendor_item_id=any(p_vendor_item_ids);
+ update catalog_items set name=left(btrim(p_name),120),comparison_mode='alternatives',preferred_brand=nullif(btrim(p_preferred_brand),''),brand_locked=false,locked_brand=null where id=v_item.id;
+ return jsonb_build_object('catalogItemId',v_item.id,'masterItemNumber',v_item.master_item_number,'associated',v_count);
+end;
+$$;
+revoke all on function public.kerdos_associate_alternatives(uuid,uuid[],uuid,text,text,jsonb) from public;
+grant execute on function public.kerdos_associate_alternatives(uuid,uuid[],uuid,text,text,jsonb) to authenticated;
 
 commit;
