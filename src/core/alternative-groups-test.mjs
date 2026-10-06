@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {alternativeKey,alternativeGroups,automaticAlternativeVerified,suggestedAlternativeGroups,associationTarget} from './alternative-groups.js';
+import {alternativeKey,alternativeGroups,automaticAlternativeVerified,suggestedAlternativeGroups} from './alternative-groups.js';
 const a={id:'a',description:'BrandA tuna tongol',brand:'BrandA',pack_size:'6/66.5 OZ'},b={id:'b',description:'Tongol tuna BrandB',brand:'BrandB',pack_size:'1/10 LB'};
 const items=[{id:'one',category_id:'general',master_item_number:1000,comparison_mode:'alternatives'},{id:'two',category_id:'general',master_item_number:1001,comparison_mode:'alternatives'}];
 const mappings=[{vendor_item_id:'a',catalog_item_id:'one'},{vendor_item_id:'b',catalog_item_id:'two'}];
@@ -28,10 +28,3 @@ assert.equal(automaticAlternativeVerified(grouped,items[0],[unspecified]),false,
 assert.equal(automaticAlternativeVerified(grouped,{...items[0],comparison_mode:'exact'},[b]),false);
 assert.equal(automaticAlternativeVerified({...grouped,pack_size:'1/1 GAL'},items[0],[b]),false);
 console.log('Automatic alternative policy passed: cross-brand matches, preserved qualifiers/specifications, review suggestions, restrictions, dimensions, undo exclusion and source changes.');
-
-const rejected={...a,field_resolutions:{rejected_vendor_item_ids:['b']}};
-assert.equal(suggestedAlternativeGroups({...input,vendorItems:[rejected,b]}).length,0,'unlink rejects only the former pair');
-assert.equal(alternativeGroups({...input,vendorItems:[rejected,b]}).length,0);
-const third={...b,id:'c'};
-assert.equal(suggestedAlternativeGroups({...input,vendorItems:[rejected,third],mappings:[mappings[0],{vendor_item_id:'c',catalog_item_id:'two'}]}).length,1,'other vendors remain available');
-assert.equal(associationTarget([{id:'older',created_at:'2020-01-01',master_item_number:9000},{id:'newer',created_at:'2026-01-01',master_item_number:1000}]).id,'older','category numbering cannot change target selection');

@@ -4,7 +4,7 @@ import {fileToText} from "../document-reader.js";
 import {findDate,findInvoiceNumber,parseDocument} from "../ingestion.js";
 import {findUncodedVendorListing,vendorListingLabel} from "../core/vendor-listing.js";
 import {bestInvoiceMatch,compareProductIdentity,comparePurchasingPack,MATCH_POLICY,parsePackSize,priceBasisFor,quotePriceOnBasis,brandsMatch} from "../procurement.js";
-import {createCatalogService} from "../services/catalog.js";
+import {createCatalogService,engineVerifiable} from "../services/catalog.js";
 import {createCategoryService} from "../services/categories.js";
 import {createDocumentService} from "../services/documents.js";
 import {createImportService} from "../services/imports.js";
@@ -374,7 +374,7 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
           priceUnavailable:!!row.priceUnavailable||needsBasis,effectiveDate:importBatchTime,
           quoteValidUntil:group.quoteValidUntil,sourceFilePath,
           sourceFileName:group.name,sourceLine:row.sourceLine||null,sourceDocumentId,
-          importRow:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:needsBasis,reviewFields:prepared.reviewFields,conflicts:prepared.reasons,changes:row.changes||[]},
+          importRow:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:needsBasis||!!row.requiresReview,reviewFields:prepared.reviewFields,conflicts:prepared.reasons,changes:row.changes||[]},
           fieldResolutions:importResolutions(sourceRow,ex||{}),
         });
         if(needsBasis&&ex){
@@ -404,7 +404,25 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
               workingVendorItems.push({id:vendorItemId,vendor_id:vendorId,description:identity.description,pack_size:identity.packSize||null,brand:identity.brand||null,gtin:identity.gtin||null,manufacturer_code:identity.manufacturerCode||null});
               workingMappings.push({id:savedMapping.id,catalog_item_id:match.catalogItemId,vendor_item_id:vendorItemId,comparison_track:match.track,confidence_score:Math.round((match.score??0)*100)});
               if(!needsBasis)await applySelectedCategory(match.catalogItemId,row.categoryId);
-              // Standalone readiness is confirmed by the shared placement policy after reload.
+              // A second vendor can prove the first listing's identity and
+              // pack. Promote only mappings passing the same verification as
+              // the Item Catalog's engine-review button.
+              if(match.track==="exact"&&!needsBasis){
+                const verified=engineVerifiable({mappings:workingMappings,vendorItems:workingVendorItems,catalogItems:workingCatalogItems})
+                  .filter(entry=>entry.catalogItemId===match.catalogItemId);
+                if(verified.length){
+                  try{
+                    await catalogService.confirmMappings(verified);
+                    const ids=new Set(verified.map(entry=>entry.mappingId));
+                    for(const mapping of workingMappings)if(ids.has(mapping.id)){mapping.comparison_track="exact";mapping.confidence_score=100;}
+                  }catch(err){
+                    // The quote and mapping have already been saved. Keep the
+                    // import successful and leave verification available in
+                    // Item Catalog rather than reporting a retryable row.
+                    saveError=(saveError?saveError+" ":"")+`${row.description}: saved, but automatic verification could not finish (${err.message||String(err)}). Review the mapping in Item Catalog.`;
+                  }
+                }
+              }
               identified.push({description:row.description,packSize:row.packSize||ex?.pack_size||null,price:row.price,track:match.track,confidence:match.score==null?null:Math.round(match.score*100),reason:match.reason||null});
             }
           }else if(row.categoryId&&!needsBasis){
@@ -423,6 +441,7 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
           vendor_item_code:row.code||ex?.vendor_item_code||null,
           description:needsBasis&&ex?ex.description:row.description,
           brand:needsBasis&&ex?ex.brand:row.brand,pack_size:needsBasis&&ex?ex.pack_size:row.packSize,
+          original_pack_raw:row.originalPackRaw||ex?.original_pack_raw||null,
           price:needsBasis&&ex?ex.price:row.price,field_resolutions:importResolutions(sourceRow,ex||{})};
         const savedIndex=currentVendorItems.findIndex(vi=>vi.id===vendorItemId);
         if(savedIndex<0)currentVendorItems.push(saved);else currentVendorItems[savedIndex]=saved;

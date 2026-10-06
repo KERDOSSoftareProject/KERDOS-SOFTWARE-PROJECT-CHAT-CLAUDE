@@ -59,8 +59,8 @@ test("answers are remembered per vendor and header layout",()=>{
 test("unfamiliar headings are reported once and answered once",()=>{
   const sheet="SKU,Desc,Pk/Sz,Sell,Per\nA1,YUKON GOLD POTATOES,50 LB,17.90,CS\nA2,RED POTATOES,50 LB,16.50,CS";
   const first=parseDocument(sheet);
-  assert.deepEqual(first.layout.unknown.map(h=>h.label),["Pk/Sz","Sell","Per"]);
-  const answered=parseDocument(sheet,{layoutAnswers:{2:"packSize",3:"price",4:"sellingUnit"}});
+  assert.deepEqual(first.layout.unknown.map(h=>h.label),["Sell","Per"]); // Pk/Sz now recognized as packSize
+  const answered=parseDocument(sheet,{layoutAnswers:{3:"price",4:"sellingUnit"}});
   assert.equal(answered.layout.unknown.length,0);
   assert.equal(answered.rows.length,2);
   assert.equal(answered.rows[0].packSize,"50 LB");assert.equal(answered.rows[0].price,17.9);assert.equal(answered.rows[0].sellingUnit,"CS");

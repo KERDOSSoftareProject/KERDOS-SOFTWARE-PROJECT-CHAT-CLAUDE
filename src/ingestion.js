@@ -1,5 +1,6 @@
 // ════════════════════════════════════════════════════════════════════
 import {applySourceUnits,documentQuoteUnit} from "./core/source-units.js";
+import {analyzeRow} from "./core/cell-analysis.js";
 import {measurement,normalizeGtin,normalizeManufacturerCode,packFromDescription,parsePackSize,normalizeMixedFraction} from "./procurement.js";
 import {readHeaderLayout,applyLayoutAnswers,checkRowCells} from "./core/sheet-layout.js";
 // KERDOS INGESTION MODULE
@@ -36,16 +37,16 @@ import {readHeaderLayout,applyLayoutAnswers,checkRowCells} from "./core/sheet-la
 // ── Column roles we understand ─────────────────────────────────────
 // Every column in a document gets matched to one of these, or "unknown".
 const COLUMN_ROLES = {
-  description: ["description", "desc", "product", "name"],
-  code:        ["item no", "item#", "item", "sku", "code", "cust item no", "item number"],
+  description: ["description", "desc", "product", "name", "item description", "product description", "product name", "item name"],
+  code:        ["item no", "item#", "itm#", "item", "sku", "code", "cust item no", "item number", "item no.", "part no", "part number", "vendor item", "vendor code", "vendor no"],
   brand:       ["brand", "manufacturer", "make"],
   gtin:        ["upc", "gtin", "ean", "barcode", "bar code", "upc code", "upc/ean"],
   mfrCode:     ["mfr #", "mfg #", "mfr no", "mfg no", "mfr item", "mfg item", "manufacturer item", "manufacturer no", "manufacturer #", "manufacturer part", "mfr part", "part no", "part number", "model"],
   sellingUnit: ["type", "selling unit", "order unit", "quoted per", "price unit", "price uom", "pricing unit", "pricing basis", "price basis", "unit of sale"],
-  qty:         ["qty", "quantity", "count"],
-  packSize:    ["unit", "size", "pack", "uom", "pack size"],
-  price:       ["price", "unit price", "cost", "unit cost", "rate"],
-  amount:      ["amount", "total", "ext", "extended", "ext price", "ext. price", "line total"],
+  qty:         ["qty", "quantity", "count", "ordered", "order qty", "ord qty", "delivered", "dlv", "dlvd"],
+  packSize:    ["unit", "size", "pack", "uom", "pack size", "pk", "pkg", "package", "pack/size", "pack & size", "pack & size:", "package size", "unit size"],
+  price:       ["price", "pr", "prc", "unit price", "cost", "unit cost", "rate", "your price", "net price", "sell price", "selling price", "quote price", "quoted price", "list price", "price/case", "price per case", "price/ea", "price/lb", "price/gal"],
+  amount:      ["amount", "total", "ext", "extended", "ext price", "ext. price", "line total", "line amount", "extended price", "total price", "total amount"],
 };
 
 // Rows that are clearly not item data — invoice/pricelist "furniture".
@@ -97,7 +98,11 @@ function isTableEndMarker(cells) {
 
 function parseMoney(str) {
   if (str == null) return null;
-  let cleaned = String(str).replace(/[$,]/g, "").trim();
+  let cleaned = String(str).replace(/[$]/g, "").trim();
+  // European decimal comma: "12,50" means 12.50 (not 12 thousands 50)
+  // Detect: digits, single comma, 1-2 digits, end — no dot present
+  if (/^-?\d+,\d{1,2}$/.test(cleaned)) cleaned = cleaned.replace(",", ".");
+  else cleaned = cleaned.replace(/,/g, ""); // strip thousands separators
   // Accounting-style negatives — "(24.00)" meaning -24.00 — are common in
   // bookkeeper-produced spreadsheets (QuickBooks-style exports, manual
   // credit memos) even when nobody on staff would type an actual minus sign.
@@ -149,25 +154,39 @@ function sniffDelimiter(lines) {
   const candidates = [
     { name: "tab", regex: /\t/ },
     { name: "comma", regex: /,(?=(?:[^"]*"[^"]*")*[^"]*$)/ },
+    { name: "semicolon", regex: /;/ },
+    { name: "pipe", regex: /\|/ },
     { name: "multispace", regex: /\s{2,}/ },
   ];
 
   let best = { name: null, consistency: -1 };
 
+  // Exclude blank lines and address/noise lines from coverage measurement.
+  // A vendor file with 7 lines of header noise + 3 data lines is still
+  // a comma-delimited file — the noise shouldn't dilute the count.
+  const substantiveLines = lines.filter(l => {
+    const t = l.trim();
+    if (t.length < 3) return false;                    // blank or near-blank
+    if (/^[-=*#]{3,}$/.test(t)) return false;         // divider lines
+    return true;
+  });
+  const denominator = substantiveLines.length || lines.length;
+
   for (const cand of candidates) {
-    const linesWithDelim = lines.filter(l => cand.regex.test(l));
+    const linesWithDelim = substantiveLines.filter(l => cand.regex.test(l));
     // A real table uses this delimiter on most lines, not just a
     // scattered few (a handful of junk lines with incidental double
     // spaces shouldn't be mistaken for a whole tabular document).
-    const coverage = linesWithDelim.length / lines.length;
-    if (coverage < 0.6) continue;
+    const coverage = linesWithDelim.length / denominator;
+    if (coverage < 0.4) continue;  // lowered from 0.6 to handle noisy headers
 
     const counts = linesWithDelim.map(l => l.split(cand.regex).length);
     const modeCount = mostCommon(counts);
     const matchingRows = counts.filter(c => c === modeCount).length;
     const consistency = matchingRows / counts.length;
 
-    if (modeCount >= 2 && consistency > best.consistency) {
+    if (modeCount >= 2 && (consistency > best.consistency ||
+        (consistency === best.consistency && modeCount > (best.modeCount||0)))) {
       best = { name: cand.name, consistency, modeCount };
     }
   }
@@ -191,6 +210,8 @@ function mostCommon(arr) {
 
 function splitRow(line, delimiterName) {
   if (delimiterName === "tab") return line.split(/\t/);
+  if (delimiterName === "semicolon") return line.split(/;/);
+  if (delimiterName === "pipe") return line.split(/\|/);
   if (delimiterName === "comma") return line.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/);
   return line.split(/\s{2,}/);
 }
@@ -259,12 +280,21 @@ function findHeaderRow(grid) {
 
 // ── Stage 3: Map columns to roles ───────────────────────────────────
 
+// Price columns ordered by preference. When multiple price columns exist,
+// the first match in this list wins. "your price" beats "list price".
+const PRICE_PRIORITY = ["your price","net price","sell price","selling price",
+  "quote price","quoted price","unit price","price/case","price per case",
+  "price","pr","prc","cost","unit cost","rate","list price"];
+
 function mapColumnsFromHeader(headerCells) {
   const map = {};
+  // Two-pass: first map all non-price roles, then apply price priority.
+  const priceCandidates = [];
   headerCells.forEach((cell,idx)=>{
     const lower=cell.toLowerCase().trim().replace(/\s+/g," ");
     const choices=[];
     for(const [role,keywords] of Object.entries(COLUMN_ROLES)){
+      if(role==="price")continue; // handle separately
       for(const kw of keywords){
         if(lower===kw||lower.includes(kw)) choices.push({role,score:kw.length+(lower===kw?100:0)});
       }
@@ -272,7 +302,19 @@ function mapColumnsFromHeader(headerCells) {
     choices.sort((a,b)=>b.score-a.score);
     const chosen=choices.find(c=>map[c.role]===undefined);
     if(chosen)map[chosen.role]=idx;
+    // collect price candidates — store full cell text for priority matching
+    for(const kw of COLUMN_ROLES.price){
+      if(lower===kw||lower.includes(kw)){priceCandidates.push({idx,kw,lower,exact:lower===kw});break;}
+    }
   });
+  // Pick the highest-priority price column by matching the FULL cell text
+  if(priceCandidates.length){
+    for(const preferred of PRICE_PRIORITY){
+      const hit=priceCandidates.find(c=>c.lower===preferred||c.lower.includes(preferred));
+      if(hit){map.price=hit.idx;break;}
+    }
+    if(map.price===undefined) map.price=priceCandidates[0].idx;
+  }
   return map;
 }
 
@@ -400,10 +442,11 @@ export function normalizeColumnPack(value){
   if(!text) return text;
   if(PACKAGING_ONLY.test(text)) return `1 ${text.replace(/\.$/,"").toUpperCase()}`;
   if(/^\d{2,}$/.test(text)) return `${Number(text)} CT`;
-  return text;
+  // Normalize mixed fractions: 1-1/9 BU → 1.111111 BU
+  return normalizeMixedFraction(text);
 }
 
-function extractRow(cells, columnMap, priceHeader="") {
+function extractRow(cells, columnMap, priceHeader="", confirmedColIndices=null) {
   const get = role => (columnMap[role] !== undefined ? cells[columnMap[role]] : undefined);
 
   const priceRaw = get("price");
@@ -427,8 +470,16 @@ function extractRow(cells, columnMap, priceHeader="") {
       .filter(c => parseMoney(c) === null && !isNoPricePlaceholder(c))
       .sort((a, b) => b.length - a.length)[0] || "";
   }
-  description = description.trim();
+  description = description.trim()
+    .replace(/\s+\*{2,}[A-Z0-9]+\*{2,}/gi, '') // **NEW** **SPECIAL** flags — must run FIRST
+    .replace(/\*+([^*]+)\*+/g, '$1')  // *ITEM* → ITEM (keep content)
+    .replace(/\*+/g, '')               // remaining lone asterisks
+    .replace(/\s{2,}/g, ' ')           // double spaces → single
+    .trim();
   if (description.length < 2) return null;
+  // A row whose description is itself a non-product line (fuel surcharge,
+  // delivery fee etc) should be skipped even when it came from a CSV column.
+  if (NON_PRODUCT_LINE.test(description.trim())) return null;
 
   const code = (get("code") || "").trim() || null;
   const brand = (get("brand") || "").trim() || null;
@@ -469,6 +520,22 @@ function extractRow(cells, columnMap, priceHeader="") {
   const fullDescription=[description,...details.filter(detail=>!description.toLowerCase().includes(detail.toLowerCase()))].join(" ").trim();
   const issues=[];
 
+  // Run cell analysis to pick up flags and metadata the column-map path doesn't surface:
+  // priceUnavailable (zero price), requiresReview (negative price), originalRaw on pack.
+  // Build a header-hint array from the column map: each cell gets its role name as the hint.
+  const roleByCol = Object.fromEntries(Object.entries(columnMap).map(([role,idx])=>[idx,role]));
+  const headerHints = cells.map((_,i) => roleByCol[i] || '');
+  const cellEvidence = analyzeRow(cells, headerHints, priceHeader, confirmedColIndices);
+  const priceProposal = cellEvidence.resolved.price;
+  const packProposal  = cellEvidence.resolved.pack;
+  const finalPriceUnavailable = priceUnavailable || priceProposal?.priceUnavailable || false;
+  const finalRequiresReview   = priceProposal?.requiresReview || false;
+  const finalOriginalRaw      = packProposal?.originalRaw || null;
+  // Preserve unresolved-field explanations and conflict details on the row so they
+  // survive into importRow.evidence and are visible in Item Catalog.
+  const cellUnresolved = cellEvidence.unresolved?.length ? cellEvidence.unresolved : null;
+  const cellConflicts  = cellEvidence.conflicts?.length  ? cellEvidence.conflicts  : null;
+
   return applySourceUnits({
     code: rowCode,
     codeSource,
@@ -480,10 +547,14 @@ function extractRow(cells, columnMap, priceHeader="") {
     details,
     packSize,
     packSource,
+    originalPackRaw: finalOriginalRaw,
     qty: qty !== null ? qty : null,
     price: price !== null ? price : amount,
     amount: amount !== null ? amount : price,
-    priceUnavailable,
+    priceUnavailable: finalPriceUnavailable,
+    requiresReview: finalRequiresReview,
+    cellUnresolved,
+    cellConflicts,
     sourceLine:cells.join("\t"),
     issues,
   },{priceCell:priceRaw,priceHeader});
@@ -519,9 +590,20 @@ function contextualFreeformRow(line){
   // Only literal currency or decimal amounts can be freeform prices;
   // otherwise "40 lb", "Invoice #8765", and dates become fictitious
   // quotations. Keep those undecidable lines for review instead.
-  const money=[...line.matchAll(/(?:^|[\s=:;,(])((?:\$\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)(?=\s|$|[;,)\/])/g)]
+  // Also detect parenthetical negatives: (12.50) — must be recognized before
+  // the general money scan strips the parens away.
+  const parenNegRe=/\((\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\)/g;
+  const parenTokens=[...line.matchAll(parenNegRe)].map(m=>({
+    raw:m[1], start:m.index, end:m.index+m[0].length, isParenNeg:true
+  }));
+  const money=[...parenTokens,...[...line.matchAll(/(?:^|[\s=:;,(])((?:\$\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)(?=\s|$|[;,)\/])/g)]
     .map(m=>({raw:m[1],start:m.index+m[0].indexOf(m[1]),end:m.index+m[0].indexOf(m[1])+m[1].length}))
-    .filter(t=>/[\$.]/.test(t.raw) && !/\d+[\/x]\d+/i.test(line.slice(Math.max(0,t.start-2),t.end+3)));
+    .filter(t=>{
+      // Skip tokens that are inside a paren-negative match we already captured
+      if(parenTokens.some(p=>t.start>=p.start&&t.end<=p.end)) return false;
+      return /[\$.]/.test(t.raw) && !/\d+[\/x]\d+/i.test(line.slice(Math.max(0,t.start-2),t.end+3));
+    })]
+    .sort((a,b)=>a.start-b.start);
   if(!money.length) return null;
   const prices=money.filter(t=>!/^\d{4}$/.test(t.raw)&&!/(?:\d{1,2}\/){1,2}\d{1,4}/.test(line.slice(Math.max(0,t.start-3),t.end+5)));
   if(!prices.length)return null;
@@ -546,14 +628,18 @@ function contextualFreeformRow(line){
   const issues=[];
   if(prior&&qty!=null&&Math.abs(qty*price-amount)>0.02)issues.push("Quantity x unit price does not equal the stated line total");
   if(!prior&&qty!=null&&qty>1)issues.push("Only one price is listed; unit price versus extended total is ambiguous");
+  const priceToken=prior||chosen;
+  const requiresReview=!!(priceToken.isParenNeg||chosen.isParenNeg)||undefined;
+  const finalPrice=priceToken.isParenNeg?-Math.abs(Number(priceToken.raw.replace(/[$,\s]/g,''))):price;
+  const finalAmount=chosen.isParenNeg?-Math.abs(Number(chosen.raw.replace(/[$,\s]/g,''))):amount;
   return {code:null,description:cfDescription.slice(0,120),packSize:cfPack,packSource:cfPack?"description":null,originalPackSize:cfPackOriginal||null,
-    qty,price,amount:prior?amount:null,priceUnavailable:false,sourceLine:line,issues};
+    qty,price:finalPrice,amount:prior?finalAmount:null,priceUnavailable:false,requiresReview,sourceLine:line,issues};
 }
 
 function detectDocumentKind(text){
   const lines=String(text||'').split('\n');
   const top=lines.slice(0,25).join(' ');
-  const invoice=/\binvoice\b|\bbill to\b|\bamount due\b|\bremit\b/i.test(top);
+  const invoice=/\binvoice\b|\bbill to\b|\bamount due\b|\bremit\b|order\s+acknowledgement|order\s+confirmation|purchase\s+order\s+receipt/i.test(top);
   const quote=/\b(?:price\s+(?:sheet|list|update|effective)|new\s+prices?|updated\s+prices?|quote|quotation|new\s+cost|new\s+pricing)\b/i.test(top);
   return invoice&&quote?'mixed':invoice?'invoice':quote?'pricelist':'unknown';
 }
@@ -665,7 +751,8 @@ function findMoneyTokens(line) {
   //     punctuation like ";" or "," in a delimited row) — this must stay
   //     unrestricted or numbers in semicolon/comma-delimited cells stop
   //     matching entirely.
-  const moneyRe = /(?:(?:^|(?<=\s))-\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b)|(?:\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b)/g;
+  // Also matches parenthetical negatives: (12.50) — common in credit lines and adjustments.
+  const moneyRe = /(?:\(\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\))|(?:(?:^|(?<=\s))-\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b)|(?:\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b)/g;
   const isDigit = c => c >= "0" && c <= "9";
   // \d{1,3} can only match 3 digits at a time, so a longer run like a
   // 4-digit year ("2026") gets captured starting mid-number. Walk past
@@ -690,11 +777,14 @@ function findMoneyTokens(line) {
     // — never a real price. Per-unit pricing like "5.99/lb" is still kept,
     // since what follows the slash there is a unit, not another digit.
     if (isSlashAdjacent(start, end)) return null;
+    const isParenNegative = m[0].startsWith('(') && m[0].endsWith(')');
+    const rawValue = isParenNegative ? '-' + m[0].slice(1,-1) : m[0];
     return {
-      value: parseMoney(m[0]),
+      value: parseMoney(rawValue),
       index: start,
       length: m[0].length,
       raw: m[0],
+      requiresReview: isParenNegative || undefined,
     };
   }).filter(t => t !== null && t.value !== null);
 }
@@ -782,6 +872,9 @@ function extractRowFreeform(line) {
   const description = head.trim();
   if (description.length < 2) return null;
 
+  // A parenthetical token like (12.50) is a negative amount — preserve the
+  // negative value and flag for review. Document context determines meaning.
+  const priceRequiresReview = !!(priceTok.requiresReview || amountTok.requiresReview);
   return {
     code,
     description: description.slice(0, 120),
@@ -789,6 +882,7 @@ function extractRowFreeform(line) {
     qty,
     price: priceTok.value,
     amount: amountTok.value,
+    requiresReview: priceRequiresReview || undefined,
   };
 }
 
@@ -1115,6 +1209,10 @@ function parseDocumentRows(text, options={}) {
   const engineMap=headerFound?mapColumnsFromHeader(headerCells):{};
   const answered=applyLayoutAnswers(engineMap,options.layoutAnswers||{});
   let columnMap = fillMissingRolesFromData(answered, grid, dataStart);
+  // confirmedRoles: columns whose role is supported by explicit header text or client decision.
+  // Inferred roles (data-shape guesses from fillMissingRolesFromData) are NOT confirmed.
+  // Cell analysis only constrains confirmed columns; inferred roles remain challengeable.
+  const confirmedColIndices = new Set(Object.values(answered));
   const layout=headerFound?readHeaderLayout({headerCells,columnMap:answered,remembered:options.layoutAnswers||{}}):{headers:[],unknown:[],fingerprint:""};
   let priceHeader=headerFound?grid[headerIndex].cells[columnMap.price]:"";
   const rows = [];
@@ -1134,7 +1232,7 @@ function parseDocumentRows(text, options={}) {
     if(header.description!==undefined&&header.price!==undefined&&parseMoneyLenient(cells[header.price])===null){
       columnMap=header;priceHeader=cells[header.price];continue;
     }
-    const row = extractRow(cells, columnMap, priceHeader);
+    const row = extractRow(cells, columnMap, priceHeader, confirmedColIndices);
     if (!row) {
       skipped.push({ line, reason: "couldn't find a valid price or description" });
       continue;

@@ -84,4 +84,229 @@ const mangled=parseDocument('Item#,Pack & Size:,Type:,Brand:,Description:,Sell\n
 t("mangled date row keeps a usable pack",mangled.rows[0]?.packSize,"12/10");
 t("produce sold by the case has a pack",mangled.rows[1]?.packSize,"1 CASE");
 t("count-only pack reads as a count",mangled.rows[2]?.packSize,"1000 CT");
-console.log(`${passed} passed, ${failed} failed`);process.exit(failed?1:0);
+
+// ══════════════════════════════════════════════════════════════════════════════
+// UGLY FILE BATTERY — every bad layout a vendor can send
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── DELIMITER VARIANTS ────────────────────────────────────────────────────────
+const semicolonDelim = parseDocument('Item;Description;Pack;Price\n1001;WIDGET ALPHA;10 EA;12.50\n1002;GADGET BETA;5 EA;8.00');
+t('semicolon-delimited sheet parses correctly', semicolonDelim.rows.length, 2);
+t('semicolon row gets correct price', semicolonDelim.rows[0].price, 12.50);
+
+const pipeDelim = parseDocument('Item|Description|Pack|Price\n1001|WIDGET ALPHA|10 EA|12.50');
+t('pipe-delimited sheet parses correctly', pipeDelim.rows.length, 1);
+
+const mixedSpaceDelim = parseDocument('ITEM     DESCRIPTION          PACK      PRICE\n1001     WIDGET ALPHA         10 EA     12.50\n1002     GADGET BETA          5 EA       8.00');
+t('space-aligned columns parse correctly', mixedSpaceDelim.rows.length, 2);
+t('space-aligned price correct', mixedSpaceDelim.rows[0].price, 12.50);
+
+// ── HEADER ON WRONG ROW ───────────────────────────────────────────────────────
+const headerRow5 = parseDocument(`VENDOR SUPPLY CO
+123 MAIN STREET
+CITY STATE 00000
+PRICE LIST - EFFECTIVE 2026-10-01
+Item#,Description,Pack,Price
+1001,ITEM ALPHA,10 EA,12.50
+1002,ITEM BETA,5 EA,8.00`);
+t('header buried under 4 address rows', headerRow5.rows.length, 2);
+t('address rows not imported as products', headerRow5.rows.some(r => /VENDOR|MAIN|CITY|EFFECTIVE/i.test(r.description)), false);
+
+const headerRow8 = parseDocument(`
+WHOLESALE DISTRIBUTORS INC.
+CONFIDENTIAL — DO NOT DISTRIBUTE
+QUOTE VALID: OCT 2026
+
+
+
+ITEM NO.,DESCRIPTION,PACK SIZE,UNIT PRICE
+A001,ITEM ALPHA,12/1 LB,44.50
+A002,ITEM BETA,6/1 GAL,18.75`);
+t('header after 7 rows of noise', headerRow8.rows.length, 2);
+t('blank rows and headers not imported', headerRow8.rows.some(r => /WHOLESALE|CONFIDENTIAL|QUOTE/i.test(r.description)), false);
+
+// ── COLUMNS IN UNUSUAL ORDER ──────────────────────────────────────────────────
+const reversedCols = parseDocument('Price,Pack,Description,Item#\n12.50,10 EA,ITEM ALPHA,1001\n8.00,5 EA,ITEM BETA,1002');
+t('price first column order parsed', reversedCols.rows.length, 2);
+t('price correct in reversed columns', reversedCols.rows[0].price, 12.50);
+
+const priceLastNoPack = parseDocument('Code,Name,Cost\n1001,ITEM ALPHA,12.50\n1002,ITEM BETA,8.00');
+t('no pack column — rows still imported', priceLastNoPack.rows.length, 2);
+t('price found without pack column', priceLastNoPack.rows[0].price, 12.50);
+
+// ── PACK BURIED IN DESCRIPTION ────────────────────────────────────────────────
+const packInDesc = parseDocument('Code,Description,Price\n1001,ITEM ALPHA 10 EA,12.50\n1002,ITEM BETA 4/5 LB,8.00\n1003,ITEM GAMMA 6/1 GAL,18.75');
+t('pack extracted from end of description', packInDesc.rows[0].packSize, '10 EA');
+t('fraction pack extracted from description', packInDesc.rows[1].packSize, '4/5 LB');
+t('gallon pack extracted from description', packInDesc.rows[2].packSize, '6/1 GAL');
+t('description cleaned after pack strip', packInDesc.rows[0].description, 'ITEM ALPHA');
+
+const packMidDesc = parseDocument('Code,Description,Price\n1001,ITEM ALPHA (40 LB) FRESH,12.50');
+t('pack in parentheses mid-description extracted', packMidDesc.rows[0].packSize, '40 LB');
+
+const packWithOrigin = parseDocument('Code,Description,Price\n1001,ITEM ALPHA (USA) 40 LB,12.50\n1002,ITEM BETA 80 (CAL) 45 LB,8.00');
+t('pack after origin code extracted', packWithOrigin.rows[0].packSize, '40 LB');
+t('description with origin cleaned', packWithOrigin.rows[0].description, 'ITEM ALPHA (USA)');
+
+// ── PRICE FORMAT VARIANTS ─────────────────────────────────────────────────────
+const dollarSigns = parseDocument('Item,Description,Pack,Price\n1001,ITEM ALPHA,10 EA,$12.50\n1002,ITEM BETA,5 EA,"$8,025.00"');
+t('dollar sign stripped from price', dollarSigns.rows[0].price, 12.50);
+t('comma-formatted price parsed', dollarSigns.rows[1].price, 8025.00);
+
+const euroDecimal = parseDocument('Item;Description;Pack;Price\n1001;ITEM ALPHA;10 EA;12,50\n1002;ITEM BETA;5 EA;8.025,00');
+t('european decimal comma in price', euroDecimal.rows[0].price, 12.50);
+
+const pricePerUnit = parseDocument('Item,Description,Pack,Price/LB\n1001,ITEM ALPHA,40 LB,2.15\n1002,ITEM BETA,40 LB,1.85');
+t('price per LB column header recognised', pricePerUnit.rows[0].price, 2.15);
+t('price per LB basis recorded via sellingUnit', pricePerUnit.rows[0].sellingUnit, 'LB'); // priceBasis='measure' derived from sellingUnit at display time
+
+const multiTierPrice = parseDocument('Item,Description,Pack,List Price,Your Price\n1001,ITEM ALPHA,10 EA,15.00,12.50');
+t('your price wins over list price', multiTierPrice.rows[0].price, 12.50);
+
+// ── DESCRIPTION VARIANTS ──────────────────────────────────────────────────────
+const allLower = parseDocument('item,description,pack,price\n1001,item alpha standard,10 ea,12.50');
+t('all lowercase column headers recognised', allLower.rows.length, 1);
+t('all lowercase description preserved', allLower.rows[0].description, 'item alpha standard');
+
+const leadingTrailingSpaces = parseDocument('Item,Description,Pack,Price\n 1001 , ITEM ALPHA ,  10 EA , 12.50 ');
+t('leading/trailing spaces stripped from all fields', leadingTrailingSpaces.rows[0].code, '1001');
+t('leading/trailing spaces stripped from description', leadingTrailingSpaces.rows[0].description, 'ITEM ALPHA');
+t('leading/trailing spaces stripped from price', leadingTrailingSpaces.rows[0].price, 12.50);
+
+const internalDoubleSpaces = parseDocument('Item,Description,Pack,Price\n1001,ITEM  ALPHA  STANDARD,10 EA,12.50');
+t('internal double spaces collapsed', internalDoubleSpaces.rows[0].description, 'ITEM ALPHA STANDARD');
+
+const asteriskFlags = parseDocument('Item,Description,Pack,Price\n1001,*ITEM ALPHA*,10 EA,12.50\n1002,ITEM BETA **NEW**,5 EA,8.00\n1003,ITEM GAMMA ***SALE*** FRESH,6 EA,22.00');
+t('asterisk flags stripped from description', asteriskFlags.rows[0].description, 'ITEM ALPHA');
+t('new flag stripped from description', asteriskFlags.rows[1].description, 'ITEM BETA');
+t('triple asterisk sale flag stripped', asteriskFlags.rows[2].description.includes('SALE'), false);
+
+// ── NOISE ROWS ────────────────────────────────────────────────────────────────
+const categoryHeaders = parseDocument(`Item,Description,Pack,Price
+--- CATEGORY ONE ---
+1001,ITEM ALPHA,10 EA,12.50
+1002,ITEM BETA,5 EA,8.00
+--- CATEGORY TWO ---
+2001,ITEM GAMMA,6 EA,22.00`);
+t('category header rows not imported as products', categoryHeaders.rows.length, 3);
+t('category header not in descriptions', categoryHeaders.rows.some(r => /CATEGORY|---/.test(r.description)), false);
+
+const subtotalRows = parseDocument(`Item,Description,Pack,Price
+1001,ITEM ALPHA,10 EA,12.50
+1002,ITEM BETA,5 EA,8.00
+,SUBTOTAL,,20.50
+,,,
+2001,ITEM GAMMA,6 EA,22.00
+,TOTAL,,42.50`);
+t('subtotal rows not imported', subtotalRows.rows.length, 3);
+t('total row not imported', subtotalRows.rows.some(r => /SUBTOTAL|TOTAL/i.test(r.description)), false);
+
+const pageBreakRows = parseDocument(`Item,Description,Pack,Price
+1001,ITEM ALPHA,10 EA,12.50
+PAGE 1 OF 3
+1002,ITEM BETA,5 EA,8.00
+CONTINUED ON NEXT PAGE
+2001,ITEM GAMMA,6 EA,22.00`);
+t('page break text not imported', pageBreakRows.rows.length, 3);
+
+const termsAtBottom = parseDocument(`Item,Description,Pack,Price
+1001,ITEM ALPHA,10 EA,12.50
+1002,ITEM BETA,5 EA,8.00
+TERMS: NET 30 DAYS. PRICES SUBJECT TO CHANGE WITHOUT NOTICE.
+MINIMUM ORDER $250.00. FUEL SURCHARGE MAY APPLY.`);
+t('terms and conditions not imported as products', termsAtBottom.rows.length, 2);
+
+const blankRowsMidFile = parseDocument(`Item,Description,Pack,Price
+1001,ITEM ALPHA,10 EA,12.50
+
+1002,ITEM BETA,5 EA,8.00
+
+2001,ITEM GAMMA,6 EA,22.00`);
+t('blank rows mid-file do not break parsing', blankRowsMidFile.rows.length, 3);
+
+// ── COLUMN NAME VARIANTS ──────────────────────────────────────────────────────
+const abbreviatedHeaders = parseDocument('Itm#,Desc,Pk,Pr\n1001,ITEM ALPHA,10 EA,12.50');
+t('abbreviated column headers recognised', abbreviatedHeaders.rows.length, 1);
+t('abbreviated headers price correct', abbreviatedHeaders.rows[0].price, 12.50);
+
+const verboseHeaders = parseDocument('Item Number,Product Description,Package Size,Unit Price Per Case\n1001,ITEM ALPHA,10 EA,12.50');
+t('verbose column headers recognised', verboseHeaders.rows.length, 1);
+t('verbose headers price correct', verboseHeaders.rows[0].price, 12.50);
+
+const numberedHeaders = parseDocument('Col1,Col2,Col3,Col4\n1001,ITEM ALPHA,10 EA,12.50\n1002,ITEM BETA,5 EA,8.00');
+t('numbered column headers — data profiler extracts rows', numberedHeaders.rows.length, 2);
+t('numbered column headers — first row has text description', numberedHeaders.rows[0].description.length > 0, true);
+
+const extraColumns = parseDocument('Item,Description,Pack,Price,Min Order,Lead Time,Notes\n1001,ITEM ALPHA,10 EA,12.50,1 CS,2 days,Special order');
+t('extra columns beyond core four do not break parsing', extraColumns.rows.length, 1);
+t('extra column data does not corrupt price', extraColumns.rows[0].price, 12.50);
+
+// ── PACK FORMAT VARIANTS ──────────────────────────────────────────────────────
+const weightRange = parseDocument('Item,Description,Pack,Price\n1001,ITEM ALPHA,8-10 LB AVG,12.50\n1002,ITEM BETA,14/16 OZ,8.00');
+t('weight range pack imported', weightRange.rows[0].packSize, '8-10 LB AVG');
+t('fraction-slash pack imported', weightRange.rows[1].packSize, '14/16 OZ');
+
+const hashWeight = parseDocument('Item,Description,Pack,Price\n1001,ITEM ALPHA 35#,35 LB,12.50\n1002,ITEM BETA,10#,8.00');
+t('hash weight in description normalised', hashWeight.rows[0].packSize, '35 LB');
+
+const separateSizeCount = parseDocument('Item,Description,Count,Size,Price\n1001,ITEM ALPHA,24,15.5 OZ,44.50');
+t('separate size column used as pack', separateSizeCount.rows[0].packSize, '15.5 OZ');
+t('separate size column — price still correct', separateSizeCount.rows[0].price, 44.50);
+
+// ── VENDOR CODE VARIANTS ──────────────────────────────────────────────────────
+const alphanumericCodes = parseDocument('Item,Description,Pack,Price\nABC-1001,ITEM ALPHA,10 EA,12.50\nXYZ-002,ITEM BETA,5 EA,8.00');
+t('alphanumeric vendor codes preserved', alphanumericCodes.rows[0].code, 'ABC-1001');
+
+const noCodeColumn = parseDocument('Description,Pack,Price\nITEM ALPHA,10 EA,12.50\nITEM BETA,5 EA,8.00');
+t('no code column — rows still imported', noCodeColumn.rows.length, 2);
+t('no code column — code is null', noCodeColumn.rows[0].code == null || noCodeColumn.rows[0].code === '', true);
+
+// ── PRICE SHEET VS INVOICE DETECTION ─────────────────────────────────────────
+const priceSheetKeywords = parseDocument('PRICE LIST\nEffective: October 2026\nItem,Description,Pack,Price\n1001,ITEM ALPHA,10 EA,12.50');
+t('PRICE LIST keyword detected as pricelist', priceSheetKeywords.documentKind, 'pricelist');
+
+const invoiceKeywords = parseDocument('INVOICE NO: 88765\nDate: 2026-10-01\nItem,Description,Qty,Unit Price,Total\n1001,ITEM ALPHA,2,12.50,25.00');
+t('INVOICE keyword detected as invoice', invoiceKeywords.documentKind, 'invoice');
+
+const orderAckKeywords = parseDocument('ORDER ACKNOWLEDGEMENT\nOrder #: 44321\nItem,Description,Qty,Price\n1001,ITEM ALPHA,2,12.50');
+t('ORDER ACKNOWLEDGEMENT detected', orderAckKeywords.documentKind, 'invoice');
+
+// ── SURCHARGE AND FEE ROWS ────────────────────────────────────────────────────
+const surchargeRows = parseDocument(`Item,Description,Pack,Price
+1001,ITEM ALPHA,10 EA,12.50
+,FUEL SURCHARGE,,3.50
+,DELIVERY FEE,,15.00
+,HANDLING CHARGE,,5.00
+1002,ITEM BETA,5 EA,8.00`);
+t('fuel surcharge row skipped', surchargeRows.rows.length, 2);
+t('delivery fee row skipped', surchargeRows.rows.some(r => /DELIVERY|FUEL|HANDLING/i.test(r.description)), false);
+
+// ── FREEFORM EMAIL VARIANTS ───────────────────────────────────────────────────
+const informalEmail = parseDocument(`From: rep@supplier.com
+To: buyer@client.com
+Subject: Updated pricing
+
+Hi,
+
+Just wanted to send over updated pricing for this week:
+
+Item Alpha 10 EA - $12.50
+Item Beta 5 EA - $8.00
+Item Gamma 6/1 GAL - $18.75
+
+Let me know if you have any questions.
+
+Best,
+Sales Rep`);
+t('informal email extracts products', informalEmail.rows.length, 3);
+t('signature not imported as product', informalEmail.rows.some(r => /Sales|Best|questions/i.test(r.description)), false);
+t('greeting not imported as product', informalEmail.rows.some(r => /Hi|Just|wanted/i.test(r.description)), false);
+
+const emailWithSubjectPrice = parseDocument(`From: rep@supplier.com
+Subject: Price update for order #12345
+Item Alpha 10 EA $12.50`);
+t('order number in subject not imported as price', emailWithSubjectPrice.rows[0]?.price, 12.50);
+t('order number not fictitious product', emailWithSubjectPrice.rows.length, 1);
+
+console.log(`${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);

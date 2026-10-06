@@ -115,6 +115,12 @@ function Setup({user,onComplete}) {
   const [step,setStep]=useState(1);
   const [orgName,setOrgName]=useState("");
   const [industry,setIndustry]=useState("");
+  const [availableIndustries,setAvailableIndustries]=useState([]);
+  useEffect(()=>{
+    organizationService.templatedIndustries().then(list=>{
+      if(list?.length) setAvailableIndustries(list);
+    }).catch(()=>{});
+  },[]);
   const [vendors,setVendors]=useState([{name:"",minDollar:"",minUnits:""}]);
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
@@ -171,8 +177,14 @@ function Setup({user,onComplete}) {
             <input style={inp} value={orgName} onChange={e=>setOrgName(e.target.value)} placeholder="Your organization's name" />
           </div>
           <div style={{marginBottom:20}}>
-            <div style={{fontSize:12,fontWeight:600,color:"#666",marginBottom:4}}>Industry (optional)</div>
-            <input style={inp} value={industry} onChange={e=>setIndustry(e.target.value)} placeholder="Your industry" />
+            <div style={{fontSize:12,fontWeight:600,color:"#666",marginBottom:4}}>Industry</div>
+            {availableIndustries.length>0
+              ?<select style={inp} value={industry} onChange={e=>setIndustry(e.target.value)}>
+                  <option value="">Select your industry</option>
+                  {availableIndustries.map(ind=><option key={ind} value={ind}>{ind.charAt(0).toUpperCase()+ind.slice(1)}</option>)}
+                </select>
+              :<input style={inp} value={industry} onChange={e=>setIndustry(e.target.value)} placeholder="e.g. restaurant, construction, medical" />
+            }
           </div>
           <button onClick={()=>setStep(2)} disabled={!orgName.trim()} style={{...btn("#003584"),width:"100%"}}>Next →</button>
         </>}

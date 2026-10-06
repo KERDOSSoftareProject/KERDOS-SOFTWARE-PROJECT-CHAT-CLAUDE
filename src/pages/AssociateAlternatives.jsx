@@ -1,4 +1,4 @@
-import {suggestedAlternativeGroups,associationTarget} from "../core/alternative-groups.js";
+import {suggestedAlternativeGroups} from "../core/alternative-groups.js";
 import {useMemo,useState} from "react";
 import {backend} from "../backend/index.js";
 import {calculatedUnitCost} from "../core/quote-controls.js";
@@ -22,14 +22,14 @@ export function AssociateAlternatives({orgId,selectedVendorIds,vendorItems,catal
  }catch(e){setError(e.message);}finally{setBusy(false);}}
  function review(ids){
   const linked=new Set(mappings.filter(m=>ids.includes(m.vendor_item_id)).map(m=>m.catalog_item_id));
-  const first=associationTarget(catalogItems.filter(i=>linked.has(i.id)));setSuggestionIds(ids);setTarget(first?.id||"");setName(first?.name||"");setPreferred("");setError("");setOpen(true);
+  const first=catalogItems.find(i=>linked.has(i.id));setSuggestionIds(ids);setTarget(first?.id||"");setName(first?.name||"");setPreferred("");setError("");setOpen(true);
  }
  async function separate(id){setBusy(true);setError("");try{await backend.catalog.separateAutomaticAlternatives({organizationId:orgId,targetCatalogItemId:id});await onUpdated();}catch(e){setError(e.message);}finally{setBusy(false);}}
  return <><button disabled={selectedVendorIds.length<2} onClick={()=>review(selectedVendorIds)} style={btn("#E8F1FB","#003584",{fontSize:12,margin:6})}>Associate selected ({selectedVendorIds.length})</button>
  {selectedVendorIds.length>0&&<button onClick={onClear} style={{fontSize:12}}>Clear selection</button>}
  <button onClick={()=>setShowSuggestions(!showSuggestions)} style={{fontSize:12,margin:6}}>{showSuggestions?"Hide":"Review"} suggested associations ({suggestions.length})</button>
  {showSuggestions&&<div style={{padding:10,border:"1px solid #ddd",borderRadius:6}}>
- <p>These products may be alternatives. Approve the products you want compared; each complete product remains orderable separately.</p>
+ <p>Clear matches group automatically across brands. These suggestions need your review. Brand restrictions and missing pricing details still apply.</p>
  {automaticIds.map(id=><div key={id} style={{margin:6}}>Automatically grouped: #{catalogItems.find(i=>i.id===id)?.master_item_number} {catalogItems.find(i=>i.id===id)?.name} <button disabled={busy} onClick={()=>separate(id)}>Separate group</button></div>)}
  {suggestions.map((g,index)=><div key={index} style={{borderTop:"1px solid #ddd",padding:8}}>{g.rows.map(v=><div key={v.id}>{vendors.find(x=>x.id===v.vendor_id)?.name} · {v.description} · {v.brand||"Brand not stated"} · {v.pack_size||"Pack missing"}</div>)}<div style={{fontSize:12}}>{g.reason}</div><div style={{display:"flex",gap:6,marginTop:6}}>
       <button disabled={busy} onClick={()=>review(g.rows.map(v=>v.id))} style={{...btn("#E8F1FB","#003584",{fontSize:11})}}>Review and approve</button>
@@ -38,9 +38,12 @@ export function AssociateAlternatives({orgId,selectedVendorIds,vendorItems,catal
         try{
           const ids=g.rows.map(v=>v.id);
           const linked=new Set(mappings.filter(m=>ids.includes(m.vendor_item_id)).map(m=>m.catalog_item_id));
-          const first=associationTarget(catalogItems.filter(i=>linked.has(i.id)));
+          // Use the entry with the lowest KERDOS number as the target —
+          // that is always the established item, not the newly created one.
+          const linked_items=catalogItems.filter(i=>linked.has(i.id)).sort((a,b)=>Number(a.master_item_number)-Number(b.master_item_number));
+          const first=linked_items[0];
           if(!first)throw new Error("Could not find the KERDOS entry.");
-          await backend.catalog.associateAlternatives({organizationId:orgId,vendorItemIds:ids,targetCatalogItemId:first.id,name:first.name,preferredBrand:"",revisions:Object.fromEntries(g.rows.map(v=>[v.id,v.row_revision||0]))});
+          await backend.catalog.associateAlternatives({organizationId:orgId,vendorItemIds:ids,targetCatalogItemId:first.id,name:first.name,preferredBrand:"",revisions:Object.fromEntries(ids.map(id=>[id,{}]))});
           onClear();await onUpdated();
         }catch(e){setError(e.message);}finally{setBusy(false);}
       }}>Accept all shown</button>

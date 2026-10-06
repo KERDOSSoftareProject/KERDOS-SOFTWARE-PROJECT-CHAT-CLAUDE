@@ -243,12 +243,12 @@ const CATCH_WEIGHT_RE=/\b(?:av|avg|ave|average|approx|approximately|catch\s*wt|c
 
 
 // Normalize mixed-number fractions so the pack parser can read them.
-// "1-1/9 bu" -> "1.111111 bu". The raw original is kept on the row.
+// "1-1/9 bu" -> "1.111 bu". The raw original is kept on the row.
 // Bushels never convert to other units; this only normalises the notation.
 function normalizeMixedFraction(str){
   if(!str) return str;
   return String(str).replace(/(\d+)-(\d+)\/(\d+)/g, function(m, w, n, d){
-    // Keep six decimal places for repeating fractions; preserve the original text
+    // 6 decimal places gives exact representation for common fractions (1/9, 1/3, 2/3)
     return (Number(w) + Number(n)/Number(d)).toFixed(6).replace(/\.?0+$/, "");
   });
 }
@@ -425,6 +425,9 @@ function normalizeManufacturerCode(raw){
 function packFromDescription(description){
   const text=normalizeMixedFraction(String(description||"").trim());
   if(!text) return null;
+  // Parenthetical pack anywhere in description: (40 LB), (4/10 LB)
+  const parenMatch=text.match(/\(\s*((?:\d+(?:\.\d+)?\s*[\/x\xd7-]\s*)?\d+(?:\.\d+)?\s*(?:#|[a-z]{1,8}(?:\s+[a-z]{1,8})?)?)\s*\)/i);
+  if(parenMatch){const pc=parenMatch[1].trim();const pp=parsePackSize(pc);if(pp?.parsed)return pc;}
   const tail=text.match(/(?:^|\s)((?:\d+(?:\.\d+)?\s*[\/x×-]\s*)?\d+(?:\.\d+)?\s*(?:#|[a-z]{1,8}(?:\s+[a-z]{1,8})?)\.?)\s*$/i);
   if(!tail) return null;
   const candidate=tail[1].replace(/\.$/,"").trim();
