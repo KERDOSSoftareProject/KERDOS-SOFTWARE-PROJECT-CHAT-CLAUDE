@@ -9,7 +9,7 @@ import {btn,inp} from "../ui/styles.js";
 const catalogService=createCatalogService(backend);
 const vendorService=createVendorService(backend);
 
-export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,priceHistory,mappings,catalogItems,orgId,myRole,onViewOriginal,onBack,onUpdated,onEditInvoice,onDeleteInvoice,onExpireOne,orgSettings,hasMorePrices,loadingMorePrices,onLoadMorePrices}) {
+export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,priceHistory,mappings,catalogItems,orgId,myRole,onViewOriginal,onBack,onUpdated,onEditInvoice,onDeleteInvoice,onExpireOne,onImport,orgSettings,hasMorePrices,loadingMorePrices,onLoadMorePrices}) {
   const [editing,setEditing]=useState(false);
   const [name,setName]=useState(vendor.name);
   const [email,setEmail]=useState(vendor.email||"");
@@ -124,9 +124,18 @@ export function VendorDetail({vendor,vc,vendorItems,invoices,purchaseOrders,pric
               {canManage&&<button onClick={()=>setEditing(true)} style={{background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:12,padding:0}}>✎ Edit</button>}
             </div>
           </div>
-          <div style={{fontSize:12,color:"#777",background:"#F7F9FC",padding:"9px 11px",borderRadius:7}}>
-            Import price sheets from the Price Sheets tab and invoices from the Invoices tab.
-          </div>
+          {vendorItems.filter(vi=>vi.vendor_id===vendor.id).length===0
+            ? <div style={{fontSize:13,color:"#555",background:"#F0F6FF",padding:"12px 14px",borderRadius:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span>No imported items yet for {vendor.name}.</span>
+                {canManage&&onImport&&<button onClick={()=>onImport(vendor.id)}
+                  style={{fontSize:12,fontWeight:700,padding:"6px 14px",borderRadius:6,background:"#003584",color:"white",border:"none",cursor:"pointer",whiteSpace:"nowrap",marginLeft:12}}>
+                  Import price sheet
+                </button>}
+              </div>
+            : <div style={{fontSize:12,color:"#777",background:"#F7F9FC",padding:"9px 11px",borderRadius:7}}>
+                Import more price sheets from the Price Sheets tab or invoices from the Invoices tab.
+              </div>
+          }
         </>):(<>
           <div style={{marginBottom:10}}>
             <div style={{fontSize:12,fontWeight:600,color:"#666",marginBottom:4}}>Vendor name</div>
