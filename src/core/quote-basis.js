@@ -1,4 +1,5 @@
 import {compareProductIdentity,comparePurchasingPack,priceBasisFor,brandsMatch} from "../procurement.js";
+import {inferPricingBasis} from "./infer-pricing-basis.js";
 
 // Reuse a confirmed vendor-specific quote basis for a repeat import only.
 // A null basis on an old record is legacy "case" and is not evidence that
@@ -19,4 +20,23 @@ export function resolveQuoteBasis(row,prior=null){
      comparePurchasingPack(row.packSize,prior.pack_size).status!=="same")return null;
   const learned=priceBasisFor(prior.selling_unit);
   return learned?.basis===prior.price_basis?{basis:learned,sellingUnit:prior.selling_unit,source:"confirmed vendor item"}:null;
+}
+
+// Infer a pricing basis from pack structure, product type and price mathematics
+// when no explicit selling unit and no prior confirmed basis is available.
+// Returns in the same shape as resolveQuoteBasis, with an added 'inferenceLevel'
+// field so the caller knows whether to auto-populate or request confirmation.
+export function inferQuoteBasis(row) {
+  if (String(row.sellingUnit||'').trim()) return null; // explicit unit already present
+  const result = inferPricingBasis(row);
+  if (!result.basis) return null;
+  return {
+    basis: result.basis,
+    sellingUnit: result.sellingUnit,
+    source: 'inferred',
+    inferenceLevel: result.level,   // 'supported'|'suggested'|'conflicting'
+    inferenceReason: result.reason,
+    inferenceEvidence: result.evidence,
+    inferenceConflicts: result.conflicts,
+  };
 }

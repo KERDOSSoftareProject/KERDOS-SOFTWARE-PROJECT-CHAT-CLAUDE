@@ -1391,6 +1391,7 @@ export default function App() {
               onDeleteInvoice={deleteInvoice}
               onExpireOne={expireOneQuote} orgSettings={org.settings}
               hasMorePrices={priceHistoryHasMore} loadingMorePrices={loadingOlderPrices} onLoadMorePrices={loadOlderPriceHistory}
+              onImport={vendorId=>{setSelectedVendorId(vendorId);setImportMode("pricelist");setShowPaste(true);}}
             />
           );
         })()}

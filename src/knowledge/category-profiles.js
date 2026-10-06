@@ -1,13 +1,14 @@
 import {restaurantUnitCostUnits} from "./restaurant-unit-policy.js";
 import {restaurantCategoryContext} from "./restaurant-category-context.js";
 import {restaurantPackContext} from "./restaurant-pack-context.js";
+import {restaurantPricingPriors} from "./restaurant-pricing-priors.js";
 import {restaurantQuoteContext} from "./restaurant-quote-context.js";
 import {restaurantProductContext} from "./restaurant-product-context.js";
 import {restaurantDictionaries,restaurantUnitVocabulary,RESTAURANT_DICTIONARY_VERSION} from "./restaurant-dictionaries.js";
 
 // Profiles supply industry-specific interpretation; procurement stays generic.
 const profiles=new Map([["restaurant",{
-  category:restaurantCategoryContext,quote:restaurantQuoteContext,product:restaurantProductContext,pack:restaurantPackContext,
+  category:restaurantCategoryContext,quote:restaurantQuoteContext,product:restaurantProductContext,pack:restaurantPackContext,pricingPriors:restaurantPricingPriors,
   unitCostUnits:restaurantUnitCostUnits,
   dictionaries:restaurantDictionaries,vocabulary:restaurantUnitVocabulary,version:RESTAURANT_DICTIONARY_VERSION,
 }]]);
@@ -38,5 +39,12 @@ export function industryDictionary(industry){
 }
 
 export function packContext(text){return activeProfile?.pack?.(text)||{working:text,qualifiers:[]};}
+
+// Returns product type priors for pricing basis inference.
+// Each industry profile can declare which product types are typically
+// weight-priced or count-priced. Returns empty signals when no profile is loaded.
+export function productTypePriors(description){
+  return activeProfile?.pricingPriors?.(description)||{weightPriced:false,countPriced:false};
+}
 
 export function industryUnitCostDefaults(industry){return profiles.get(String(industry||" ").trim().toLowerCase())?.unitCostUnits||{};}

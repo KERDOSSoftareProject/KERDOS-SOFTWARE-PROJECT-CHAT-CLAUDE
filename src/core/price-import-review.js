@@ -1,7 +1,7 @@
 import {brandsMatch,casePriceFromQuote,compareProductIdentity,comparePurchasingPack,parsePackSize} from "../procurement.js";
 import {knownItemChanges} from "./catalog-fields.js";
 import {prepareImportRow} from "./import-row.js";
-import {resolveQuoteBasis} from "./quote-basis.js";
+import {resolveQuoteBasis,inferQuoteBasis} from "./quote-basis.js";
 
 const sameText=(a,b)=>String(a||"").trim().toLowerCase().replace(/\s+/g," ")===String(b||"").trim().toLowerCase().replace(/\s+/g," ");
 
@@ -44,7 +44,27 @@ export function preparePriceImport(source,prior=null,mapping=null,issues=[],invo
   }
   if(!parsePackSize(row.packSize)?.parsed)reasons.push(row.packSize?
     "Pack quantity or unit is unreadable; correct the pack field.":"Pack quantity and unit are missing.");
-  const resolved=resolveQuoteBasis(row,prior);
+  let resolved=resolveQuoteBasis(row,prior);
+  // When no explicit unit and no prior, try inference from pack + product + price math.
+  if(!resolved&&!String(row.sellingUnit||'').trim()){
+    const inferred=inferQuoteBasis(row);
+    if(inferred){
+      if(inferred.inferenceLevel==='supported'){
+        // Strong evidence — populate automatically, no review needed for the basis alone
+        resolved=inferred;
+      } else if(inferred.inferenceLevel==='suggested'){
+        // Plausible but not confirmed — set as resolved so price math works,
+        // but mark the row for review so the client can confirm or change it
+        resolved=inferred;
+        reasons.push(`Pricing basis "${inferred.sellingUnit}" suggested but not confirmed: ${inferred.inferenceReason}`);
+      }
+      // 'conflicting' → resolved stays null, falls through to "Quoted unit is unresolved"
+      // with additional context from the conflict
+      if(inferred.inferenceLevel==='conflicting'){
+        reasons.push(`Pricing basis unclear: ${inferred.inferenceReason}`);
+      }
+    }
+  }
   if(!row.priceUnavailable){
     if(!resolved)reasons.push("Quoted unit is unresolved.");
     else if(parsePackSize(row.packSize)?.parsed&&casePriceFromQuote(row.price,resolved.basis.basis,resolved.basis.unit||resolved.sellingUnit,row.packSize)==null)
