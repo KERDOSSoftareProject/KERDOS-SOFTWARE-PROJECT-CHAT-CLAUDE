@@ -21,6 +21,8 @@ export function documentQuoteUnit(text){
   return declarations.length&&declarations.every(unit=>unit&&unit===declarations[0])?declarations[0]:null;
 }
 export function applySourceUnits(row,{priceCell,priceHeader,documentUnit}={}){
+  // An ordering-unit column does not state what the quoted price covers.
+  if(/^(?:order(?:ing)? unit|order uom|type)$/i.test(row.sellingUnitHeader||'')&&!['price cell','price header','document note','manual'].includes(row.sellingUnitSource))row={...row,orderingUnit:row.orderingUnit||row.sellingUnit,sellingUnit:null,billingUnitEvidence:null,sellingUnitSource:null};
   const clues=[
     row.sellingUnit&&{unit:canonicalQuoteUnit(row.sellingUnit),source:row.sellingUnitSource||"column"},
     {unit:unitInPrice(priceCell),source:"price cell"},

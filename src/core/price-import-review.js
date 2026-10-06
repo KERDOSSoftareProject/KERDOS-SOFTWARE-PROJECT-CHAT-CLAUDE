@@ -1,7 +1,7 @@
 import {brandsMatch,casePriceFromQuote,compareProductIdentity,comparePurchasingPack,parsePackSize} from "../procurement.js";
 import {knownItemChanges} from "./catalog-fields.js";
 import {prepareImportRow} from "./import-row.js";
-import {resolveQuoteBasis,inferQuoteBasis} from "./quote-basis.js";
+import {resolveQuoteBasis,inferQuoteBasis,resolveFromInvoiceArithmetic} from "./quote-basis.js";
 
 const sameText=(a,b)=>String(a||"").trim().toLowerCase().replace(/\s+/g," ")===String(b||"").trim().toLowerCase().replace(/\s+/g," ");
 
@@ -9,7 +9,7 @@ const sameText=(a,b)=>String(a||"").trim().toLowerCase().replace(/\s+/g," ")===S
 // incomplete row is reviewable data, not a failed database write. The caller
 // retains its listing and catalog association, and stages the incoming quote
 // without overwriting the accepted quote when requiresReview is true.
-export function preparePriceImport(source,prior=null,mapping=null,issues=[],invoices=[]){
+export function preparePriceImport(source,prior=null,mapping=null,issues=[],invoices=[],scope=null){
   let row=source;
   const reasons=[...issues];
   let changes=[];
@@ -45,7 +45,22 @@ export function preparePriceImport(source,prior=null,mapping=null,issues=[],invo
   if(!parsePackSize(row.packSize)?.parsed)reasons.push(row.packSize?
     "Pack quantity or unit is unreadable; correct the pack field.":"Pack quantity and unit are missing.");
   let resolved=resolveQuoteBasis(row,prior);
-  // When no explicit unit and no prior, try inference from pack + product + price math.
+  // When no explicit unit and no prior, try invoice billing unit evidence.
+  // The UOM column on a matching invoice row identifies the basis.
+  // Arithmetic reconciliation confirms consistency but does not identify the basis alone.
+  if(!resolved&&!String(row.sellingUnit||'').trim()&&invoices.length){
+    const arithmetic=resolveFromInvoiceArithmetic(row,invoices,scope);
+    if(arithmetic){
+      if(arithmetic.conflict){
+        // Invoices disagree — flag for review, do not resolve
+        reasons.push('Invoice billing units conflict ('+arithmetic.reason+'). Confirm the correct basis.');
+      } else {
+        // Agreed billing unit from invoice — source evidence, no review needed for basis
+        resolved=arithmetic;
+      }
+    }
+  }
+  // When no explicit unit, no prior, and no invoice arithmetic, try inference.
   if(!resolved&&!String(row.sellingUnit||'').trim()){
     const inferred=inferQuoteBasis(row);
     if(inferred){
@@ -71,7 +86,8 @@ export function preparePriceImport(source,prior=null,mapping=null,issues=[],invo
       reasons.push("The quoted amount, unit and pack cannot produce a valid case price.");
   }
   if(row.priceNeedsReview&&!reasons.length)reasons.push("The incoming price basis needs review.");
-  return {row:{...row,changes},resolved,requiresReview:reasons.length>0,reasons:[...new Set(reasons)],reviewFields:priceReviewFields({reasons,changes,row,prior})};
+  const quoteBasisEvidence=resolved?.invoiceArithmetic?{source:resolved.source,unit:resolved.sellingUnit,references:resolved.invoiceReferences}:null;
+  return {row:{...row,changes,...(quoteBasisEvidence?{quoteBasisEvidence}:{})},resolved,requiresReview:reasons.length>0,reasons:[...new Set(reasons)],reviewFields:priceReviewFields({reasons,changes,row,prior})};
 }
 
 // Review is tracked per field. Confirming one cell cannot accept unrelated

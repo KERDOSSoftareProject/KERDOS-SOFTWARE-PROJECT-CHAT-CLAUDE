@@ -12,7 +12,8 @@ export function invoiceEvidence(row,invoices=[]){
   if(!matches.length)return {matches:[],suggestions:{},conflicts:[]};
   const conflicts=[];
   const valid=matches.filter(entry=>{
-    if(compareProductIdentity(row.description,entry.row.description).status==="same")return true;
+    const normalize=value=>String(value||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+    if(normalize(row.description)&&normalize(row.description)===normalize(entry.row.description)||compareProductIdentity(row.description,entry.row.description).status==="same")return true;
     conflicts.push(`Invoice ${entry.number||entry.date||"record"} uses this vendor item number for a different product: ${entry.row.description}.`);
     return false;
   });
