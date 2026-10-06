@@ -8,6 +8,8 @@ import {createCatalogService,engineVerifiable} from "../services/catalog.js";
 import {createCategoryService} from "../services/categories.js";
 import {createDocumentService} from "../services/documents.js";
 import {createImportService} from "../services/imports.js";
+import {createOrganizationService} from "../services/organization.js";
+import {rememberedLayout,withRememberedLayout} from "../core/sheet-layout.js";
 import {formatMoney} from "../localization.js";
 import {explainImportRow} from "../core/import-evidence.js";
 import {importResolutions,unitChoices} from "../core/catalog-fields.js";
@@ -24,13 +26,21 @@ const documents=createDocumentService(backend);
 const importService=createImportService(backend);
 const r2=value=>Math.round(value*100)/100;
 
-export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vocabulary=[],vendorItems=[],mappings=[],onClose,onDone,onFinished,initialVendorId,initialMode}) {
+export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,categories,vocabulary=[],vendorItems=[],mappings=[],onClose,onDone,onFinished,initialVendorId,initialMode}) {
   // The vendor is a choice, never a default: the box opens on "Select
   // vendor" unless you arrived from a specific vendor's page. Nothing can
   // be dropped in until a vendor is chosen, so a sheet can't land under
   // the wrong name.
   const [vendorId,setVendorId]=useState(()=>initialVendorId&&vendors.some(v=>v.id===initialVendorId)?initialVendorId:"");
-  const mode=initialMode||"pricelist";
+  // What this import is. Starts from where the person clicked, but a
+  // price sheet dropped into Import Invoice is read as a price sheet: no
+  // invoice number, no invoice date and a long list of priced items is a
+  // price sheet, whatever button opened the window.
+  const [mode,setMode]=useState(initialMode||"pricelist");
+  const [switchedToPriceSheet,setSwitchedToPriceSheet]=useState(false);
+  function looksLikePriceSheet(group){
+    return group.documentKind!=="invoice"&&!findInvoiceNumber(group.text)&&!findDate(group.text)&&(group.rows?.length||0)>=8;
+  }
   const [pastedText,setPastedText]=useState("");
   const [fileGroups,setFileGroups]=useState([]); // [{id,file,name,text}] — one entry per dragged/selected file
   const [parsedGroups,setParsedGroups]=useState([]); // after Parse: fileGroups (+pasted text) each with rows/skipped attached
@@ -50,7 +60,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
   const [invoiceSources,setInvoiceSources]=useState([]);
   const [invoiceLoad,setInvoiceLoad]=useState("loading");
   const [acceptedInvoiceConflicts,setAcceptedInvoiceConflicts]=useState(new Set());
-  const quotedUnits=unitChoices(vocabulary);
+  const quotedUnits=unitChoices(vocabulary,false,industry);
 
   useEffect(()=>{
     if(mode!=="pricelist"||!vendorId)return;
@@ -60,6 +70,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
       if(!active)return;
       setInvoiceSources(invoices.flatMap(invoice=>parseDocument(invoice.raw_text||"").rows.map(row=>({
         row,id:invoice.id,number:invoice.invoice_number,date:invoice.invoice_date,
+        organizationId:orgId,vendorId,
       }))));
       setInvoiceLoad("ready");
     }).catch(error=>{if(active)setInvoiceLoad(error.message||"Invoice lookup failed");});
@@ -106,7 +117,13 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
   const knownBrands=useMemo(()=>[...new Set(vendorItems.map(vi=>String(vi.brand||"").trim()).filter(Boolean))],[vendorItems]);
   function settleRow(row){
     let next=row;
-    if(!next.sellingUnit&&sheetBasis&&mode==="pricelist")next={...next,sellingUnit:sheetBasis,sellingUnitSource:"sheet"};
+    // The person said what this sheet's prices are per. That covers a row
+    // with no unit and a row whose unit KERDOS can't read ("P"); the
+    // vendor's original token is kept as a detail.
+    if(sheetBasis&&mode==="pricelist"&&(!next.sellingUnit||!priceBasisFor(next.sellingUnit))){
+      const original=next.sellingUnit;
+      next={...next,sellingUnit:sheetBasis,sellingUnitSource:"sheet",...(original?{details:[...(next.details||[]),`unit as printed: ${original}`]}:{})};
+    }
     // An unlabeled cell that matches a brand this organization already
     // knows is that brand; the engine fills it and says where it came from.
     if(!next.brand&&next.details?.length&&knownBrands.length){
@@ -120,6 +137,50 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
   function startAnother(){
     setFileGroups([]);setParsedGroups([]);setPastedText("");setResult(null);setSaveReview("");setParseError("");
     setAcceptedIssues(new Set());setAcceptedInvoiceConflicts(new Set());setAutoSaveStarted(false);setStep(1);
+  }
+  // Header answers for this vendor's layouts: remembered ones from the
+  // organization's settings, plus any given during this import.
+  const organizationService=useMemo(()=>createOrganizationService(backend),[]);
+  const [layoutAnswers,setLayoutAnswers]=useState({});   // fingerprint -> {columnIndex: role}
+  function answersFor(fingerprint){
+    return {...rememberedLayout(orgSettings,vendorId,fingerprint),...(layoutAnswers[fingerprint]||{})};
+  }
+  function parseWithLayout(text){
+    // Read once to learn the header fingerprint, then again with whatever
+    // answers exist for that layout.
+    const first=parseDocument(text);
+    const fingerprint=first.layout?.fingerprint||"";
+    const answers=fingerprint?answersFor(fingerprint):{};
+    return Object.keys(answers).length?parseDocument(text,{layoutAnswers:answers}):first;
+  }
+  // Unknown headings are settled without asking: the engine's reading of
+  // the column's contents becomes the answer and is remembered for this
+  // vendor's layout. The person never sees a question.
+  async function settleUnknownHeaders(groups){
+    let settled=groups;
+    const toRemember=[];
+    for(const g of groups){
+      const fp=g.layout?.fingerprint;const unknown=g.layout?.unknown||[];
+      if(!fp||!unknown.length)continue;
+      const answers={};
+      for(const h of unknown){
+        const guessed=Object.entries(g.columnMap||{}).find(([,i])=>i===h.index)?.[0];
+        answers[h.index]=guessed||"ignore";
+      }
+      toRemember.push([fp,answers]);
+      setLayoutAnswers(prev=>({...prev,[fp]:answers}));
+      settled=settled.map(x=>{
+        if(x.layout?.fingerprint!==fp)return x;
+        const parsed=parseDocument(x.text,{layoutAnswers:{...rememberedLayout(orgSettings,vendorId,fp),...answers}});
+        return {...x,rows:parsed.rows.map(settleRow),skipped:parsed.skipped,layout:parsed.layout,columnMap:parsed.columnMap};
+      });
+    }
+    if(toRemember.length){
+      let next=orgSettings;
+      for(const [fp,answers] of toRemember)next=withRememberedLayout(next,vendorId,fp,answers);
+      try{await organizationService.update(orgId,{settings:next});}catch{/* remembering is a convenience */}
+    }
+    return settled;
   }
   async function parseSources(files,text){
     // Every dropped/selected file is parsed on its own — never merged into
@@ -137,8 +198,8 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
       const groups=[];
       for(const d of docs){
         try{
-          const parsed=parseDocument(d.text);
-          groups.push({...d,rows:parsed.rows.map(settleRow),skipped:parsed.skipped,documentKind:parsed.documentKind,quoteValidUntil:parsed.quoteValidUntil,invoiceDate:findDate(d.text)||""});
+          const parsed=parseWithLayout(d.text);
+          groups.push({...d,rows:parsed.rows.map(settleRow),skipped:parsed.skipped,documentKind:parsed.documentKind,quoteValidUntil:parsed.quoteValidUntil,invoiceDate:findDate(d.text)||"",layout:parsed.layout,columnMap:parsed.columnMap});
         }catch(error){throw new Error(`${d.name}: ${error.message||String(error)}`);}
         await new Promise(resolve=>setTimeout(resolve,0));
       }
@@ -146,7 +207,9 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
         setParseError(`No product rows could be read from ${docs.map(d=>d.name).join(", ")}. Check that the file contains item lines, or paste a sample of its text for review.`);
         return;
       }
-      setParsedGroups(groups);
+      const settled=await settleUnknownHeaders(groups);
+      if(mode==="invoice"&&settled.every(looksLikePriceSheet)){setMode("pricelist");setSwitchedToPriceSheet(true);}
+      setParsedGroups(settled);
       setStep(2);
     }catch(error){setParseError(`Could not parse the document: ${error.message||String(error)}`);}
     finally{setParsing(false);}
@@ -201,6 +264,8 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
       const workingCatalogItems=[...catalogItems];
       const workingCategories=[...categories];
       const workingVendorItems=[...vendorItems];
+      const currentVendorItems=await importService.vendorItems(orgId,vendorId);
+      const currentVendorByCode=new Map(currentVendorItems.filter(vi=>vi.vendor_item_code).map(vi=>[vi.vendor_item_code,vi]));
       const workingMappings=[...mappings];
       const importBatchTime=new Date().toISOString();
       async function applySelectedCategory(catalogItemId,categoryId){
@@ -257,11 +322,15 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
         // an invoice disagreement is saved with those notes attached, so
         // Item Catalog shows exactly what to finish; nothing is held back.
         const rowKey=`${group.id}:${rowIndex}`;
+        // A cell that failed its column's test travels with the row as a
+        // named reason (which cell, why), so Item Catalog shows it in place.
+        // A cell that failed its column's test already shows in that cell's
+        // accuracy; it is not a source conflict and does not hold the row.
         const rowIssues=[...(sourceRow.issues||[]),...(!acceptedInvoiceConflicts.has(rowKey)?(invoiceClues.get(rowKey)?.conflicts||[]):[])];
         const rowNeedsReview=!!rowIssues.length&&!acceptedIssues.has(rowKey);
         try{
         if(!rowNeedsReview&&!row.priceUnavailable&&(!Number.isFinite(Number(row.price))||Number(row.price)<=0)) throw new Error("No confirmed positive unit price");
-        let ex=row.code?await importService.findVendorItem({organizationId:orgId,vendorId,code:row.code}):null;
+        let ex=row.code?currentVendorByCode.get(row.code)||null:null;
         if(row.selectedVendorItemId){
           const selected=await importService.vendorItemById(orgId,vendorId,row.selectedVendorItemId);
           if(!selected||selected.vendor_item_code&&selected.vendor_item_code!==row.code)
@@ -272,7 +341,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           ex=selected;
         }
         if(!ex){
-          const candidates=await importService.vendorItems(orgId,vendorId);
+          const candidates=currentVendorItems;
           const found=findUncodedVendorListing(row,candidates);
           if(found.conflict)throw new Error(found.conflict);
           ex=found.item;
@@ -284,7 +353,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           }
         }
         const priorMapping=ex?await importService.mapping(orgId,ex.id):null;
-        const prepared=preparePriceImport(row,ex,priorMapping,rowNeedsReview?rowIssues:[]);
+        const prepared=preparePriceImport(row,ex,priorMapping,rowNeedsReview?rowIssues:[],invoiceSources,{organizationId:orgId,vendorId});
         row=prepared.row;
         let vendorItemId;
         // The provider persists current quote and history in one transaction.
@@ -306,11 +375,11 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           priceUnavailable:!!row.priceUnavailable||needsBasis,effectiveDate:importBatchTime,
           quoteValidUntil:group.quoteValidUntil,sourceFilePath,
           sourceFileName:group.name,sourceLine:row.sourceLine||null,sourceDocumentId,
-          importRow:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:needsBasis,conflicts:prepared.reasons,changes:row.changes||[]},
+          importRow:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:needsBasis||!!row.requiresReview,reviewFields:prepared.reviewFields,conflicts:prepared.reasons,changes:row.changes||[]},
           fieldResolutions:importResolutions(sourceRow,ex||{}),
         });
         if(needsBasis&&ex){
-          const {error}=await backend.records.query("vendor_items").update({import_row:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,changes:row.changes||[],conflicts:prepared.reasons}}).eq("id",ex.id).eq("organization_id",orgId);
+          const {error}=await backend.records.query("vendor_items").update({import_row:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,reviewFields:prepared.reviewFields,changes:row.changes||[],conflicts:prepared.reasons}}).eq("id",ex.id).eq("organization_id",orgId);
           if(error)throw new Error(`Could not save the incoming quote for review: ${error.message}`);
         }
         if(ex&&!needsBasis) updated++; else if(!ex) created++;
@@ -369,6 +438,15 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
         // exist. Checkpoint each row before moving to the next one.
         await importService.recordProgress(sourceDocumentId,[...completedKeys,completedKey]);
         completedKeys.add(completedKey);
+        const saved={...ex,id:vendorItemId,vendor_id:vendorId,organization_id:orgId,
+          vendor_item_code:row.code||ex?.vendor_item_code||null,
+          description:needsBasis&&ex?ex.description:row.description,
+          brand:needsBasis&&ex?ex.brand:row.brand,pack_size:needsBasis&&ex?ex.pack_size:row.packSize,
+          original_pack_raw:row.originalPackRaw||ex?.original_pack_raw||null,
+          price:needsBasis&&ex?ex.price:row.price,field_resolutions:importResolutions(sourceRow,ex||{})};
+        const savedIndex=currentVendorItems.findIndex(vi=>vi.id===vendorItemId);
+        if(savedIndex<0)currentVendorItems.push(saved);else currentVendorItems[savedIndex]=saved;
+        if(saved.vendor_item_code)currentVendorByCode.set(saved.vendor_item_code,saved);
         }catch(err){
           // Report the first failure verbatim and count the rest; a row
           // that failed is never counted as updated or created.
@@ -719,6 +797,7 @@ export function PasteModal({vendors,orgId,orgSettings,catalogItems,categories,vo
           <div style={{textAlign:"center",padding:"24px 0 8px"}}>
             <div style={{fontSize:40,marginBottom:10}}>✅</div>
             <h3 style={{margin:"0 0 6px"}}>Upload successful</h3>
+            {switchedToPriceSheet&&<p style={{color:"#8D6E00",fontSize:12,margin:"0 0 6px"}}>This file was a price sheet, so KERDOS filed it under Price Sheets.</p>}
             <p style={{color:"#666",fontSize:14,margin:"0 0 18px"}}>
               {result.count} row{result.count===1?"":"s"} from {result.vendor} saved
               {result.basisReview>0?` · ${result.basisReview} to finish in Item Catalog`:""}

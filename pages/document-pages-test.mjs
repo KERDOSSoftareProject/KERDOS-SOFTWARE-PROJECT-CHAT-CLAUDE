@@ -29,7 +29,9 @@ try{
     assert.ok(!html.includes(unwanted),`${unwanted} must not appear as an imported document or activity`);
 
   html=render({importDocuments:[]});
-  assert.match(html,/No price sheets imported yet/);
+  // vendorFilter is active (v1 = "Supplier A") so we get the vendor-specific message
+  assert.match(html,/No price sheets on file for.*Supplier A/);
+  assert.match(html,/Import price sheet/i);
   assert.match(html,/0 source files/);
   assert.ok(!html.includes("Catalog field correction"),"history alone cannot create documents");
 

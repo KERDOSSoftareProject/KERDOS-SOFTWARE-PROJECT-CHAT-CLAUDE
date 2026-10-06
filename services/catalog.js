@@ -2,7 +2,7 @@
 // only on the provider's generic table capability; UI code never names or
 // imports a database vendor.
 import {prepareCatalogCorrection} from "./catalog-rows.js";
-import {bestPurchasingMatch,bestPurchasingSuggestion,suggestCategory,nextCategoryRange,compareProductIdentity,comparePurchasingPack,brandsMatch,parsePackSize,abbreviationPairs} from "../procurement.js";
+import {bestPurchasingMatch,bestPurchasingSuggestion,suggestCategory,nextCategoryRange,compareProductIdentity,comparePurchasingPack,commonPurchasingPack,brandsMatch,parsePackSize,abbreviationPairs} from "../procurement.js";
 
 // An association is a customer's assertion about identity. Ordering eligibility
 // additionally requires agreement with the existing vendor product's pack and
@@ -25,38 +25,13 @@ async function run(promise,operation){
   return data;
 }
 
-// Single-vendor listings never auto-verify; the client confirms them. This
-// finds the ones that are ready for that confirmation in one action: still
-// unverified, the only vendor on their catalog item, and passing the same
-// verification a one-at-a-time confirm would run (readable pack, product
-// identity agrees with the catalog item). Anything else stays in review.
-export function readyToConfirm({mappings=[],vendorItems=[],catalogItems=[]}){
-  const viById=new Map(vendorItems.map(vi=>[vi.id,vi]));
-  const ciById=new Map(catalogItems.map(ci=>[ci.id,ci]));
-  const byCatalog=new Map();
-  for(const m of mappings){const list=byCatalog.get(m.catalog_item_id)||[];list.push(m);byCatalog.set(m.catalog_item_id,list);}
-  const ready=[];
-  for(const m of mappings){
-    if(m.comparison_track==="exact"&&m.confidence_score===100)continue;
-    const vendorItem=viById.get(m.vendor_item_id),catalogItem=ciById.get(m.catalog_item_id);
-    if(!vendorItem||!catalogItem)continue;
-    const siblings=(byCatalog.get(m.catalog_item_id)||[]).filter(other=>other.id!==m.id);
-    const otherVendors=siblings.map(other=>viById.get(other.vendor_item_id)?.vendor_id).filter(id=>id&&id!==vendorItem.vendor_id);
-    if(otherVendors.length)continue;
-    const verification=mappingVerification(vendorItem,catalogItem,[]);
-    if(verification.comparison_track!=="exact")continue;
-    ready.push({mappingId:m.id,vendorItemId:vendorItem.id,catalogItemId:catalogItem.id,description:vendorItem.description,packSize:vendorItem.pack_size,verification});
-  }
-  return ready;
-}
-
 // Why an association is not at 100%, as one fixed code per mapping. The
 // codes are what makes the Not mapped list workable: grouped by code, one
 // parser fix or one bulk confirm clears a whole group instead of one row.
 export const GAP_LABELS={
   "pack-missing":"Pack size missing",
   "pack-unreadable":"Pack size can't be read",
-  "single-vendor-ready":"Single vendor — ready to confirm",
+  "single-vendor-ready":"Single vendor — fields still to complete",
   "single-vendor-detail":"Single vendor — wording differs from catalog item",
   "brand-conflict":"Brand differs from linked vendor",
   "pack-conflict":"Pack differs from linked vendor",
@@ -73,8 +48,10 @@ export function mappingGap(vendorItem,catalogItem,peers=[]){
       ?{code:"single-vendor-ready",label:GAP_LABELS["single-vendor-ready"],detail:"Only one vendor lists this product; confirm to make it orderable"}
       :{code:"single-vendor-detail",label:GAP_LABELS["single-vendor-detail"],detail:identity.reason};
   }
-  const brandClash=others.find(peer=>vendorItem.brand&&peer.brand&&!brandsMatch(vendorItem.brand,peer.brand));
-  if(brandClash)return {code:"brand-conflict",label:GAP_LABELS["brand-conflict"],detail:`${vendorItem.brand} vs ${brandClash.brand}`};
+  // Brand difference only blocks when the client has set "Require this brand" (brand_locked).
+  // When brand sensitivity is off, different brands are acceptable alternatives.
+  const brandClash=catalogItem.brand_locked&&others.find(peer=>vendorItem.brand&&peer.brand&&!brandsMatch(vendorItem.brand,peer.brand));
+  if(brandClash)return {code:"brand-conflict",label:GAP_LABELS["brand-conflict"],detail:`${vendorItem.brand} vs ${brandClash.brand} (brand required)`};
   const packClash=others.map(peer=>({peer,result:comparePurchasingPack(vendorItem.pack_size,peer.pack_size)})).find(entry=>entry.result.status!=="same");
   if(packClash)return {code:"pack-conflict",label:GAP_LABELS["pack-conflict"],detail:`${vendorItem.pack_size} vs ${packClash.peer.pack_size||"none"}`};
   const wordClash=others.map(peer=>compareProductIdentity(vendorItem.description,peer.description)).find(result=>result.status!=="same");
@@ -158,31 +135,54 @@ export function createCatalogService(backend){
       const byId=new Map(vendorItems.map(vi=>[vi.id,vi]));
       const candidates=catalogItems.map(ci=>{
         const linked=mappings.map(m=>m.catalog_item_id===ci.id?byId.get(m.vendor_item_id):null).filter(Boolean);
-        const knownPacks=[...new Set(linked.map(vi=>vi.pack_size).filter(Boolean))];
+        const knownPack=commonPurchasingPack(linked.map(vi=>vi.pack_size));
         const knownBrands=[...new Set(linked.map(vi=>vi.brand).filter(Boolean))];
-        return {...ci,pack_size:knownPacks.length===1?knownPacks[0]:null,knownBrand:knownBrands.length===1?knownBrands[0]:null,
+        return {...ci,pack_size:knownPack,knownBrand:knownBrands.length===1?knownBrands[0]:null,
           linkedVendorItems:linked,
           otherVendorPresent:!!vendorId&&linked.some(vi=>vi.vendor_id&&vi.vendor_id!==vendorId)};
       });
       // Identifiers come first: they settle identity without wording.
+      // Same GTIN or manufacturer code + same pack = same item, same KERDOS number.
+      // Multiple vendors on the same entry is the goal.
       const proven=identifierMatch({gtin,manufacturerCode,brand,packSize,vendorId},candidates);
       if(proven?.track==="exact"){
         const evidence=associationEvidence({description,packSize,brand,gtin,manufacturerCode},proven.catalogItem);
         if(evidence.exact)return {catalogItemId:proven.catalogItem.id,track:"exact",score:1,method:"identifier",reason:proven.reason};
       }
       const match=proven||bestPurchasingMatch(description,packSize,candidates);
-      // Brand is part of a verified identity. Unknown brand does not prove
-      // equality to a named brand; differing brands can be proposed for
-      // substitution, but never placed in the same exact-price comparison.
+      // Same description + same pack = same item = same KERDOS number.
+      // Link the incoming vendor item to the existing entry directly.
+      // Multiple vendors under one KERDOS number is exactly the goal.
       const brandVerified=match&&(!brand&&!match.catalogItem.knownBrand||brandsMatch(brand,match.catalogItem.knownBrand));
-      if(match?.track==="exact"&&brandVerified&&match.catalogItem.otherVendorPresent&&
-        associationEvidence({description,packSize,brand,gtin,manufacturerCode},match.catalogItem).exact)
-        return {catalogItemId:match.catalogItem.id,track:"exact",score:1};
-      const suggestion=match||bestPurchasingSuggestion(description,packSize,candidates);
+      if(match?.track==="exact"&&brandVerified){
+        const evidence=associationEvidence({description,packSize,brand,gtin,manufacturerCode},match.catalogItem);
+        if(evidence.exact)return {catalogItemId:match.catalogItem.id,track:"exact",score:1,method:"description_pack",reason:"Same description and pack as an existing item"};
+      }
+      // Fix 1: same description different pack → join at review so the client can
+      // resolve whether it is a data entry issue or genuinely a different purchase unit.
+      // A pack conflict is visible information; creating a new entry hides it.
+      if(match?.track==="similar"){
+        return {catalogItemId:match.catalogItem.id,track:"review",score:match.score??0.9,
+          method:"pack_conflict",reason:"Description matches but pack differs — confirm before comparing prices"};
+      }
+
+      // Fix 2: only suggest when description identity is not outright different.
+      // "Chicken thigh" must never be suggested as the same item as "chicken breast".
+      const rawSuggestion=bestPurchasingSuggestion(description,packSize,candidates);
+      const suggestionSafe=rawSuggestion&&compareProductIdentity(description,rawSuggestion.catalogItem.name).status!=="different";
+      const suggestion=suggestionSafe?rawSuggestion:null;
+      // If a plausible match exists, link to that item at review track so the client
+      // can confirm whether it is the same thing. Never create a new entry when
+      // an existing item is a plausible match — that would fragment the catalog.
+      if(suggestion?.catalogItem?.id){
+        return {catalogItemId:suggestion.catalogItem.id,track:"review",score:Math.round((suggestion.score??0.5)*100)/100,
+          method:"suggestion",reason:suggestion.reason||"Possible match — confirm before including in price comparisons"};
+      }
+      // No match at all: create a new catalog entry.
       const placement=await this.placeInCategory({organizationId,description,categoryId,categories,catalogItems});
       const created=await this.createItem({organizationId,name:description,categoryId:placement.category?.id||null,categoryReview:placement.review,categoryReason:placement.reason,catalogItems,categories});
       catalogItems.push(created);
-      return {catalogItemId:created.id,track:suggestion?"review":"new",score:suggestion?.score??null,reason:match?.reason||"Possible product; verify defining details before linking"};
+      return {catalogItemId:created.id,track:"new",score:null,reason:"No existing item matched this description and pack"};
     },
     // Most likely category first, holding pen last. A guessed placement is
     // flagged for review so the client confirms or moves it, instead of
@@ -207,11 +207,13 @@ export function createCatalogService(backend){
     },
     async createItem({organizationId,name,categoryId,categoryReview=false,categoryReason=null,catalogItems,categories}){
       const category=categories.find(candidate=>candidate.id===categoryId)||null;
+      if(!category||!Number.isFinite(Number(category.range_start))||category.range_start==null||Number(category.range_start)<=0)throw new Error("This category needs an item-number range before creating an item.");
       // Include numbers from items later moved to another category. Their
       // KERDOS numbers remain theirs and must never be recycled here.
-      const itemsInCategory=catalogItems.filter(item=>item.master_item_number>=Number(category?.range_start||1)&&
+      const itemsInCategory=catalogItems.filter(item=>item.master_item_number>=Number(category.range_start)&&
         item.master_item_number<=Number(category?.range_end||Number.MAX_SAFE_INTEGER));
-      const masterItemNumber=itemsInCategory.length?Math.max(...itemsInCategory.map(item=>item.master_item_number||0))+1:(category?.range_start||1);
+      const masterItemNumber=itemsInCategory.length?Math.max(...itemsInCategory.map(item=>item.master_item_number||0))+1:(category.range_start);
+      if(category.range_end!=null&&masterItemNumber>Number(category.range_end))throw new Error("This category item-number range is full.");
       return run(table("catalog_items").insert({organization_id:organizationId,category_id:categoryId||null,master_item_number:masterItemNumber,name:name.slice(0,120),matching_behavior:"flexible",canonical_unit:null,brand_locked:false,category_review:!!categoryReview,category_reason:categoryReason||null}).select().single(),"Could not create the item");
     },
     // Rows whose sheet never said what the price is for. One decision for

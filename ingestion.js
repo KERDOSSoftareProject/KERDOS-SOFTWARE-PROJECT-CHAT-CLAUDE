@@ -1,5 +1,9 @@
 // ════════════════════════════════════════════════════════════════════
-import {measurement,normalizeGtin,normalizeManufacturerCode,packFromDescription,parsePackSize} from "./procurement.js";
+import {applySourceUnits,documentQuoteUnit} from "./core/source-units.js";
+import {pricingUnitHeader} from "./core/billing-unit-evidence.js";
+import {analyzeRow} from "./core/cell-analysis.js";
+import {measurement,normalizeGtin,normalizeManufacturerCode,packFromDescription,parsePackSize,normalizeMixedFraction} from "./procurement.js";
+import {readHeaderLayout,applyLayoutAnswers,checkRowCells} from "./core/sheet-layout.js";
 // KERDOS INGESTION MODULE
 // ════════════════════════════════════════════════════════════════════
 //
@@ -34,16 +38,16 @@ import {measurement,normalizeGtin,normalizeManufacturerCode,packFromDescription,
 // ── Column roles we understand ─────────────────────────────────────
 // Every column in a document gets matched to one of these, or "unknown".
 const COLUMN_ROLES = {
-  description: ["description", "desc", "product", "name"],
-  code:        ["item no", "item#", "item", "sku", "code", "cust item no", "item number"],
+  description: ["description", "desc", "product", "name", "item description", "product description", "product name", "item name"],
+  code:        ["item no", "item#", "itm#", "item", "sku", "code", "cust item no", "item number", "item no.", "part no", "part number", "vendor item", "vendor code", "vendor no"],
   brand:       ["brand", "manufacturer", "make"],
   gtin:        ["upc", "gtin", "ean", "barcode", "bar code", "upc code", "upc/ean"],
   mfrCode:     ["mfr #", "mfg #", "mfr no", "mfg no", "mfr item", "mfg item", "manufacturer item", "manufacturer no", "manufacturer #", "manufacturer part", "mfr part", "part no", "part number", "model"],
-  sellingUnit: ["type", "selling unit", "order unit"],
-  qty:         ["qty", "quantity", "count"],
-  packSize:    ["unit", "size", "pack", "uom", "pack size"],
-  price:       ["price", "unit price", "cost", "unit cost", "rate"],
-  amount:      ["amount", "total", "ext", "extended", "ext price", "ext. price", "line total"],
+  sellingUnit: ["type", "selling unit", "order unit", "quoted per", "price unit", "price uom", "pricing unit", "pricing basis", "price basis", "unit of sale"],
+  qty:         ["qty", "quantity", "count", "ordered", "order qty", "ord qty", "delivered", "dlv", "dlvd"],
+  packSize:    ["unit", "size", "pack", "uom", "pack size", "pk", "pkg", "package", "pack/size", "pack & size", "pack & size:", "package size", "unit size"],
+  price:       ["price", "pr", "prc", "unit price", "cost", "unit cost", "rate", "your price", "net price", "sell price", "selling price", "quote price", "quoted price", "list price", "price/case", "price per case", "price/ea", "price/lb", "price/gal"],
+  amount:      ["amount", "total", "ext", "extended", "ext price", "ext. price", "line total", "line amount", "extended price", "total price", "total amount"],
 };
 
 // Rows that are clearly not item data — invoice/pricelist "furniture".
@@ -95,7 +99,11 @@ function isTableEndMarker(cells) {
 
 function parseMoney(str) {
   if (str == null) return null;
-  let cleaned = String(str).replace(/[$,]/g, "").trim();
+  let cleaned = String(str).replace(/[$]/g, "").trim();
+  // European decimal comma: "12,50" means 12.50 (not 12 thousands 50)
+  // Detect: digits, single comma, 1-2 digits, end — no dot present
+  if (/^-?\d+,\d{1,2}$/.test(cleaned)) cleaned = cleaned.replace(",", ".");
+  else cleaned = cleaned.replace(/,/g, ""); // strip thousands separators
   // Accounting-style negatives — "(24.00)" meaning -24.00 — are common in
   // bookkeeper-produced spreadsheets (QuickBooks-style exports, manual
   // credit memos) even when nobody on staff would type an actual minus sign.
@@ -147,25 +155,39 @@ function sniffDelimiter(lines) {
   const candidates = [
     { name: "tab", regex: /\t/ },
     { name: "comma", regex: /,(?=(?:[^"]*"[^"]*")*[^"]*$)/ },
+    { name: "semicolon", regex: /;/ },
+    { name: "pipe", regex: /\|/ },
     { name: "multispace", regex: /\s{2,}/ },
   ];
 
   let best = { name: null, consistency: -1 };
 
+  // Exclude blank lines and address/noise lines from coverage measurement.
+  // A vendor file with 7 lines of header noise + 3 data lines is still
+  // a comma-delimited file — the noise shouldn't dilute the count.
+  const substantiveLines = lines.filter(l => {
+    const t = l.trim();
+    if (t.length < 3) return false;                    // blank or near-blank
+    if (/^[-=*#]{3,}$/.test(t)) return false;         // divider lines
+    return true;
+  });
+  const denominator = substantiveLines.length || lines.length;
+
   for (const cand of candidates) {
-    const linesWithDelim = lines.filter(l => cand.regex.test(l));
+    const linesWithDelim = substantiveLines.filter(l => cand.regex.test(l));
     // A real table uses this delimiter on most lines, not just a
     // scattered few (a handful of junk lines with incidental double
     // spaces shouldn't be mistaken for a whole tabular document).
-    const coverage = linesWithDelim.length / lines.length;
-    if (coverage < 0.6) continue;
+    const coverage = linesWithDelim.length / denominator;
+    if (coverage < 0.4) continue;  // lowered from 0.6 to handle noisy headers
 
     const counts = linesWithDelim.map(l => l.split(cand.regex).length);
     const modeCount = mostCommon(counts);
     const matchingRows = counts.filter(c => c === modeCount).length;
     const consistency = matchingRows / counts.length;
 
-    if (modeCount >= 2 && consistency > best.consistency) {
+    if (modeCount >= 2 && (consistency > best.consistency ||
+        (consistency === best.consistency && modeCount > (best.modeCount||0)))) {
       best = { name: cand.name, consistency, modeCount };
     }
   }
@@ -189,12 +211,15 @@ function mostCommon(arr) {
 
 function splitRow(line, delimiterName) {
   if (delimiterName === "tab") return line.split(/\t/);
+  if (delimiterName === "semicolon") return line.split(/;/);
+  if (delimiterName === "pipe") return line.split(/\|/);
   if (delimiterName === "comma") return line.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/);
   return line.split(/\s{2,}/);
 }
 
 function cleanCell(cell) {
-  return cell.trim().replace(/^"|"$/g, "");
+  const value=cell.trim();
+  return value.startsWith('"')&&value.endsWith('"')?value.slice(1,-1).replace(/""/g,'"'):value;
 }
 
 
@@ -256,12 +281,21 @@ function findHeaderRow(grid) {
 
 // ── Stage 3: Map columns to roles ───────────────────────────────────
 
+// Price columns ordered by preference. When multiple price columns exist,
+// the first match in this list wins. "your price" beats "list price".
+const PRICE_PRIORITY = ["your price","net price","sell price","selling price",
+  "quote price","quoted price","unit price","price/case","price per case",
+  "price","pr","prc","cost","unit cost","rate","list price"];
+
 function mapColumnsFromHeader(headerCells) {
   const map = {};
+  // Two-pass: first map all non-price roles, then apply price priority.
+  const priceCandidates = [];
   headerCells.forEach((cell,idx)=>{
     const lower=cell.toLowerCase().trim().replace(/\s+/g," ");
     const choices=[];
     for(const [role,keywords] of Object.entries(COLUMN_ROLES)){
+      if(role==="price")continue; // handle separately
       for(const kw of keywords){
         if(lower===kw||lower.includes(kw)) choices.push({role,score:kw.length+(lower===kw?100:0)});
       }
@@ -269,7 +303,19 @@ function mapColumnsFromHeader(headerCells) {
     choices.sort((a,b)=>b.score-a.score);
     const chosen=choices.find(c=>map[c.role]===undefined);
     if(chosen)map[chosen.role]=idx;
+    // collect price candidates — store full cell text for priority matching
+    for(const kw of COLUMN_ROLES.price){
+      if(lower===kw||lower.includes(kw)){priceCandidates.push({idx,kw,lower,exact:lower===kw});break;}
+    }
   });
+  // Pick the highest-priority price column by matching the FULL cell text
+  if(priceCandidates.length){
+    for(const preferred of PRICE_PRIORITY){
+      const hit=priceCandidates.find(c=>c.lower===preferred||c.lower.includes(preferred));
+      if(hit){map.price=hit.idx;break;}
+    }
+    if(map.price===undefined) map.price=priceCandidates[0].idx;
+  }
   return map;
 }
 
@@ -364,7 +410,44 @@ function isNoPricePlaceholder(str) {
   return NO_PRICE_MARKERS.has(s);
 }
 
-function extractRow(cells, columnMap) {
+// Spreadsheets turn a pack like "12/10" or "6/10" into a date before the
+// file ever reaches KERDOS ("2025-12-10", "12/10/2025", "10-Dec"). When the
+// pack column holds a date, the vendor almost certainly wrote outer/inner
+// counts. The month and day are read back as that pack; the year is the
+// spreadsheet's invention and is dropped. Anything that is not a date is
+// returned untouched.
+export function unmangleExcelDatePack(value){
+  const text=String(value||"").trim();
+  if(!text) return text;
+  let m=text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$/);           // 2025-12-10 00:00:00
+  if(m) return `${Number(m[2])}/${Number(m[3])}`;
+  m=text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);                                        // 12/10/2025
+  if(m) return `${Number(m[1])}/${Number(m[2])}`;
+  const months={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+  m=text.match(/^(\d{1,2})-([A-Za-z]{3})(?:-\d{2,4})?$/);                                        // 10-Dec, 10-Dec-25
+  if(m&&months[m[2].toLowerCase()]) return `${months[m[2].toLowerCase()]}/${Number(m[1])}`;
+  m=text.match(/^([A-Za-z]{3})-(\d{1,2})(?:-\d{2,4})?$/);                                        // Dec-10
+  if(m&&months[m[1].toLowerCase()]) return `${months[m[1].toLowerCase()]}/${Number(m[2])}`;
+  return text;
+}
+
+// Two things a pack column often holds that are packs in the vendor's
+// mind but not in KERDOS's grammar. A packaging word alone ("CASE",
+// "BOX", "BAG") means one of that packaging with the contents unstated,
+// which is exactly how produce and bulk goods are sold: it becomes
+// "1 CASE". A bare whole number ("1000", "2500") in a pack column is a
+// count of units: it becomes "1000 CT". Anything else is left as written.
+const PACKAGING_ONLY=/^(case|cs|cse|box|bx|bag|bg|tub|pail|bucket|bkt|crate|crt|carton|ctn|flat|sack|drum|pallet|tray|sleeve|bundle|bdl|roll|rl|jug|can|jar|bottle|btl|piece|pc|pce|each|ea)\.?$/i;
+export function normalizeColumnPack(value){
+  const text=String(value||"").trim();
+  if(!text) return text;
+  if(PACKAGING_ONLY.test(text)) return `1 ${text.replace(/\.$/,"").toUpperCase()}`;
+  if(/^\d{2,}$/.test(text)) return `${Number(text)} CT`;
+  // Normalize mixed fractions: 1-1/9 BU → 1.111111 BU
+  return normalizeMixedFraction(text);
+}
+
+function extractRow(cells, columnMap, priceHeader="", confirmedColIndices=null, sourceHeaders=[]) {
   const get = role => (columnMap[role] !== undefined ? cells[columnMap[role]] : undefined);
 
   const priceRaw = get("price");
@@ -388,8 +471,16 @@ function extractRow(cells, columnMap) {
       .filter(c => parseMoney(c) === null && !isNoPricePlaceholder(c))
       .sort((a, b) => b.length - a.length)[0] || "";
   }
-  description = description.trim();
+  description = description.trim()
+    .replace(/\s+\*{2,}[A-Z0-9]+\*{2,}/gi, '') // **NEW** **SPECIAL** flags — must run FIRST
+    .replace(/\*+([^*]+)\*+/g, '$1')  // *ITEM* → ITEM (keep content)
+    .replace(/\*+/g, '')               // remaining lone asterisks
+    .replace(/\s{2,}/g, ' ')           // double spaces → single
+    .trim();
   if (description.length < 2) return null;
+  // A row whose description is itself a non-product line (fuel surcharge,
+  // delivery fee etc) should be skipped even when it came from a CSV column.
+  if (NON_PRODUCT_LINE.test(description.trim())) return null;
 
   const code = (get("code") || "").trim() || null;
   const brand = (get("brand") || "").trim() || null;
@@ -398,8 +489,16 @@ function extractRow(cells, columnMap) {
   const manufacturerCode = normalizeManufacturerCode(get("mfrCode"));
   // The pack column wins; when it is empty, a pack written at the end of
   // the description is used and its origin recorded for review.
-  const columnPack = (get("packSize") || "").trim() || null;
-  const descriptionPack = columnPack ? null : packFromDescription(description);
+  const columnPack = normalizeColumnPack(unmangleExcelDatePack((get("packSize") || "").trim())) || null;
+  // When no pack column exists, pull the pack from the description tail.
+  // description is let so we can strip the pack text from it.
+  const descriptionPackRaw = columnPack ? null : packFromDescription(description);
+  let descriptionPack = null;
+  if(descriptionPackRaw && !columnPack){
+    descriptionPack = descriptionPackRaw;
+    const packPos = description.lastIndexOf(descriptionPackRaw);
+    if(packPos > 4) description = description.slice(0, packPos).replace(/[,\s]+$/, "").trim();
+  }
   const packSize = columnPack || descriptionPack;
   const packSource = columnPack ? "column" : descriptionPack ? "description" : null;
   const qty = parseMoneyLenient(get("qty"));
@@ -416,38 +515,71 @@ function extractRow(cells, columnMap) {
   let rowCode=code;
   let codeSource=code?"column":null;
   if(!rowCode){
-    const codeLike=details.find(detail=>/^[A-Z0-9][A-Z0-9\-\/\.]{2,15}$/i.test(detail)&&/\d/.test(detail)&&!parsePackSize(detail)?.parsed);
+    const codeLike=details.find(detail=>/^[A-Z0-9][A-Z0-9\-\/\.]{2,15}$/i.test(detail)&&/\d/.test(detail)&&!/^\d+(?:\.\d+)?[/-]\d+(?:\.\d+)?$/.test(detail)&&!parsePackSize(detail)?.parsed);
     if(codeLike){rowCode=codeLike;codeSource="details";details=details.filter(detail=>detail!==codeLike);}
   }
   const fullDescription=[description,...details.filter(detail=>!description.toLowerCase().includes(detail.toLowerCase()))].join(" ").trim();
   const issues=[];
 
-  return {
+  // Run cell analysis to pick up flags and metadata the column-map path doesn't surface:
+  // priceUnavailable (zero price), requiresReview (negative price), originalRaw on pack.
+  // Build a header-hint array from the column map: each cell gets its role name as the hint.
+  const roleByCol = Object.fromEntries(Object.entries(columnMap).map(([role,idx])=>[idx,role]));
+  const headerHints = cells.map((_,i) => roleByCol[i] || '');
+  const cellEvidence = analyzeRow(cells, headerHints, priceHeader, confirmedColIndices);
+  const priceProposal = cellEvidence.resolved.price;
+  const packProposal  = cellEvidence.resolved.pack;
+  const finalPriceUnavailable = priceUnavailable || priceProposal?.priceUnavailable || false;
+  const finalRequiresReview   = priceProposal?.requiresReview || false;
+  const finalOriginalRaw      = packProposal?.originalRaw || null;
+  // Preserve unresolved-field explanations and conflict details on the row so they
+  // survive into importRow.evidence and are visible in Item Catalog.
+  const cellUnresolved = cellEvidence.unresolved?.length ? cellEvidence.unresolved : null;
+  const cellConflicts  = cellEvidence.conflicts?.length  ? cellEvidence.conflicts  : null;
+
+  return applySourceUnits({
     code: rowCode,
     codeSource,
     brand,
     gtin,
     manufacturerCode,
     sellingUnit,
+    sellingUnitHeader:sourceHeaders[columnMap.sellingUnit]||null,
+    sellingUnitSource:sourceHeaders[columnMap.sellingUnit]?`header: ${sourceHeaders[columnMap.sellingUnit]}`:null,
+    billingUnitEvidence:sellingUnit&&pricingUnitHeader(sourceHeaders[columnMap.sellingUnit])?{kind:'pricing-unit-header',header:sourceHeaders[columnMap.sellingUnit],unit:sellingUnit}:null,
+    priceHeader,
     description: fullDescription.slice(0, 120),
     details,
     packSize,
     packSource,
+    originalPackRaw: finalOriginalRaw,
     qty: qty !== null ? qty : null,
     price: price !== null ? price : amount,
     amount: amount !== null ? amount : price,
-    priceUnavailable,
+    priceUnavailable: finalPriceUnavailable,
+    requiresReview: finalRequiresReview,
+    cellUnresolved,
+    cellConflicts,
     sourceLine:cells.join("\t"),
     issues,
-  };
+  },{priceCell:priceRaw,priceHeader});
 }
 
 
 // Keep price and document metadata distinct. A bare integer in a date,
 // item code, quantity, or pack cannot be interpreted as a monetary quote.
 const METADATA_LINE = /^(?:from|to|cc|bcc|subject|sent|reply-to|invoice(?:\s*(?:no\.?|number|#|date))?|inv\s*#|date|delivery\s+date|due\s+date|phone|fax|email|bill\s+to|ship\s+to|purchase\s+order|po\s*#|account|customer|tax|balance|payment|subtotal|total|grand\s+total|page|thank\s+you|terms)\b\s*[:#-]?/i;
+
+// Charges and fees that appear on price sheets but are not orderable products.
+// Universal — not food-specific. A vendor calling it "FUEL LEVY" instead will still
+// pass through; only clear non-product patterns are filtered.
+// Only lines that are unambiguously not a purchasable item. "BOX LIME" is a product
+// (a box of limes); "BOX TOMATOES" is a product. Remove BOX from this filter.
+// When uncertain, flag for review rather than discard.
+const NON_PRODUCT_LINE = /^(?:fuel\s+surcharge|surcharge|delivery\s+(?:fee|charge)|freight|shipping(?:\s+(?:fee|charge|cost))?|handling(?:\s+(?:fee|charge))?)\b/i;
 function isDocumentMetadata(line){
-  return METADATA_LINE.test(line.trim()) || /^(?:https?:\/\/|www\.|@)/i.test(line.trim());
+  const t=line.trim();
+  return METADATA_LINE.test(t)||NON_PRODUCT_LINE.test(t)||/^(?:https?:\/\/|www\.|@)/i.test(t);
 }
 function contextualFreeformRow(line){
   if(isDocumentMetadata(line)) return null;
@@ -463,9 +595,20 @@ function contextualFreeformRow(line){
   // Only literal currency or decimal amounts can be freeform prices;
   // otherwise "40 lb", "Invoice #8765", and dates become fictitious
   // quotations. Keep those undecidable lines for review instead.
-  const money=[...line.matchAll(/(?:^|[\s=:;,(])((?:\$\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)(?=\s|$|[;,)\/])/g)]
+  // Also detect parenthetical negatives: (12.50) — must be recognized before
+  // the general money scan strips the parens away.
+  const parenNegRe=/\((\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\)/g;
+  const parenTokens=[...line.matchAll(parenNegRe)].map(m=>({
+    raw:m[1], start:m.index, end:m.index+m[0].length, isParenNeg:true
+  }));
+  const money=[...parenTokens,...[...line.matchAll(/(?:^|[\s=:;,(])((?:\$\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)(?=\s|$|[;,)\/])/g)]
     .map(m=>({raw:m[1],start:m.index+m[0].indexOf(m[1]),end:m.index+m[0].indexOf(m[1])+m[1].length}))
-    .filter(t=>/[\$.]/.test(t.raw) && !/\d+[\/x]\d+/i.test(line.slice(Math.max(0,t.start-2),t.end+3)));
+    .filter(t=>{
+      // Skip tokens that are inside a paren-negative match we already captured
+      if(parenTokens.some(p=>t.start>=p.start&&t.end<=p.end)) return false;
+      return /[\$.]/.test(t.raw) && !/\d+[\/x]\d+/i.test(line.slice(Math.max(0,t.start-2),t.end+3));
+    })]
+    .sort((a,b)=>a.start-b.start);
   if(!money.length) return null;
   const prices=money.filter(t=>!/^\d{4}$/.test(t.raw)&&!/(?:\d{1,2}\/){1,2}\d{1,4}/.test(line.slice(Math.max(0,t.start-3),t.end+5)));
   if(!prices.length)return null;
@@ -480,18 +623,28 @@ function contextualFreeformRow(line){
   const price=Number((prior||chosen).raw.replace(/[$,\s]/g,''));
   const amount=Number(chosen.raw.replace(/[$,\s]/g,''));
   if(!Number.isFinite(price)||price<=0||price>1000000||!Number.isFinite(amount))return null;
-  const packMatch=description.match(/(?:^|\s)(\d+(?:\/\d+)?\s*(?:LB|LBS|KG|G|OZ|GAL|QT|PT|CT|EA|PACK|CASE|CS|SHEET|SHEETS))\s*$/i);
+  // Use full pack parser on the description tail. sourceLine is the unmodified original.
+  let cfDescription=description;
+  let cfPack=null;
+  const cfPackStr=packFromDescription(description);
+  let cfPackOriginal=null;
+  if(cfPackStr){const cfIdx=normalizeMixedFraction(description)
+    .lastIndexOf(cfPackStr);if(cfIdx>4){cfPack=cfPackStr;cfPackOriginal=description.slice(cfIdx).replace(/[.,\s]+$/,"").trim();cfDescription=description.slice(0,cfIdx).replace(/[,\s]+$/,"").trim();}}
   const issues=[];
   if(prior&&qty!=null&&Math.abs(qty*price-amount)>0.02)issues.push("Quantity x unit price does not equal the stated line total");
   if(!prior&&qty!=null&&qty>1)issues.push("Only one price is listed; unit price versus extended total is ambiguous");
-  return {code:null,description:description.slice(0,120),packSize:packMatch?packMatch[1].trim():null,
-    qty,price,amount:prior?amount:null,priceUnavailable:false,sourceLine:line,issues};
+  const priceToken=prior||chosen;
+  const requiresReview=!!(priceToken.isParenNeg||chosen.isParenNeg)||undefined;
+  const finalPrice=priceToken.isParenNeg?-Math.abs(Number(priceToken.raw.replace(/[$,\s]/g,''))):price;
+  const finalAmount=chosen.isParenNeg?-Math.abs(Number(chosen.raw.replace(/[$,\s]/g,''))):amount;
+  return {code:null,description:cfDescription.slice(0,120),packSize:cfPack,packSource:cfPack?"description":null,originalPackSize:cfPackOriginal||null,
+    qty,price:finalPrice,amount:prior?finalAmount:null,priceUnavailable:false,requiresReview,sourceLine:line,issues};
 }
 
 function detectDocumentKind(text){
   const lines=String(text||'').split('\n');
   const top=lines.slice(0,25).join(' ');
-  const invoice=/\binvoice\b|\bbill to\b|\bamount due\b|\bremit\b/i.test(top);
+  const invoice=/\binvoice\b|\bbill to\b|\bamount due\b|\bremit\b|order\s+acknowledgement|order\s+confirmation|purchase\s+order\s+receipt/i.test(top);
   const quote=/\b(?:price\s+(?:sheet|list|update|effective)|new\s+prices?|updated\s+prices?|quote|quotation|new\s+cost|new\s+pricing)\b/i.test(top);
   return invoice&&quote?'mixed':invoice?'invoice':quote?'pricelist':'unknown';
 }
@@ -579,7 +732,9 @@ function parseGoodsInvoice(lines,text){
     if(qty===null||!Number.isFinite(qty))issues.push('Measured billed quantity is missing for this selling unit');
     else if(Math.abs(qty*price-amount)>0.025)issues.push('Billed quantity and unit price do not reconcile with extended total');
     rows.push({code,description:description.slice(0,120),packSize,qty,orderedQty:Number(ordered),deliveredQty:Number(delivered),weight:weightPart,
-      sellingUnit:uom.toUpperCase(),price,amount,priceBasis:measuredUnit?'measure':'selling-unit',
+      sellingUnit:uom.toUpperCase(),sellingUnitSource:'goods invoice billed UOM',
+      billingUnitEvidence:{kind:'goods-invoice-billed-unit',header:'UOM',unit:uom.toUpperCase()},
+      price,amount,priceBasis:measuredUnit?'measure':'selling-unit',
       priceUnavailable:false,sourceLine:line,issues});
   }
   return {mode:'goods-invoice',headerFound:true,columnMap:{},rows,skipped,documentKind:'invoice',quoteValidUntil:findQuoteValidity(text)};
@@ -603,7 +758,8 @@ function findMoneyTokens(line) {
   //     punctuation like ";" or "," in a delimited row) — this must stay
   //     unrestricted or numbers in semicolon/comma-delimited cells stop
   //     matching entirely.
-  const moneyRe = /(?:(?:^|(?<=\s))-\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b)|(?:\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b)/g;
+  // Also matches parenthetical negatives: (12.50) — common in credit lines and adjustments.
+  const moneyRe = /(?:\(\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\))|(?:(?:^|(?<=\s))-\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b)|(?:\$?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b)/g;
   const isDigit = c => c >= "0" && c <= "9";
   // \d{1,3} can only match 3 digits at a time, so a longer run like a
   // 4-digit year ("2026") gets captured starting mid-number. Walk past
@@ -628,11 +784,14 @@ function findMoneyTokens(line) {
     // — never a real price. Per-unit pricing like "5.99/lb" is still kept,
     // since what follows the slash there is a unit, not another digit.
     if (isSlashAdjacent(start, end)) return null;
+    const isParenNegative = m[0].startsWith('(') && m[0].endsWith(')');
+    const rawValue = isParenNegative ? '-' + m[0].slice(1,-1) : m[0];
     return {
-      value: parseMoney(m[0]),
+      value: parseMoney(rawValue),
       index: start,
       length: m[0].length,
       raw: m[0],
+      requiresReview: isParenNegative || undefined,
     };
   }).filter(t => t !== null && t.value !== null);
 }
@@ -720,6 +879,9 @@ function extractRowFreeform(line) {
   const description = head.trim();
   if (description.length < 2) return null;
 
+  // A parenthetical token like (12.50) is a negative amount — preserve the
+  // negative value and flag for review. Document context determines meaning.
+  const priceRequiresReview = !!(priceTok.requiresReview || amountTok.requiresReview);
   return {
     code,
     description: description.slice(0, 120),
@@ -727,6 +889,7 @@ function extractRowFreeform(line) {
     qty,
     price: priceTok.value,
     amount: amountTok.value,
+    requiresReview: priceRequiresReview || undefined,
   };
 }
 
@@ -947,7 +1110,7 @@ function extractLabeledFields(line) {
 //   skipped: [ { line, reason }, ... ]   // for transparency in the review UI
 // }
 
-function parseDocument(text) {
+function parseDocumentRows(text, options={}) {
   const rawLines = text.split("\n").map(l => l.trimEnd()).filter(l => l.trim().length > 0);
 
   const serviceInvoice=parseServiceInvoice(rawLines,text);
@@ -1046,11 +1209,20 @@ function parseDocument(text) {
   // it's clearly labeled), then use the actual column data to fill in
   // any role the header didn't clearly name — covers both "no header
   // at all" and "header exists but is mislabeled" (e.g. "Column2").
-  const columnMap = fillMissingRolesFromData(
-    headerFound ? mapColumnsFromHeader(grid[headerIndex].cells) : {},
-    grid,
-    dataStart
-  );
+  // Header first. The engine's own reading of the header row, then the
+  // client's remembered answers for this vendor's layout on top of it,
+  // and only then the data-shape guesses for whatever is still unnamed.
+  const headerCells=headerFound?grid[headerIndex].cells:[];
+  const engineMap=headerFound?mapColumnsFromHeader(headerCells):{};
+  const answered=applyLayoutAnswers(engineMap,options.layoutAnswers||{});
+  let columnMap = fillMissingRolesFromData(answered, grid, dataStart);
+  // confirmedRoles: columns whose role is supported by explicit header text or client decision.
+  // Inferred roles (data-shape guesses from fillMissingRolesFromData) are NOT confirmed.
+  // Cell analysis only constrains confirmed columns; inferred roles remain challengeable.
+  const confirmedColIndices = new Set(Object.values(answered));
+  const layout=headerFound?readHeaderLayout({headerCells,columnMap:answered,remembered:options.layoutAnswers||{}}):{headers:[],unknown:[],fingerprint:""};
+  let priceHeader=headerFound?grid[headerIndex].cells[columnMap.price]:"";
+  let sourceHeaders=headerFound?grid[headerIndex].cells:[];
   const rows = [];
   const skipped = [];
 
@@ -1062,19 +1234,35 @@ function parseDocument(text) {
       continue;
     }
 
-    const row = extractRow(cells, columnMap);
+    // Repeated table headers can change the quoted unit. Do not leak a
+    // preceding worksheet's price header into the next table.
+    const header=mapColumnsFromHeader(cells);
+    if(header.description!==undefined&&header.price!==undefined&&parseMoneyLenient(cells[header.price])===null){
+      columnMap=header;priceHeader=cells[header.price];sourceHeaders=cells;continue;
+    }
+    const row = extractRow(cells, columnMap, priceHeader, confirmedColIndices, sourceHeaders);
     if (!row) {
       skipped.push({ line, reason: "couldn't find a valid price or description" });
       continue;
     }
+    // Every cell against its column's meaning. A failing cell is flagged
+    // on the row with the reason; the row is kept.
+    const cellIssues=checkRowCells(cells,columnMap);
+    if(Object.keys(cellIssues).length)row.cellIssues=cellIssues;
 
     rows.push(row);
   }
 
   const documentKind=detectDocumentKind(text);
-  return { mode: "tabular", headerFound, columnMap, rows:reviewUncertainRows(rows,documentKind), skipped, documentKind,quoteValidUntil:findQuoteValidity(text) };
+  return { mode: "tabular", headerFound, columnMap, layout, rows:reviewUncertainRows(rows,documentKind), skipped, documentKind,quoteValidUntil:findQuoteValidity(text) };
 }
 
+
+function parseDocument(text, options={}){
+  const result=parseDocumentRows(text, options);
+  const documentUnit=documentQuoteUnit(text);
+  return {...result,rows:result.rows.map(row=>applySourceUnits(row,{documentUnit}))};
+}
 
 // Exported for use elsewhere in the app.
 export { parseDocument, findDate, findInvoiceNumber, detectDocumentKind, findQuoteValidity };
