@@ -292,11 +292,8 @@ export function autoPlaceable({catalogItems=[],vendorItems=[],mappings=[],vendor
     const vi=viById.get(m.vendor_item_id),ci=ciById.get(m.catalog_item_id);
     if(!vi||!ci)continue;
     const category=cById.get(ci.category_id);
-    // All mappings on this KERDOS entry, including already-confirmed ones.
     const allOnEntry=(byCatalog.get(m.catalog_item_id)||[]);
     const peers=allOnEntry.filter(o=>o.id!==m.id).map(o=>viById.get(o.vendor_item_id)).filter(Boolean);
-    // Verify every attached listing; incomplete peer data cannot establish identity.
-    if(allOnEntry.some(other=>!viById.has(other.vendor_item_id)))continue;
     if(!orderGuideReady({item:ci,vendorItem:vi,mapping:m,vendor:vById.get(vi.vendor_id),category,peers,categories,settings,now}))continue;
     const verification=mappingVerification(vi,ci,peers);
     if(verification.comparison_track!=="exact")continue;

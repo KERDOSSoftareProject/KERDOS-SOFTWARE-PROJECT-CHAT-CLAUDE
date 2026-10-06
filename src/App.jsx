@@ -1,8 +1,6 @@
-import {matchExistingProduct} from "./core/product-linking.js";
-import {associationTarget} from "./core/alternative-groups.js";
-import {createImportService} from "./services/imports.js";
-import {automaticAlternativeVerified} from "./core/alternative-groups.js";
+import {alternativeGroups,automaticAlternativeVerified} from "./core/alternative-groups.js";
 import {defaultComparisonUnit} from "./core/quote-controls.js";
+import {AssociateAlternatives} from "./pages/AssociateAlternatives.jsx";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { backend } from "./backend/index.js";
 import { createSessionController } from "./session.js";
@@ -34,7 +32,6 @@ const organizationService=createOrganizationService(backend);
 const vendorService=createVendorService(backend);
 const operationsService=createOperationsService(backend);
 const catalogService=createCatalogService(backend);
-const importService=createImportService(backend);
 const sessionController=createSessionController(backend.session);
 
 
@@ -70,6 +67,8 @@ function r2(n) { return Math.round(n * 100) / 100; }
 
 // ── LANDING ───────────────────────────────────────────────────────────
 export default function App() {
+  const automaticGrouping=useRef(false);
+  const [alternativeSelections,setAlternativeSelections]=useState(new Set());
   const [session,setSession]=useState(undefined);
   const [org,setOrg]=useState(null);
   const [organizations,setOrganizations]=useState([]);
@@ -269,26 +268,24 @@ export default function App() {
     // The engine reads this org's vocabulary from here on - before any
     // matching, parsing, or per-unit pricing in this session runs.
     configureProcurement({industry:o.industry,vocabulary:snapshot.vocabulary});
-    // Reconcile older engine-created entries as well as new imports. Explicit
-    // client links and rejected pairs survive. A stable target prevents cycles.
-    if(!usingLocal&&["owner","manager"].includes(o.role)&&backend.catalog.matchVendorItem){
-      const ordered=[...snapshot.catalogItems].sort((a,b)=>a.id===b.id?0:associationTarget([a,b])===a?-1:1);
-      const priority=new Map(ordered.map((item,index)=>[item.id,index]));
+    // Automatic cross-vendor grouping writes removed per consensus (2026-10-05).
+    // alternativeGroups() still runs at display time for Item Catalog grouping UI.
+    // Only explicit client decisions via AssociateAlternatives write to the database.
+    if(false&&!usingLocal&&["owner","manager"].includes(o.role)&&backend.catalog.groupAutomaticAlternatives&&!automaticGrouping.current){
+      automaticGrouping.current=true;
       let changed=false;
       try{
-        for(const mapping of snapshot.mappings){
-          if(mapping.match_method==="manual")continue;
-          const row=snapshot.vendorItems.find(v=>v.id===mapping.vendor_item_id);
-          if(!row||row.field_resolutions?.catalog_item_id?.confirmedBy)continue;
-          const candidates=snapshot.catalogItems.filter(i=>priority.get(i.id)<priority.get(mapping.catalog_item_id));
-          const match=matchExistingProduct(row,candidates,snapshot.vendorItems,snapshot.mappings);
-          if(!match)continue;
-          await backend.catalog.matchVendorItem({organizationId:id,mappingId:mapping.id,expectedCatalogItemId:mapping.catalog_item_id,targetCatalogItemId:match.catalogItemId,expectedRevision:row.row_revision||0,track:match.track});
-          mapping.catalog_item_id=match.catalogItemId;mapping.comparison_track=match.track;mapping.confidence_score=match.track==="exact"?100:70;
-          row.row_revision=(row.row_revision||0)+1;changed=true;
+        const groups=alternativeGroups(snapshot).slice(0,20);
+        for(const group of groups){
+          await backend.catalog.groupAutomaticAlternatives({organizationId:id,vendorItemIds:group.rows.map(v=>v.id),targetCatalogItemId:group.targetCatalogItemId,key:group.key,dimension:group.dimension,revisions:Object.fromEntries(group.rows.map(v=>[v.id,v.row_revision||0]))});
+          changed=true;
         }
-      }catch(error){setImportNotice({message:"Product matching needs attention: "+error.message});}
-      if(changed){snapshot=await backend.workspace.snapshot(id);void saveSnapshot(snapshotKey,snapshot);}
+        if(changed){snapshot=await backend.workspace.snapshot(id);void saveSnapshot(snapshotKey,snapshot);}
+      }catch(error){
+        if(changed){try{snapshot=await backend.workspace.snapshot(id);void saveSnapshot(snapshotKey,snapshot);}catch{}}
+        setImportNotice({message:"Automatic associations need attention: "+error.message});
+      }
+      finally{automaticGrouping.current=false;}
     }
     setVocabulary(snapshot.vocabulary);
     setVendors(snapshot.vendors);
@@ -330,30 +327,13 @@ export default function App() {
   const [backfilling,setBackfilling]=useState(false);
   const [catalogRepairError,setCatalogRepairError]=useState("");
   const attemptedCatalogRepair=useRef(new Set());
-  // Recover standalone entries for imports saved before their mapping.
+  // Automatic association writes removed per consensus (2026-10-05).
+  // Unmapped rows appear in Item Catalog for explicit client linking.
   async function backfillMappings(){
-    setBackfilling(true);
+    // Automatic association writes removed per consensus (2026-10-05).
+    // Unmapped rows appear in Item Catalog for explicit client linking.
+    setBackfilling(false);
     setCatalogRepairError("");
-    const mappedIds=new Set(mappings.map(m=>m.vendor_item_id));
-    const unmapped=vendorItems.filter(vi=>!mappedIds.has(vi.id));
-    const workingCatalogItems=[...catalogItems];
-    const workingCategories=[...categories];
-    const workingMappings=[...mappings];
-    let failed=0, firstError=null;
-    for(const vi of unmapped){
-      try{
-        const match=await catalogService.matchOrCreate({organizationId:org.id,vendorId:vi.vendor_id,description:vi.description,packSize:vi.pack_size,brand:vi.brand||null,gtin:vi.gtin||null,manufacturerCode:vi.manufacturer_code||null,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems,mappings:workingMappings});
-        if(!match) continue;
-        await importService.createMapping({
-          organization_id:org.id, catalog_item_id:match.catalogItemId, vendor_item_id:vi.id,
-          confidence_score:Math.round((match.score??0)*100),
-          match_method:"rule_based", comparison_track:match.track,
-        });
-        workingMappings.push({vendor_item_id:vi.id,catalog_item_id:match.catalogItemId});
-      }catch(err){ failed++; if(!firstError) firstError=err.message||String(err); }
-    }
-    if(failed)setCatalogRepairError(`${failed} vendor item${failed===1?"":"s"} could not be linked. ${firstError}`);
-    try{await loadData();}finally{setBackfilling(false);}
   }
 
   // Automatic placement. Any row whose fields are all solved goes into the
@@ -375,7 +355,7 @@ export default function App() {
     if(!org||org.role==="employee"||loading||autoPlacing||backfilling)return;
     const ready=autoPlaceable({catalogItems,vendorItems,mappings,vendors,categories,settings:org.settings});
     if(!ready.length)return;
-    const key=JSON.stringify([org.id,autoPlaceRetry,ready.map(r=>[r.mappingId,vendorItems.find(vi=>vi.id===r.vendorItemId),catalogItems.find(ci=>ci.id===r.catalogItemId)]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
+    const key=JSON.stringify([org.id,autoPlaceRetry,ready.map(r=>r.mappingId).sort()]);
     if(attemptedAutoPlace.current.has(key))return;
     attemptedAutoPlace.current.add(key);
     setAutoPlacing(true);setAutoPlaceError("");
@@ -451,6 +431,9 @@ export default function App() {
           unverified:m.comparison_track!=="exact"||m.confidence_score!==100||!assessment.ready,
           qualificationBlockers:assessment.blockers,qualificationReason:assessment.blockers.map(code=>BLOCKER_LABELS[code]).join("; "),
           brandMismatch,
+          // Unresolved-field explanations and arithmetic conflicts from cell analysis
+          cellUnresolved:vi.import_row?.evidence?.cellUnresolved||null,
+          cellConflicts:vi.import_row?.evidence?.cellConflicts||null,
         };
       }).filter(Boolean).sort((a,b)=>{
         // Blocked options (stale price, wrong brand) always sink to the
@@ -467,7 +450,8 @@ export default function App() {
           if(other.vendorItemId===option.vendorItemId)return false;
           return comparePurchasingPack(option.packSize,other.packSize).status!=="same" ||
             compareProductIdentity(option.description,other.description).status!=="same" ||
-            (!!(option.brand||other.brand)&&!brandsMatch(option.brand,other.brand));
+            // Brand difference only matters when the client requires a specific brand
+          (ci.brand_locked&&!!(option.brand||other.brand)&&!brandsMatch(option.brand,other.brand));
         });
         if(conflicting&&((!option.clientApproved&&!option.automaticAlternative)||ci.comparison_mode==="exact")){
           option.unverified=true;
@@ -1006,6 +990,7 @@ export default function App() {
                 </div>
               )}
 
+              {["owner","manager"].includes(org.role)&&<AssociateAlternatives orgId={org.id} selectedVendorIds={productList.filter(i=>alternativeSelections.has(i.catalogItemId)).flatMap(i=>i.options.map(o=>o.vendorItemId))} vendorItems={vendorItems} catalogItems={catalogItems} mappings={mappings} vendors={vendors} onUpdated={()=>loadData()} onClear={()=>setAlternativeSelections(new Set())}/>}
               {filtered.map(group=>(
                 <div key={group.category} style={{marginBottom:8}}>
                   <div style={{fontSize:11,fontWeight:800,color:"rgba(255,255,255,0.75)",letterSpacing:"0.08em",textTransform:"uppercase",margin:"14px 0 6px"}}>{group.category}</div>
@@ -1066,6 +1051,7 @@ export default function App() {
                             title={activeBlocked?undefined:"Drag onto a vendor basket to order from that vendor"}
                             style={{minWidth:0,padding:"8px 8px 8px 2px",borderTop:"1px solid #F2F2F2",cursor:activeBlocked?"default":"grab",opacity:dragItem?.key===activeKey?0.5:1}}>
                             <div style={{fontWeight:600,fontSize:12.5,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                              {["owner","manager"].includes(org.role)&&<input type="checkbox" aria-label={`Select ${item.name} for alternatives`} checked={alternativeSelections.has(item.catalogItemId)} onChange={()=>setAlternativeSelections(prev=>{const next=new Set(prev);if(next.has(item.catalogItemId))next.delete(item.catalogItemId);else next.add(item.catalogItemId);return next;})} style={{marginRight:6}}/>}
                               {item.name}
                               {hasEach&&<span title="Available by case or by each" style={{marginLeft:5,fontSize:9,background:"#E0F2F1",color:"#00695C",padding:"2px 5px",borderRadius:4,fontWeight:800}}>CASE + EACH</span>}
                               {linkedVendorCount>1&&<span title={`${linkedVendorCount} vendors linked to this item`} style={{marginLeft:5,fontSize:9,background:"#E8F1FF",color:"#1565C0",padding:"2px 5px",borderRadius:4,fontWeight:400}}>{linkedVendorCount} VENDORS</span>}

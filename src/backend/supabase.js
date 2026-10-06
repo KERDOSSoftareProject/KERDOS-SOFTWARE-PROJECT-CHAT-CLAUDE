@@ -90,8 +90,6 @@ export function createSupabaseBackend({url,anonKey}) {
       },
     },
     catalog:{
-      matchVendorItem(row){return providerResult(client.rpc("kerdos_match_vendor_item",{p_organization_id:row.organizationId,p_mapping_id:row.mappingId,p_expected_catalog_item_id:row.expectedCatalogItemId,p_target_catalog_item_id:row.targetCatalogItemId,p_expected_revision:row.expectedRevision,p_track:row.track}),"Match vendor product");},
-      splitMapping(row){return providerResult(client.rpc("kerdos_unlink_vendor_item",{p_organization_id:row.organizationId,p_mapping_id:row.mappingId,p_expected_revision:row.expectedRevision}),"Unlink vendor product");},
       groupAutomaticAlternatives(row){return providerResult(client.rpc("kerdos_group_automatic_alternatives",{p_organization_id:row.organizationId,p_vendor_item_ids:row.vendorItemIds,p_target_catalog_item_id:row.targetCatalogItemId,p_key:row.key,p_dimension:row.dimension,p_revisions:row.revisions}),"Group automatic alternatives");},
       separateAutomaticAlternatives(row){return providerResult(client.rpc("kerdos_separate_automatic_alternatives",{p_organization_id:row.organizationId,p_target_catalog_item_id:row.targetCatalogItemId}),"Separate automatic alternatives");},
       associateAlternatives(row){return providerResult(client.rpc("kerdos_associate_alternatives",{p_organization_id:row.organizationId,p_vendor_item_ids:row.vendorItemIds,p_target_catalog_item_id:row.targetCatalogItemId,p_name:row.name,p_preferred_brand:row.preferredBrand||null,p_revisions:row.revisions}),"Associate selected alternatives");},
