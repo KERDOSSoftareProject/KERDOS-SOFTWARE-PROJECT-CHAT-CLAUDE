@@ -75,7 +75,7 @@ await test("an unreadable pack is 60 with the reason, not 0",()=>{
 await test("a row at 90 or better everywhere is Order Guide ready; a 70 cell holds it back",()=>{
   assert.equal(orderGuideReady({item,vendorItem:base,mapping,vendor,category}),true);
   assert.equal(orderGuideReady({item,vendorItem:base,mapping,vendor,category,peers:[{id:"v2",vendor_id:"B",description:"BACON LAYOUT",pack_size:"1/15 LB"}]}),false);
-  assert.equal(orderGuideReady({item:{...item,category_review:true},vendorItem:base,mapping,vendor,category}),true,"a guessed category does not hold a priced row back");
+  assert.equal(orderGuideReady({item:{...item,category_review:true},vendorItem:base,mapping,vendor,category}),false,"a guessed category (catAcc=70) holds a priced row back until confirmed");
   assert.equal(orderGuideReady({item,vendorItem:base,mapping,vendor,category:{id:"pen",name:"Uncategorized",is_holding_pen:true}}),false,"no real category does");
 });
 
