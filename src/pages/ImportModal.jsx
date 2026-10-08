@@ -4,7 +4,7 @@ import {fileToText} from "../document-reader.js";
 import {findDate,findInvoiceNumber,parseDocument} from "../ingestion.js";
 import {findUncodedVendorListing,vendorListingLabel} from "../core/vendor-listing.js";
 import {bestInvoiceMatch,compareProductIdentity,comparePurchasingPack,MATCH_POLICY,parsePackSize,priceBasisFor,quotePriceOnBasis,brandsMatch} from "../procurement.js";
-import {createCatalogService,engineVerifiable} from "../services/catalog.js";
+import {createCatalogService} from "../services/catalog.js";
 import {createCategoryService} from "../services/categories.js";
 import {createDocumentService} from "../services/documents.js";
 import {createImportService} from "../services/imports.js";
@@ -13,7 +13,7 @@ import {rememberedLayout,withRememberedLayout} from "../core/sheet-layout.js";
 import {formatMoney} from "../localization.js";
 import {explainImportRow} from "../core/import-evidence.js";
 import {importResolutions,unitChoices} from "../core/catalog-fields.js";
-import {preparePriceImport} from "../core/price-import-review.js";
+import {importPriceRow} from "../core/import-price-row.js";
 import {verifyResumeRows} from "../core/import-resume.js";
 import {priceDocumentStatus} from "../core/import-status.js";
 import {enrichFromInvoices,invoiceEvidence} from "../core/invoice-evidence.js";
@@ -70,6 +70,7 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
       if(!active)return;
       setInvoiceSources(invoices.flatMap(invoice=>parseDocument(invoice.raw_text||"").rows.map(row=>({
         row,id:invoice.id,number:invoice.invoice_number,date:invoice.invoice_date,
+        organizationId:orgId,vendorId,
       }))));
       setInvoiceLoad("ready");
     }).catch(error=>{if(active)setInvoiceLoad(error.message||"Invoice lookup failed");});
@@ -352,89 +353,20 @@ export function PasteModal({industry="",vendors,orgId,orgSettings,catalogItems,c
           }
         }
         const priorMapping=ex?await importService.mapping(orgId,ex.id):null;
-        const prepared=preparePriceImport(row,ex,priorMapping,rowNeedsReview?rowIssues:[]);
-        row=prepared.row;
-        let vendorItemId;
-        // The provider persists current quote and history in one transaction.
-        // It is impossible to update one and lose the other midway through.
-        // Preserve an item even when the sheet omits the price unit. Its
-        // quoted number remains in the source and on the vendor listing,
-        // but is unavailable for ordering until the basis is resolved.
-        const resolved=prepared.resolved;
-        const needsBasis=prepared.requiresReview;
-        const basis=resolved?.basis||null;
-        // An unresolvable incoming price must not retire a previously
-        // confirmed quote. Its original value stays in the source file.
-        vendorItemId=needsBasis&&ex?ex.id:await backend.pricing.applyQuote({
-          vendorItemId:ex?.id||null,organizationId:orgId,vendorId,
-          vendorItemCode:row.code,description:row.description,
-          sellingUnit:resolved?.sellingUnit||null,priceBasis:basis?.basis||null,brand:row.brand||null,
-          gtin:row.gtin||null,manufacturerCode:row.manufacturerCode||null,
-          packSize:row.packSize||ex?.pack_size||null,price:row.price,
-          priceUnavailable:!!row.priceUnavailable||needsBasis,effectiveDate:importBatchTime,
-          quoteValidUntil:group.quoteValidUntil,sourceFilePath,
-          sourceFileName:group.name,sourceLine:row.sourceLine||null,sourceDocumentId,
-          importRow:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex?.import_row?.baseline||ex?.import_row?.row||{...sourceRow,...sourceRow.originalFields},sourceDocumentId,sourceFileName:group.name,reviewRequired:needsBasis||!!row.requiresReview,reviewFields:prepared.reviewFields,conflicts:prepared.reasons,changes:row.changes||[]},
-          fieldResolutions:importResolutions(sourceRow,ex||{}),
+        const {vendorItemId,needsBasis,match,savedMapping}=await importPriceRow({
+          backend,importService,catalogService,
+          sourceRow,row,ex,priorMapping,rowIssues,rowNeedsReview,invoiceSources,
+          orgId,vendorId,sourceDocumentId,completedKey,importBatchTime,group,sourceFilePath,
+          workingCatalogItems,workingCategories,workingVendorItems,workingMappings,
+          applySelectedCategory,
         });
-        if(needsBasis&&ex){
-          const {error}=await backend.records.query("vendor_items").update({import_row:{row:{...sourceRow,...sourceRow.originalFields},evidence:row,rowKey:completedKey,baseline:ex.import_row?.baseline||ex.import_row?.row||{description:ex.description,brand:ex.brand,packSize:ex.pack_size,sellingUnit:ex.selling_unit,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code},sourceDocumentId,sourceFileName:group.name,reviewRequired:true,reviewFields:prepared.reviewFields,changes:row.changes||[],conflicts:prepared.reasons}}).eq("id",ex.id).eq("organization_id",orgId);
-          if(error)throw new Error(`Could not save the incoming quote for review: ${error.message}`);
-        }
         if(ex&&!needsBasis) updated++; else if(!ex) created++;
         if(needsBasis)basisReview++;
-
-        // Whether this vendor item is brand new or was just updated, it
-        // must be linked to a catalog item: an unlinked price is invisible
-        // to ordering and to cross-vendor comparison.
-        if(vendorItemId){
-          const existingMapping=priorMapping||await importService.mapping(orgId,vendorItemId);
-          if(!existingMapping){
-            // When a reused code carries changed fields, recover any missing
-            // catalog link from the saved listing, never the pending identity.
-            const identity=needsBasis&&ex?{description:ex.description,packSize:ex.pack_size,brand:ex.brand,gtin:ex.gtin,manufacturerCode:ex.manufacturer_code}:row;
-            const match=await catalogService.matchOrCreate({organizationId:orgId,vendorId,description:identity.description,packSize:identity.packSize,brand:identity.brand,gtin:identity.gtin||null,manufacturerCode:identity.manufacturerCode||null,categoryId:needsBasis?null:row.categoryId||null,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems:workingVendorItems,mappings:workingMappings});
-            if(match){
-              const savedMapping=await importService.createMapping({
-                organization_id:orgId, catalog_item_id:match.catalogItemId, vendor_item_id:vendorItemId,
-                confidence_score:Math.round((match.score??0)*100),
-                match_method:"rule_based", comparison_track:match.track,
-              });
-              mapped++;
-              workingVendorItems.push({id:vendorItemId,vendor_id:vendorId,description:identity.description,pack_size:identity.packSize||null,brand:identity.brand||null,gtin:identity.gtin||null,manufacturer_code:identity.manufacturerCode||null});
-              workingMappings.push({id:savedMapping.id,catalog_item_id:match.catalogItemId,vendor_item_id:vendorItemId,comparison_track:match.track,confidence_score:Math.round((match.score??0)*100)});
-              if(!needsBasis)await applySelectedCategory(match.catalogItemId,row.categoryId);
-              // A second vendor can prove the first listing's identity and
-              // pack. Promote only mappings passing the same verification as
-              // the Item Catalog's engine-review button.
-              if(match.track==="exact"&&!needsBasis){
-                const verified=engineVerifiable({mappings:workingMappings,vendorItems:workingVendorItems,catalogItems:workingCatalogItems})
-                  .filter(entry=>entry.catalogItemId===match.catalogItemId);
-                if(verified.length){
-                  try{
-                    await catalogService.confirmMappings(verified);
-                    const ids=new Set(verified.map(entry=>entry.mappingId));
-                    for(const mapping of workingMappings)if(ids.has(mapping.id)){mapping.comparison_track="exact";mapping.confidence_score=100;}
-                  }catch(err){
-                    // The quote and mapping have already been saved. Keep the
-                    // import successful and leave verification available in
-                    // Item Catalog rather than reporting a retryable row.
-                    saveError=(saveError?saveError+" ":"")+`${row.description}: saved, but automatic verification could not finish (${err.message||String(err)}). Review the mapping in Item Catalog.`;
-                  }
-                }
-              }
-              identified.push({description:row.description,packSize:row.packSize||ex?.pack_size||null,price:row.price,track:match.track,confidence:match.score==null?null:Math.round(match.score*100),reason:match.reason||null});
-            }
-          }else if(row.categoryId&&!needsBasis){
-            // An explicit category correction moves the established catalog
-            // item and all its vendor rows, without changing their mapping.
-            await applySelectedCategory(existingMapping.catalog_item_id,row.categoryId);
-          }
+        if(match&&savedMapping){
+          mapped++;
+          identified.push({description:row.description,packSize:row.packSize||ex?.pack_size||null,price:row.price,track:match.track,confidence:match.score==null?null:Math.round(match.score*100),reason:match.reason||null});
         }
-        if(!vendorItemId||!await importService.mapping(orgId,vendorItemId))
-          throw new Error("The price was saved, but its catalog link is incomplete. This row can be resumed.");
-        // A row is complete only after both the listing and catalog link
-        // exist. Checkpoint each row before moving to the next one.
+        // A row is complete only after both the listing and catalog link exist.
         await importService.recordProgress(sourceDocumentId,[...completedKeys,completedKey]);
         completedKeys.add(completedKey);
         const saved={...ex,id:vendorItemId,vendor_id:vendorId,organization_id:orgId,

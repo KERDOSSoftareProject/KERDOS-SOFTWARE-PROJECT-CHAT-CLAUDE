@@ -16,7 +16,7 @@ export function preparePriceImport(source,prior=null,mapping=null,issues=[],invo
   if(prior&&(source.code?String(source.code)!==String(prior.vendor_item_code):!!prior.vendor_item_code))
     throw new Error("The incoming vendor item code does not belong to this saved listing.");
   try{row=prepareImportRow(source,{prior,mapping,invoices});}
-  catch(error){reasons.push(error.message);changes=knownItemChanges(source,prior);}
+  catch(error){reasons.push(error.message);changes=prior?knownItemChanges(source,prior):[];}
   changes=row.changes||changes;
   reasons.push(...(row.conflicts||[]));
   if(prior&&!row.knownVendorItem){
@@ -69,8 +69,11 @@ export function preparePriceImport(source,prior=null,mapping=null,issues=[],invo
         resolved=inferred;
       } else if(inferred.inferenceLevel==='suggested'){
         // Plausible but not confirmed — set as resolved so price math works,
-        // but mark the row for review so the client can confirm or change it
-        resolved=inferred;
+        // but mark the row for review so the client can confirm or change it.
+        // Write sellingUnitSource="inferred" so catalogRowEvidence can distinguish
+        // this from document-stated units and show it as unconfirmed.
+        resolved={...inferred,sellingUnitSource:'inferred'};
+        row={...row,sellingUnitSource:'inferred'};
         reasons.push(`Pricing basis "${inferred.sellingUnit}" suggested but not confirmed: ${inferred.inferenceReason}`);
       }
       // 'conflicting' → resolved stays null, falls through to "Quoted unit is unresolved"

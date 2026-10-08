@@ -6,9 +6,10 @@ import {compareProductIdentity,comparePurchasingPack,priceBasisFor,casePriceFrom
 export function invoiceEvidence(row,invoices=[]){
   const code=String(row.code||"").trim();
   const name=String(row.description||"").trim().toLowerCase();
-  const matches=invoices.filter(entry=>code
+  const wrapped=invoices.map(entry=>entry&&typeof entry==='object'&&'row' in entry?entry:{row:entry});
+  const matches=wrapped.filter(entry=>entry.row&&(code
     ?entry.row.code&&String(entry.row.code).trim()===code
-    :!entry.row.code&&name&&String(entry.row.description||"").trim().toLowerCase()===name);
+    :!entry.row.code&&name&&String(entry.row.description||"").trim().toLowerCase()===name));
   if(!matches.length)return {matches:[],suggestions:{},conflicts:[]};
   const conflicts=[];
   const valid=matches.filter(entry=>{

@@ -89,15 +89,15 @@ export const restaurantDictionaries={
     reference("garde manger",[],"Cold food preparation role or station"),
   ],
   food:[
-    product("chicken",["chix","chkn","chik"]),
-    product("chicken breast",["chix brst","chkn brst"]),
-    product("breast",["brst"],"Anatomical cut",["chicken","chix","chkn","turkey","duck"]),
-    product("wing",["wng","wngs"],"Poultry wing",["chicken","chix","turkey"]),
-    product("thigh",["thi","thigh","thighs"],"Anatomical cut",["chicken","chix","turkey"]),
-    product("leg",["lgs","lgs"],"Anatomical cut",["chicken","chix","turkey"]),
-    product("leg quarter",["leg qtr","lgqtr"],"Leg and thigh together",["chicken","chix"]),
-    product("drumstick",["drmstk","drmsks","drum"],"Poultry drumstick",["chicken","chix","turkey"]),
-    product("tender",["tndr","tndrs","tenderloin strip"],"Poultry tender / tenderloin strip",["chicken","chix"]),
+    product("chicken",["chix","chkn","chik","chic"]),
+    product("chicken breast",["chix brst","chkn brst","chic brst"]),
+    product("breast",["brst"],"Anatomical cut",["chicken","chix","chkn","chik","chic","turkey","duck"]),
+    product("wing",["wng","wngs"],"Poultry wing",["chicken","chix","chic","turkey"]),
+    product("thigh",["thi","thigh","thighs"],"Anatomical cut",["chicken","chix","chic","turkey"]),
+    product("leg",["lgs","lgs"],"Anatomical cut",["chicken","chix","chic","turkey"]),
+    product("leg quarter",["leg qtr","lgqtr"],"Leg and thigh together",["chicken","chix","chic"]),
+    product("drumstick",["drmstk","drmsks","drum"],"Poultry drumstick",["chicken","chix","chic","turkey"]),
+    product("tender",["tndr","tndrs","tenderloin strip"],"Poultry tender / tenderloin strip",["chicken","chix","chic"]),
     product("turkey",["trky"]),
     product("beef",["bf"],"Beef product",["ground","grnd","brisket","rib","base","stock","broth"]),
     product("pork",["prk"]),
@@ -297,5 +297,9 @@ export const restaurantDictionaries={
 // Volume of a bushel depends on what is being measured. BU stays its own unit.
 export const restaurantUnitVocabulary=[
   ...["bushel","bushels","bu"].map(term=>({kind:"unit",term,canonical:"BU"})),
+  // "O" as a bare abbreviation for ounce appears on some food-service vendor sheets
+  // (e.g. "15/6.33O"). It is too short to be a safe global alias — add it only in
+  // restaurant context where the surrounding pack structure confirms a weight unit.
+  {kind:"unit",term:"o",canonical:"OZ"},
   ...["flat","flats","sleeve","sleeves","bunch","bunches"].map(term=>({kind:"packaging",term})),
 ];
