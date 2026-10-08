@@ -488,6 +488,11 @@ export default function App() {
         displayUnit,
         unitDimension:firstPack?.dimension||null,
         options,
+        // All distinct vendor IDs linked to this KERDOS item, regardless of
+        // whether they are currently orderable. Used by the multi-vendor badge
+        // so that held vendors (expired quote, unverified match, etc.) are
+        // counted and disclosed rather than silently dropped.
+        allLinkedVendorIds:[...new Set(options.map(o=>o.vendorId))],
       };
     });
   },[catalogItems,categories,vendorItems,mappings,vendors,vendorColors,vocabulary,org?.settings,clockTick]);
@@ -1006,7 +1011,10 @@ export default function App() {
                         const caseQty=quantities[caseKey]||0;
                         const eachQty=quantities[eachKey]||0;
                         const hasEach=item.options.some(o=>o.eachPrice);
-                        const linkedVendorCount=new Set(item.options.map(o=>o.vendorId)).size;
+                        // allLinkedVendorIds is the full set saved to the product object before
+                        // the orderable filter runs, so held vendors are counted correctly.
+                        const totalLinkedVendors=item.allLinkedVendorIds?.length??new Set(item.options.map(o=>o.vendorId)).size;
+                        const readyVendorCount=new Set(item.options.map(o=>o.vendorId)).size; // options already filtered to orderable in filtered useMemo
                         const cheapest=item.options[0];
                         const selectedUnit=hasEach?(unitSelection[item.catalogItemId]||"case"):"case";
                         const activeKey=selectedUnit==="case"?caseKey:eachKey;
@@ -1054,7 +1062,25 @@ export default function App() {
                               {["owner","manager"].includes(org.role)&&<input type="checkbox" aria-label={`Select ${item.name} for alternatives`} checked={alternativeSelections.has(item.catalogItemId)} onChange={()=>setAlternativeSelections(prev=>{const next=new Set(prev);if(next.has(item.catalogItemId))next.delete(item.catalogItemId);else next.add(item.catalogItemId);return next;})} style={{marginRight:6}}/>}
                               {item.name}
                               {hasEach&&<span title="Available by case or by each" style={{marginLeft:5,fontSize:9,background:"#E0F2F1",color:"#00695C",padding:"2px 5px",borderRadius:4,fontWeight:800}}>CASE + EACH</span>}
-                              {linkedVendorCount>1&&<span title={`${linkedVendorCount} vendors linked to this item`} style={{marginLeft:5,fontSize:9,background:"#E8F1FF",color:"#1565C0",padding:"2px 5px",borderRadius:4,fontWeight:400}}>{linkedVendorCount} VENDORS</span>}
+                              {totalLinkedVendors>1&&(()=>{
+                                const heldCount=totalLinkedVendors-readyVendorCount;
+                                const label=heldCount>0
+                                  ?`${totalLinkedVendors} vendors linked · ${readyVendorCount} ready`
+                                  :`${totalLinkedVendors} vendors`;
+                                const tip=heldCount>0
+                                  ?`${totalLinkedVendors} vendors carry this item; ${readyVendorCount} have a current eligible price. ${heldCount} held (expired, unverified, or unavailable). Click to compare ready vendors.`
+                                  :`${totalLinkedVendors} vendors carry this item. Click to compare prices.`;
+                                return <button
+                                  type="button"
+                                  aria-label={tip}
+                                  title={tip}
+                                  aria-expanded={menuOpen}
+                                  aria-haspopup="listbox"
+                                  onClick={e=>{e.stopPropagation();setOpenPriceMenu(prev=>prev===activeKey?null:activeKey);}}
+                                  style={{marginLeft:5,fontSize:9,background:heldCount>0?"#FFF8E1":"#E8F1FF",color:heldCount>0?"#B26A00":"#1565C0",padding:"2px 5px",borderRadius:4,fontWeight:800,border:`1px solid ${heldCount>0?"#FFE082":"#BBDEFB"}`,cursor:"pointer",lineHeight:1.4,verticalAlign:"middle"}}>
+                                  {label}
+                                </button>;
+                              })()}
                               {item.lockedBrand&&<span title={`Locked to ${item.lockedBrand} - other brands are never ordered for this item`} style={{marginLeft:4,fontSize:9,background:"#E3F2FD",color:"#1565C0",padding:"1px 4px",borderRadius:4,fontWeight:700}}>🔒 {item.lockedBrand}</span>}
                               {["similar","review"].includes(activeMatchTrack)&&(
                                 <span title="Auto-matched to this product below full confidence - worth double-checking it's really the same item"
