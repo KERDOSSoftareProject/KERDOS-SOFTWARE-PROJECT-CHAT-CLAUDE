@@ -1,5 +1,6 @@
 // ════════════════════════════════════════════════════════════════════
 import {applySourceUnits,documentQuoteUnit} from "./core/source-units.js";
+import {pricingUnitHeader} from "./core/billing-unit-evidence.js";
 import {analyzeRow} from "./core/cell-analysis.js";
 import {measurement,normalizeGtin,normalizeManufacturerCode,packFromDescription,parsePackSize,normalizeMixedFraction} from "./procurement.js";
 import {readHeaderLayout,applyLayoutAnswers,checkRowCells} from "./core/sheet-layout.js";
@@ -446,7 +447,7 @@ export function normalizeColumnPack(value){
   return normalizeMixedFraction(text);
 }
 
-function extractRow(cells, columnMap, priceHeader="", confirmedColIndices=null) {
+function extractRow(cells, columnMap, priceHeader="", confirmedColIndices=null, sourceHeaders=[]) {
   const get = role => (columnMap[role] !== undefined ? cells[columnMap[role]] : undefined);
 
   const priceRaw = get("price");
@@ -543,6 +544,10 @@ function extractRow(cells, columnMap, priceHeader="", confirmedColIndices=null) 
     gtin,
     manufacturerCode,
     sellingUnit,
+    sellingUnitHeader:sourceHeaders[columnMap.sellingUnit]||null,
+    sellingUnitSource:sourceHeaders[columnMap.sellingUnit]?`header: ${sourceHeaders[columnMap.sellingUnit]}`:null,
+    billingUnitEvidence:sellingUnit&&pricingUnitHeader(sourceHeaders[columnMap.sellingUnit])?{kind:'pricing-unit-header',header:sourceHeaders[columnMap.sellingUnit],unit:sellingUnit}:null,
+    priceHeader,
     description: fullDescription.slice(0, 120),
     details,
     packSize,
@@ -727,7 +732,9 @@ function parseGoodsInvoice(lines,text){
     if(qty===null||!Number.isFinite(qty))issues.push('Measured billed quantity is missing for this selling unit');
     else if(Math.abs(qty*price-amount)>0.025)issues.push('Billed quantity and unit price do not reconcile with extended total');
     rows.push({code,description:description.slice(0,120),packSize,qty,orderedQty:Number(ordered),deliveredQty:Number(delivered),weight:weightPart,
-      sellingUnit:uom.toUpperCase(),price,amount,priceBasis:measuredUnit?'measure':'selling-unit',
+      sellingUnit:uom.toUpperCase(),sellingUnitSource:'goods invoice billed UOM',
+      billingUnitEvidence:{kind:'goods-invoice-billed-unit',header:'UOM',unit:uom.toUpperCase()},
+      price,amount,priceBasis:measuredUnit?'measure':'selling-unit',
       priceUnavailable:false,sourceLine:line,issues});
   }
   return {mode:'goods-invoice',headerFound:true,columnMap:{},rows,skipped,documentKind:'invoice',quoteValidUntil:findQuoteValidity(text)};
@@ -1215,6 +1222,7 @@ function parseDocumentRows(text, options={}) {
   const confirmedColIndices = new Set(Object.values(answered));
   const layout=headerFound?readHeaderLayout({headerCells,columnMap:answered,remembered:options.layoutAnswers||{}}):{headers:[],unknown:[],fingerprint:""};
   let priceHeader=headerFound?grid[headerIndex].cells[columnMap.price]:"";
+  let sourceHeaders=headerFound?grid[headerIndex].cells:[];
   const rows = [];
   const skipped = [];
 
@@ -1230,9 +1238,9 @@ function parseDocumentRows(text, options={}) {
     // preceding worksheet's price header into the next table.
     const header=mapColumnsFromHeader(cells);
     if(header.description!==undefined&&header.price!==undefined&&parseMoneyLenient(cells[header.price])===null){
-      columnMap=header;priceHeader=cells[header.price];continue;
+      columnMap=header;priceHeader=cells[header.price];sourceHeaders=cells;continue;
     }
-    const row = extractRow(cells, columnMap, priceHeader, confirmedColIndices);
+    const row = extractRow(cells, columnMap, priceHeader, confirmedColIndices, sourceHeaders);
     if (!row) {
       skipped.push({ line, reason: "couldn't find a valid price or description" });
       continue;

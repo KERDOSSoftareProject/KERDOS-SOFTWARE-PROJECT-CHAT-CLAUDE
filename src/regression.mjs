@@ -47,8 +47,6 @@ t("category block", JSON.stringify(nextCategoryRange([{range_end:19999}])), '{"r
 t("same normalized pack",packsEquivalent("4/1 GAL","4 x 1 gallon"),true);
 t("same total but different case configuration is not interchangeable",packsEquivalent("4/1 GAL","2/2 GAL"),false);
 t("same number, different dimensions",packsEquivalent("1 G","1 ML"),false);
-t("same custom unit",packsEquivalent("24 SHEET","24 sheet"),true);
-t("different custom units",packsEquivalent("24 SHEET","24 TILE"),false);
 
 console.log("\n-- PER-UNIT PRICE (pack sizes made comparable) --");
 t("50 LB @ $45 -> per LB", pricePerUnit(45,"50 LB","LB")?.price, 0.9);
@@ -56,7 +54,10 @@ t("4/1 GAL @ $74.89 -> per GAL", pricePerUnit(74.89,"4/1 GAL","GAL")?.price, 18.
 t("4/1 GAL @ $74.89 -> per FL OZ", pricePerUnit(74.89,"4/1 GAL","fl oz")?.price, 0.1463);
 t("wrong dimension keeps pack unit", pricePerUnit(45,"50 LB","GAL")?.unit, "LB");
 t("no target -> pack unit", pricePerUnit(45,"50 LB")?.unit, "LB");
-t("unknown unit 24 SHEET @ $12", pricePerUnit(12,"24 SHEET")?.price, 0.5);
+t("untaught unit 24 SHEET → no price (not registered)", pricePerUnit(12,"24 SHEET")?.price, undefined);
+t("untaught unit: packs not confirmed equivalent", packsEquivalent("24 SHEET","24 sheet"), false);
+t("untaught unit 6/10 CN → no price (packaging word)", pricePerUnit(18.50,"6/10 CN")?.price, undefined);
+t("untaught CN packs not confirmed equivalent", packsEquivalent("6/10 CN","6/10 CN"), false);
 t("mass units listed", unitsForDimension("mass").join(","), "G,KG,OZ,LB");
 
 console.log("\n-- BRAND LOCK --");
@@ -79,6 +80,10 @@ configureVocabulary([
   {kind:"synonym",term:"chix",canonical:"chicken"},{kind:"synonym",term:"plywd",canonical:"plywood"},
 ]);
 t("taught unit parses a pack", parsePackSize("24 sheets")?.unit, "SHEET");
+t("same custom unit (after teaching)", packsEquivalent("24 SHEET","24 sheet"),true);
+t("different custom units (after teaching)", packsEquivalent("24 SHEET","24 TILE"),false);
+t("taught unit: per-unit price works", pricePerUnit(12,"24 SHEET")?.price, 0.5);
+t("taught unit: different target unit returns null", pricePerUnit(12,"24 SHEET","TILE")?.price, undefined);
 t("taught unit prices per unit", pricePerUnit(48,"24 sheets","sheet")?.price, 2);
 t("two-word taught unit", parsePackSize("500 board feet")?.unit, "BF");
 t("pack syntax variants agree", packsEquivalent("4-5LB","4/5 LB"), true);
@@ -93,6 +98,12 @@ t("stopword carries no meaning", safeProductScore("Premium Widgets","Widgets"), 
 configureVocabulary();
 t("reset: synonym forgotten", safeProductScore("Chix Breast 40lb","Chicken Breast 40lb")>=MATCH_POLICY.autoLink, false);
 t("reset: base unit still works", pricePerUnit(45,"50 LB","LB")?.price, 0.9);
+t("reset: SHEET unresolved again — no price", pricePerUnit(12,"24 SHEET")?.price, undefined);
+t("reset: SHEET packs not confirmed equivalent again", packsEquivalent("24 SHEET","24 sheet"), false);
+t("CN stays blocked regardless of vocabulary", pricePerUnit(18.50,"6/10 CN")?.price, undefined);
+t("named can 6/#10 CN agrees with 6/#10", packsEquivalent("6/#10 CN","6/#10"), true);
+t("named can same string agrees", packsEquivalent("6/#10 CN","6/#10 CN"), true);
+t("non-named unknown pack stays review", packsEquivalent("6/10 CN","6/10 CN"), false);
 
 console.log("\n-- CONTEXT IDENTITY + PRICE LIFECYCLE --");
 for(const [a,b,e] of [

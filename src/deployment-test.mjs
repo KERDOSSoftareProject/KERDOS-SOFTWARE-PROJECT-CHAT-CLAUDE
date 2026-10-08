@@ -29,9 +29,10 @@ for(const rpc of [...adapter.matchAll(/client\.rpc\("([^"]+)"/g)].map(match=>mat
 const importModal=fs.readFileSync(path.join(root,"src/pages/ImportModal.jsx"),"utf8");
 assert.match(importModal,/if\(mode==="invoice"&&\(missingInvoiceDates\.length\|\|needsReview\.length\)\) return;/,"price-sheet auto-save must not be gated on row issues");
 assert.ok(!/if\(unsafeDocuments\.length\|\|missingInvoiceDates\.length\|\|needsReview\.length\) return;/.test(importModal),"old price-sheet review gate must be gone");
-assert.match(importModal,/preparePriceImport\(row,ex,priorMapping,rowNeedsReview\?rowIssues:\[\]\)/,"document issues must reach the row review decision");
-assert.match(importModal,/reviewRequired:needsBasis\|\|!!row\.requiresReview,reviewFields:prepared\.reviewFields,conflicts:prepared\.reasons/,"row issues and identity/pack warnings must be saved for new catalog rows");
-assert.match(importModal,/reviewRequired:true,reviewFields:prepared\.reviewFields,changes:row\.changes\|\|\[\],conflicts:prepared\.reasons/,"repeat row warnings must be saved without replacing the accepted quote");
+const importPriceRowSrc=fs.readFileSync(path.join(root,"src/core/import-price-row.js"),"utf8");
+assert.match(importPriceRowSrc,/preparePriceImport\(row,\s*ex,\s*priorMapping,\s*rowNeedsReview\s*\?\s*rowIssues\s*:\s*\[\],\s*invoiceSources,\s*\{organizationId:\s*orgId,\s*vendorId\}\)/,"document issues and scoped invoice evidence must reach the row review decision");
+assert.match(importPriceRowSrc,/reviewRequired:\s*needsBasis\s*\|\|\s*!!row\.requiresReview,\s*reviewFields:\s*prepared\.reviewFields,\s*conflicts:\s*prepared\.reasons/,"row issues and identity/pack warnings must be saved for new catalog rows");
+assert.match(importPriceRowSrc,/reviewRequired:\s*true,\s*reviewFields:\s*prepared\.reviewFields,\s*changes:\s*row\.changes\s*\|\|\s*\[\],\s*conflicts:\s*prepared\.reasons/,"repeat row warnings must be saved without replacing the accepted quote");
 
 // Every adapter parameter of the quote RPC must exist in the migrated function signature.
 for(const param of [...adapter.matchAll(/\bp_[a-z_]+(?=:)/g)].map(m=>m[0]))

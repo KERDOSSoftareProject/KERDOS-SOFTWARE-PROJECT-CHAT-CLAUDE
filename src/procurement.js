@@ -52,7 +52,7 @@ const UNIT_DEFINITIONS = {
   BU:{dimension:"bushel",base:"BU",factor:1,aliases:["bu","bus","bushel","bushels"]},
   // count -> each
   EA:{dimension:"count",base:"EA",factor:1,aliases:["ea","each","piece","pieces","pc","pcs","pce","pces"]},
-  CT:{dimension:"count",base:"EA",factor:1,aliases:["ct","count"]},
+  CT:{dimension:"count",base:"EA",factor:1,aliases:["ct","count","cnt"]},
   DOZ:{dimension:"count",base:"EA",factor:12,aliases:["doz","dozen","dz"]},
 };
 
@@ -357,6 +357,17 @@ function pricePerUnit(price, pack, targetUnit) {
   if (def && def.dimension===p.dimension && p.baseTotal) {
     return {price:round(n/(p.baseTotal/def.factor),4),unit:target,dimension:p.dimension};
   }
+  // Unknown-dimension packs: allow arithmetic only for explicitly registered units
+  // (taught via kind:"unit" → present in UNIT_LOOKUP) that are not packaging words.
+  // Untaught codes (e.g. "CN") and packaging aliases stay unresolved — dividing by
+  // an unconfirmed total is not a valid price comparison.
+  if(p.dimension==="unknown"){
+    const unitKey=p.unit.toLowerCase();
+    if(!UNIT_LOOKUP.has(unitKey)||PACKAGING_ALIASES.has(unitKey)) return null;
+    // When a target unit is requested and it is not the same canonical unit, there is
+    // no basis for conversion — unknown units have no cross-unit factors.
+    if(targetUnit&&target!==p.unit) return null;
+  }
   return {price:round(n/p.total,4),unit:p.unit,dimension:p.dimension};
 }
 
@@ -478,9 +489,16 @@ function casePriceFromQuote(price,basis,unit,pack){
   if(basis==="each") return round(n*p.caseQty,4);
   if(basis==="measure"){
     const code=normalizeUnit(unit),def=UNIT_DEFINITIONS[code];
-    // A unit with no conversion table (one the organization taught) is
-    // convertible only when the pack is stated in that same unit.
-    if(!def) return p.unit===code&&p.total?round(n*p.total,4):null;
+    // A unit with no conversion table must be explicitly registered (kind:"unit")
+    // and not a packaging alias to be used as a multiplier. Taught custom units
+    // (SHEET, SQFT, BF, etc.) are in UNIT_LOOKUP and not in PACKAGING_ALIASES —
+    // their same-unit arithmetic is valid. Packaging words (CN, TUB) and untaught
+    // codes stay unresolved regardless of whether their strings happen to match.
+    if(!def){
+      const unitKey=p.unit.toLowerCase();
+      const taughtUnit=UNIT_LOOKUP.has(unitKey)&&!PACKAGING_ALIASES.has(unitKey);
+      return taughtUnit&&p.unit===code&&p.total?round(n*p.total,4):null;
+    }
     if(def.dimension!==p.dimension||!p.baseTotal) return null;
     return round(n*(p.baseTotal/def.factor),4);
   }
@@ -498,6 +516,8 @@ function quotePriceOnBasis(quote,target){
   if(!p?.parsed) return null;
   if(basis==="each") return round(casePrice/p.caseQty,4);
   if(basis==="measure"){
+    // pricePerUnit guards unknown-dimension packs: packaging words and untaught codes
+    // return null there. Explicit custom units (SHEET, SQFT) pass through correctly.
     const per=pricePerUnit(casePrice,quote.packSize,target.unit);
     if(!per||per.unit!==normalizeUnit(target.unit)) return null;
     return per.price;
@@ -630,6 +650,25 @@ function comparePurchasingPack(incoming,existing){
   if(!a?.parsed||!b?.parsed)return {status:"review",reason:"Pack size missing or unreadable"};
   if(a.dimension!==b.dimension||a.baseUnit!==b.baseUnit||a.baseTotal!==b.baseTotal)
     return {status:"different",reason:`Pack size differs: ${incoming} versus ${existing}`};
+  // When both packs have no measurable dimension, their numeric totals are coincidental —
+  // the unit could mean a named size, a count, or a volume abbreviation. Only named can
+  // sizes (unit starts with "#", e.g. "#10 CAN") are established container identities
+  // whose meaning is settled: matching strings may be treated as "same".
+  // All other unknown-dimension packs (e.g. "6/10 CN", "TUB", "JAR") require explicit
+  // confirmation even when the raw strings match — identical notation does not confirm
+  // an ambiguous pack's quantity or equivalence.
+  if(a.dimension==="unknown"){
+    const unitKey=(a.unit||"").toLowerCase();
+    const namedCan=/^#\d/.test(a.unit||"")&&/^#\d/.test(b.unit||"");
+    // Named cans (#10 CAN, etc.) are established container identities whose canonical form
+    // already matched above — fall through to caseQty/qualifier checks.
+    // Explicitly registered custom units (SHEET, SQFT, BF, etc.) are also allowed when
+    // taught via configureVocabulary kind:"unit" — they are in UNIT_LOOKUP and not packaging.
+    // All other unknown-dimension packs (CN, TUB, JAR, untaught codes) require confirmation.
+    const taughtUnit=UNIT_LOOKUP.has(unitKey)&&!PACKAGING_ALIASES.has(unitKey);
+    if(!namedCan&&!taughtUnit)
+      return {status:"review",reason:`Pack unit has no measurable dimension; confirm these are the same container: ${incoming} versus ${existing}`};
+  }
   if(a.caseQty!==b.caseQty||Math.abs(a.unitQty*measurement(1,a.unit).baseQuantity-b.unitQty*measurement(1,b.unit).baseQuantity)>0.001)
     return {status:"review",reason:`Case configuration differs: ${incoming} versus ${existing}`};
   if(JSON.stringify(a.qualifiers||[])!==JSON.stringify(b.qualifiers||[]))
