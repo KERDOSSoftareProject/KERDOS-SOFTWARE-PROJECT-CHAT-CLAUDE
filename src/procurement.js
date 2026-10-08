@@ -151,11 +151,23 @@ function classifyCategory(description, categories=[], catalogItems=[]) {
     const vocabulary=[category.name,...(Array.isArray(category.keywords)?category.keywords:[])].filter(Boolean);
     for (const keyword of vocabulary) {
       const kwWords=normalizeForMatch(keyword);
-      if (kwWords.length && kwWords.every(k => descWords.some(d => wordsMatch(k,d)))) {
-        // Specific phrases outrank generic one-word hits without embedding
-        // product-specific exceptions in the engine.
-        vocabularyScore += kwWords.length * kwWords.length;
-        longestPhrase=Math.max(longestPhrase,kwWords.length);
+      // Each description token may satisfy at most one keyword token.
+      // This prevents a single word (e.g. "half") from satisfying a
+      // repeated keyword token (e.g. ["half","half"] from "half and half").
+      if (kwWords.length) {
+        const available=[...descWords];
+        let matched=true;
+        for(const k of kwWords){
+          const idx=available.findIndex(d=>wordsMatch(k,d));
+          if(idx===-1){matched=false;break;}
+          available.splice(idx,1);
+        }
+        if(matched){
+          // Specific phrases outrank generic one-word hits without embedding
+          // product-specific exceptions in the engine.
+          vocabularyScore += kwWords.length * kwWords.length;
+          longestPhrase=Math.max(longestPhrase,kwWords.length);
+        }
       }
     }
     const examples=catalogItems.filter(item=>item.category_id===category.id && item.name);

@@ -209,7 +209,7 @@ await test("moving an item clears the review flag; confirming keeps it in place"
   await createCategoryService({records:{query}}).assignItem({catalogItemId:"i1",categoryId:"meat",catalogItems:[],categories:cats});
   await createCatalogService({records:{query}}).confirmCategory("i2");
   assert.equal(updates[0].category_review,false);assert.equal(updates[0].category_id,"meat");
-  assert.deepEqual(updates[1],{id:"i2",category_review:false,category_reason:null});
+  assert.deepEqual(updates[1],{id:"i2",category_review:false,category_reason:"confirmed"});
 });
 
 // --- one decision for rows whose sheet never said what the price is for ---
@@ -252,13 +252,19 @@ await test("setCaseBasisWhereUnstated prices readable packs and leaves stated un
     // v4 on c1 has no price, so c1 is not fully solved — also won't auto-place
     // Cross-vendor no longer blocks: description+pack match means same item = same KERDOS number.
   });
-  await test("a best-guess category is still a placement for a single-vendor row",()=>{
-    // Use a clean single-vendor fixture: Vendor A on c3 (ONIONS YELLOW) with all fields solved
+  await test("a best-guess category (category_review=true) blocks auto-placement — must be confirmed first",()=>{
+    // Category gate now rejects catAcc < 90 (DERIVED). category_review:true → GUESSED (70).
+    // A single-vendor row with all other fields solved does NOT auto-place until the operator
+    // confirms the category (confirmCategory sets category_review=false → DERIVED/90).
     const viC3={...vis[0],id:"v3x",vendor_id:"A",description:"ONIONS YELLOW",pack_size:"50 LB",price:20,price_basis:"case",selling_unit:"CS",price_unavailable:false};
     const ciC3={id:"c3",name:"ONIONS YELLOW",category_id:"prod",category_review:true,category_reason:"Best guess",brand_locked:false,matching_behavior:"flexible",master_item_number:9003};
     const mapC3={id:"m3x",catalog_item_id:"c3",vendor_item_id:"v3x",comparison_track:"review",confidence_score:null};
-    const ready=autoPlaceable({catalogItems:[ciC3],vendorItems:[viC3],mappings:[mapC3],vendors:[{id:"A",name:"Vendor One"}],categories,settings:{}});
-    assert.ok(ready.some(r=>r.mappingId==="m3x"),"guessed category does not block a single-vendor placement");
+    const readyGuessed=autoPlaceable({catalogItems:[ciC3],vendorItems:[viC3],mappings:[mapC3],vendors:[{id:"A",name:"Vendor One"}],categories,settings:{}});
+    assert.ok(!readyGuessed.some(r=>r.mappingId==="m3x"),"guessed category blocks auto-placement (catAcc=70 < 90)");
+    // After category confirmation, the same row qualifies.
+    const ciC3Confirmed={...ciC3,category_review:false,category_reason:"Best guess"};
+    const readyConfirmed=autoPlaceable({catalogItems:[ciC3Confirmed],vendorItems:[viC3],mappings:[mapC3],vendors:[{id:"A",name:"Vendor One"}],categories,settings:{}});
+    assert.ok(readyConfirmed.some(r=>r.mappingId==="m3x"),"confirmed category (category_review=false) allows auto-placement");
   });
   await test("a row still in Uncategorized is not placed",()=>assert.ok(!autoPlaceable({catalogItems:items,vendorItems:vis,mappings:maps,vendors,categories}).some(r=>r.mappingId==="m2")));
   await test("a row with no pack or no unit is not placed",()=>{

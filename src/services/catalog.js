@@ -287,7 +287,10 @@ export function createCatalogService(backend){
     },
     // The client's word on a guessed placement: keep it where it is.
     confirmCategory(catalogItemId){
-      return run(table("catalog_items").update({category_review:false,category_reason:null}).eq("id",catalogItemId),"Could not confirm the category");
+      // Write category_reason:"confirmed" so that a current engine "review"
+      // result cannot silently downgrade an explicitly accepted placement.
+      // category_reason non-null → catAcc=DERIVED (90) regardless of engine.
+      return run(table("catalog_items").update({category_review:false,category_reason:"confirmed"}).eq("id",catalogItemId),"Could not confirm the category");
     },
     async confirmCategories(catalogItemIds){
       let confirmed=0;

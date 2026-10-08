@@ -150,6 +150,17 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
       catAcc=Math.min(catAcc,GUESSED);
       catWhy+=`; description points to ${independent.category.name}; check the source and category`;
     }
+    // A current "review" result means the engine cannot confidently confirm
+    // this placement. category_reason:"confirmed" marks explicit client action
+    // (confirmCategory or assignItem) and is accepted as-is at DERIVED (90).
+    // An engine-placed category with no client confirmation and an unresolved
+    // engine result drops to GUESSED so the category gate requires human
+    // review before the item qualifies.
+    const clientConfirmed=item.category_reason==="confirmed";
+    if(!item.category_review&&!clientConfirmed&&independent?.confidence==="review"&&independent.category?.id===category.id){
+      catAcc=Math.min(catAcc,GUESSED);
+      catWhy=independent.reason||"Product form unresolved — verify category";
+    }
   }
 
   // Brand: printed in a labeled column, pulled from an unlabeled cell, or typed.
@@ -251,7 +262,7 @@ export function orderGuideAssessment(input){
   // cells must be worked out from strong evidence or better.
   const clientApproved=mapping.comparison_track==="exact"&&mapping.confidence_score===100&&mapping.match_method==="manual"&&!!vendorItem.field_resolutions?.row_approval;
   const override=clientApproved&&!!vendorItem.field_resolutions?.unit_cost_override?.value;
-  const blockers=REQUIRED_FIELDS.filter(key=>key==="category"?(!category||category.is_holding_pen||evidence.category.accuracy==null):(evidence[key].accuracy??0)<DERIVED);
+  const blockers=REQUIRED_FIELDS.filter(key=>key==="category"?(!category||category.is_holding_pen||evidence.category.accuracy==null||(evidence.category.accuracy??0)<90):(evidence[key].accuracy??0)<DERIVED);
   if(override){for(const key of ["pack","sellingUnit"])if(blockers.includes(key))blockers.splice(blockers.indexOf(key),1);}
   if(evidence.unitCost.value==null&&!blockers.includes("pack")&&!blockers.includes("sellingUnit")&&!blockers.includes("price"))blockers.push("unitCost");
   const status=quoteStatus(vendorItem,settings,now);

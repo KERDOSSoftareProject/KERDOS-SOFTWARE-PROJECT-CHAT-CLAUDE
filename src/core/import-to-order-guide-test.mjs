@@ -12,6 +12,7 @@ import {createRecords} from '../backend/records.js';
 import {assertBackendContract} from '../backend/contract.js';
 import {createImportService} from '../services/imports.js';
 import {createCatalogService} from '../services/catalog.js';
+import {createCategoryService} from '../services/categories.js';
 import {importPriceRow} from './import-price-row.js';
 configureProcurement({industry:'restaurant'});
 configureCategoryProfile('restaurant');
@@ -109,6 +110,7 @@ function createInMemoryBackend() {
     provider,
     importService: createImportService(provider),
     catalogService: createCatalogService(provider),
+    categoryService: createCategoryService(provider),
   };
 }
 
@@ -1264,6 +1266,293 @@ await runMixedBatch('26b (B-then-A)', false);
     assessHld.blockers.includes('category'),
     'blockers: '+JSON.stringify(assessHld.blockers));
   t('holding-pen: not ready (category blocker)', assessHld.ready, false);
+}
+
+// ── TEST 28: Category accuracy gate — GUESSED blocks; confirmed clears ───────────
+// "CHUNKY BLUE CHS KENS KEN": context engine returns confidence:"review" → Dairy
+// suggested, product-form type ambiguous. placeInCategory writes category_review=true.
+// catalogRowEvidence: catAcc=GUESSED (70) — below the 90 threshold.
+// orderGuideAssessment: category blocker fires → ready:false.
+//
+// Clearance path: simulating confirmCategory (category_review=false, category_reason set)
+// moves catAcc to DERIVED (90) → category blocker clears → ready=true (with resolved pricing).
+//
+// Mixed batch: a resolved chicken row in the same import qualifies automatically.
+// Blue cheese staying blocked does not affect it.
+//
+// Mechanism: category gate now rejects accuracy < 90, not just null/holding-pen.
+// No source-blocker injection; import_row.reviewRequired stays false (pricing is resolved).
+{
+  const {provider, importService, catalogService, categoryService} = createInMemoryBackend();
+
+  const dairyCategory = {
+    id:'cat-dairy', name:'Dairy', is_holding_pen:false,
+    range_start:3000, range_end:3999,
+    keywords:['milk','cream','butter','cheese','yogurt','dairy'],
+  };
+  const meatCat28 = {...TEST_CATEGORY};
+
+  await provider.records.query('catalog_categories').insert(dairyCategory).select().single();
+  await provider.records.query('catalog_categories').insert(meatCat28).select().single();
+
+  const workingCatalogItems = [];
+  const workingCategories = [dairyCategory, meatCat28];
+  const workingVendorItems = [];
+  const workingMappings = [];
+
+  // Row A: ambiguous blue cheese — pricing fully resolved, only classification uncertain.
+  const blueCheeseRow = {
+    code:'blue-001',
+    description:'CHUNKY BLUE CHS KENS KEN',
+    packSize:'4/5 LB',
+    price: 12.50,
+    sellingUnit:'LB',
+    sellingUnitSource:'price header',
+    priceBasis:'measure',
+  };
+
+  // Row B: resolved chicken breast — unambiguous category, explicit unit.
+  const chickenRow28 = {
+    code:'chic-028',
+    description:'CHIC BRST RAW BNLS RNDM CVP',
+    packSize:'4/10 LB',
+    price: 2.06,
+    sellingUnit:'LB',
+    sellingUnitSource:'price header',
+    priceBasis:'measure',
+  };
+
+  const importRow28 = async (src, key) => importPriceRow({
+    backend:provider, importService, catalogService,
+    sourceRow:src, row:{...src}, ex:null, priorMapping:null,
+    rowIssues:[], rowNeedsReview:false,
+    invoiceSources:[], orgId:TEST_ORG, vendorId:TEST_VENDOR,
+    sourceDocumentId:'doc-28', completedKey:key, importBatchTime:'2026-10-07',
+    group:GROUP, sourceFilePath:null,
+    workingCatalogItems, workingCategories, workingVendorItems, workingMappings,
+    applySelectedCategory:null,
+  });
+
+  const resultBlue    = await importRow28(blueCheeseRow, 'row:0');
+  const resultChicken = await importRow28(chickenRow28, 'row:1');
+
+  // ── Blue cheese: saves cleanly; category_review=true; pricing resolved ─────────
+  ok('cat-gate: blue cheese vendorItemId returned', !!resultBlue.vendorItemId);
+  t('cat-gate: blue cheese needsBasis=false (pricing fully resolved)', resultBlue.needsBasis, false);
+
+  const viBlue = await importService.findVendorItem({organizationId:TEST_ORG, vendorId:TEST_VENDOR, code:blueCheeseRow.code});
+  ok('cat-gate: blue cheese vendor item saved', !!viBlue);
+  // Pricing is resolved — no source blocker expected.
+  t('cat-gate: reviewRequired=false (pricing resolved; category uncertainty is classification-only)',
+    !!viBlue?.import_row?.reviewRequired, false);
+
+  const mapBlue = await importService.mapping(TEST_ORG, resultBlue.vendorItemId);
+  const {data:ciBlue} = await provider.records.query('catalog_items').select().eq('id', mapBlue?.catalog_item_id).maybeSingle();
+  ok('cat-gate: blue cheese catalog item created', !!ciBlue);
+
+  const {data:persistedCats28} = await provider.records.query('catalog_categories').select();
+  const catBlue = persistedCats28.find(c => c.id === ciBlue?.category_id) || null;
+
+  console.log(`  [TEST 28] blue cheese: category_id=${ciBlue?.category_id} → name=${catBlue?.name||'(null)'} category_review=${ciBlue?.category_review}`);
+
+  // category_review=true because context engine returned confidence:"review".
+  // catAcc=GUESSED (70) → below 90 threshold → category blocker.
+  ok('cat-gate: category placed in Dairy (review confidence routes to keyword-matching category)',
+    catBlue?.name === 'Dairy' || (!catBlue?.is_holding_pen && !!catBlue),
+    'category='+catBlue?.name);
+  t('cat-gate: category_review=true (confidence was not "confident")', ciBlue?.category_review, true);
+
+  const assessBlue = orderGuideAssessment({
+    item:ciBlue, vendorItem:viBlue, mapping:mapBlue,
+    vendor:{id:TEST_VENDOR, name:'Test Vendor'},
+    category:catBlue, peers:[],
+    categories:persistedCats28,
+    settings:{}, now:new Date(),
+  });
+  ok('cat-gate: category blocker fires (catAcc=GUESSED, below 90 threshold)',
+    assessBlue.blockers.includes('category'),
+    'blockers: '+JSON.stringify(assessBlue.blockers));
+  t('cat-gate: blue cheese not ready (classification ambiguity held in Item Catalog)',
+    assessBlue.ready, false);
+
+  // ── No-upgrade: reimporting without new evidence cannot raise GUESSED to ≥90 ────
+  // Run importPriceRow again for the same blue cheese row, passing the already-saved
+  // vendor item (ex:viBlue) and mapping (priorMapping:mapBlue). This exercises the
+  // existing-item UPDATE path in applyQuote: it finds the record by code, calls
+  // Object.assign on it, and returns the same id — never creates a new record.
+  // category_review is still true — the engine returns confidence:"review" again —
+  // so catAcc stays at GUESSED (70). The category blocker must still fire.
+  const reimportBlueResult = await importPriceRow({
+    backend:provider, importService, catalogService,
+    sourceRow:blueCheeseRow, row:{...blueCheeseRow},
+    ex:viBlue, priorMapping:mapBlue,
+    rowIssues:[], rowNeedsReview:false,
+    invoiceSources:[], orgId:TEST_ORG, vendorId:TEST_VENDOR,
+    sourceDocumentId:'doc-28', completedKey:'row:reimport', importBatchTime:'2026-10-07',
+    group:GROUP, sourceFilePath:null,
+    workingCatalogItems, workingCategories, workingVendorItems, workingMappings,
+    applySelectedCategory:null,
+  });
+  ok('cat-gate: reimport succeeded (same row, no new evidence)', !!reimportBlueResult.vendorItemId);
+  t('cat-gate: reimport vendorItemId unchanged (existing-item UPDATE path, not CREATE)',
+    reimportBlueResult.vendorItemId, resultBlue.vendorItemId);
+
+  const viBlueAfterReimp = await importService.findVendorItem({organizationId:TEST_ORG, vendorId:TEST_VENDOR, code:blueCheeseRow.code});
+  const {data:ciBlueAfterReimp} = await provider.records.query('catalog_items').select().eq('id', mapBlue?.catalog_item_id).maybeSingle();
+  const {data:persistedCats28b} = await provider.records.query('catalog_categories').select();
+  const catBlueAfterReimp = persistedCats28b.find(c => c.id === ciBlueAfterReimp?.category_id) || null;
+
+  t('cat-gate: no-upgrade — category_review still true after reimport (no new evidence)',
+    ciBlueAfterReimp?.category_review, true);
+
+  const assessBlueAfterReimp = orderGuideAssessment({
+    item:ciBlueAfterReimp, vendorItem:viBlueAfterReimp, mapping:mapBlue,
+    vendor:{id:TEST_VENDOR, name:'Test Vendor'},
+    category:catBlueAfterReimp, peers:[],
+    categories:persistedCats28b,
+    settings:{}, now:new Date(),
+  });
+  ok('cat-gate: no-upgrade — category blocker still fires after reimport (catAcc=GUESSED, below 90)',
+    assessBlueAfterReimp.blockers.includes('category'),
+    'blockers after reimport: '+JSON.stringify(assessBlueAfterReimp.blockers));
+  t('cat-gate: no-upgrade — ready=false after reimport (keyword scoring cannot clear the gate)',
+    assessBlueAfterReimp.ready, false);
+
+  // ── Chicken row: qualifies while blue cheese is still held ───────────────────
+  // This check runs BEFORE confirmCategory. Blue cheese is still at category_review=true
+  // (catAcc=GUESSED, 70) → held. The chicken row must qualify independently right now.
+  ok('cat-gate: chicken vendorItemId returned', !!resultChicken.vendorItemId);
+  t('cat-gate: chicken needsBasis=false', resultChicken.needsBasis, false);
+
+  const viChicken28 = await importService.findVendorItem({organizationId:TEST_ORG, vendorId:TEST_VENDOR, code:chickenRow28.code});
+  const mapChicken28 = await importService.mapping(TEST_ORG, resultChicken.vendorItemId);
+  const {data:ciChicken28} = await provider.records.query('catalog_items').select().eq('id', mapChicken28?.catalog_item_id).maybeSingle();
+  const catChicken28 = persistedCats28b.find(c => c.id === ciChicken28?.category_id) || null;
+  console.log(`  [TEST 28] chicken (before blue confirmed): category_id=${ciChicken28?.category_id} → name=${catChicken28?.name||'(null)'} category_review=${ciChicken28?.category_review}`);
+
+  // Confirm blue is still held at this point — chicken qualifying is independent.
+  t('cat-gate: blue cheese still held while chicken is being checked (category_review still true)',
+    ciBlueAfterReimp?.category_review, true);
+
+  // Chicken: context engine returns confident Meat placement → category_review=false → catAcc≥90.
+  const assessChicken28 = orderGuideAssessment({
+    item:ciChicken28, vendorItem:viChicken28, mapping:mapChicken28,
+    vendor:{id:TEST_VENDOR, name:'Test Vendor'},
+    category:catChicken28, peers:[],
+    categories:persistedCats28b,
+    settings:{}, now:new Date(),
+  });
+  ok('cat-gate: chicken no category blocker (unambiguous — category_review=false)',
+    !assessChicken28.blockers.includes('category'),
+    'blockers: '+JSON.stringify(assessChicken28.blockers));
+  ok('cat-gate: chicken no blockers (qualifies automatically while blue is still held)',
+    assessChicken28.blockers.length === 0,
+    'blockers: '+JSON.stringify(assessChicken28.blockers));
+  t('cat-gate: chicken ready=true while blue cheese is still blocked',
+    assessChicken28.ready, true);
+
+  // ── Clearance: actual confirmCategory → reload from backend ──────────────────
+  // In production: client reviews and confirms the Dairy placement. confirmCategory
+  // writes category_review=false, category_reason:"confirmed" to the DB.
+  // The "confirmed" sentinel distinguishes explicit client action from automatic
+  // engine-placed categories so a current engine "review" result cannot silently
+  // downgrade an intentional placement. After reload, catAcc moves from GUESSED
+  // (70) to DERIVED (90) and the category blocker clears.
+  await catalogService.confirmCategory(ciBlue.id);
+  const {data:ciBlueReloaded} = await provider.records.query('catalog_items').select().eq('id', ciBlue.id).maybeSingle();
+  ok('cat-gate: ciBlueReloaded fetched after confirmCategory', !!ciBlueReloaded);
+  t('cat-gate: category_review=false after confirmCategory (DB write verified by reload)',
+    ciBlueReloaded?.category_review, false);
+  t('cat-gate: category_reason="confirmed" written by confirmCategory (sentinel for explicit client action)',
+    ciBlueReloaded?.category_reason, 'confirmed');
+
+  const assessBlueConfirmed = orderGuideAssessment({
+    item:ciBlueReloaded, vendorItem:viBlue, mapping:mapBlue,
+    vendor:{id:TEST_VENDOR, name:'Test Vendor'},
+    category:catBlue, peers:[],
+    categories:persistedCats28b,
+    settings:{}, now:new Date(),
+  });
+  ok('cat-gate: category blocker clears after confirmation (catAcc→DERIVED, ≥90)',
+    !assessBlueConfirmed.blockers.includes('category'),
+    'blockers after confirm: '+JSON.stringify(assessBlueConfirmed.blockers));
+  t('cat-gate: blue cheese ready=true after category confirmed',
+    assessBlueConfirmed.ready, true);
+
+  // ── Reimport after confirmCategory: sentinel must survive ────────────────────
+  // A new vendor sheet arrives. importPriceRow runs with ex:ciBlueReloaded (the
+  // confirmed record). The engine still returns confidence:"review" for this
+  // description, but the sentinel (category_reason:"confirmed") must block the
+  // "review" downgrade so catAcc stays ≥90 and the item remains ready.
+  const reimportAfterConfirmResult = await importPriceRow({
+    backend:provider, importService, catalogService,
+    sourceRow:{...blueCheeseRow, price:13.00}, row:{...blueCheeseRow, price:13.00},
+    ex:viBlueAfterReimp, priorMapping:mapBlue,
+    rowIssues:[], rowNeedsReview:false,
+    invoiceSources:[], orgId:TEST_ORG, vendorId:TEST_VENDOR,
+    sourceDocumentId:'doc-28-resheet', completedKey:'row:resheet', importBatchTime:'2026-10-08',
+    group:GROUP, sourceFilePath:null,
+    workingCatalogItems, workingCategories, workingVendorItems, workingMappings,
+    applySelectedCategory:null,
+  });
+  ok('cat-gate: reimport-after-confirm succeeded', !!reimportAfterConfirmResult.vendorItemId);
+
+  const viBlueResheet = await importService.findVendorItem({organizationId:TEST_ORG, vendorId:TEST_VENDOR, code:blueCheeseRow.code});
+  const {data:ciBlueResheet} = await provider.records.query('catalog_items').select().eq('id', ciBlue.id).maybeSingle();
+  t('cat-gate: sentinel survives reimport — category_reason still "confirmed"',
+    ciBlueResheet?.category_reason, 'confirmed');
+  t('cat-gate: sentinel survives reimport — category_review still false',
+    ciBlueResheet?.category_review, false);
+
+  const {data:persistedCats28c} = await provider.records.query('catalog_categories').select();
+  const catBlueResheet = persistedCats28c.find(c => c.id === ciBlueResheet?.category_id) || null;
+  const assessBlueResheet = orderGuideAssessment({
+    item:ciBlueResheet, vendorItem:viBlueResheet, mapping:mapBlue,
+    vendor:{id:TEST_VENDOR, name:'Test Vendor'},
+    category:catBlueResheet, peers:[],
+    categories:persistedCats28c,
+    settings:{}, now:new Date(),
+  });
+  ok('cat-gate: reimport after confirm — category blocker does not return (sentinel preserved)',
+    !assessBlueResheet.blockers.includes('category'),
+    'blockers after reimport: '+JSON.stringify(assessBlueResheet.blockers));
+  t('cat-gate: reimport after confirm — ready=true (sentinel not erased by reimport)',
+    assessBlueResheet.ready, true);
+
+  // ── assignItem sentinel: manual category selection → reload → catAcc ≥90 ─────
+  // assignItem (manual drag/drop or category picker in the UI) writes
+  // category_reason:"confirmed" on the catalog item. This is structurally identical
+  // to confirmCategory but goes through the categories service instead of catalog.
+  // We use the blue cheese item (which the engine marks "review" for Dairy) as the
+  // subject: after ciBlueResheet is moved back to Dairy via assignItem (it may
+  // already be there — we re-assign to the same category to test the sentinel write
+  // path cleanly without introducing a confident contradiction).
+  const allItemsForAssign = (await provider.records.query('catalog_items').select()).data || [];
+  await categoryService.assignItem({
+    catalogItemId:ciBlue.id,
+    categoryId:dairyCategory.id,
+    catalogItems:allItemsForAssign,
+    categories:persistedCats28c,
+  });
+  const {data:ciBlueAfterAssign} = await provider.records.query('catalog_items').select().eq('id', ciBlue.id).maybeSingle();
+  t('cat-gate: assignItem writes category_reason:"confirmed" (DB write verified by reload)',
+    ciBlueAfterAssign?.category_reason, 'confirmed');
+  t('cat-gate: assignItem writes category_review:false',
+    ciBlueAfterAssign?.category_review, false);
+  t('cat-gate: assignItem keeps item in target category',
+    ciBlueAfterAssign?.category_id, dairyCategory.id);
+
+  const catDairyForAssign = persistedCats28c.find(c => c.id === dairyCategory.id);
+  const assessBlueAfterAssign = orderGuideAssessment({
+    item:ciBlueAfterAssign, vendorItem:viBlueResheet, mapping:mapBlue,
+    vendor:{id:TEST_VENDOR, name:'Test Vendor'},
+    category:catDairyForAssign, peers:[],
+    categories:persistedCats28c,
+    settings:{}, now:new Date(),
+  });
+  ok('cat-gate: assignItem sentinel — category blocker does not fire (engine "review" blocked by sentinel)',
+    !assessBlueAfterAssign.blockers.includes('category'),
+    'blockers after assignItem: '+JSON.stringify(assessBlueAfterAssign.blockers));
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

@@ -66,7 +66,9 @@ export function createCategoryService(backend){
       const members=catalogItems.filter(item=>Number(item.master_item_number)>=Number(target.range_start)&&Number(item.master_item_number)<=Number(target.range_end||Number.MAX_SAFE_INTEGER));
       const masterItemNumber=current?.category_id===target.id&&existingNumber!=null?existingNumber:(members.length?Math.max(...members.map(item=>Number(item.master_item_number)||0))+1:(target.range_start));
       if(target.range_end!=null&&masterItemNumber>target.range_end)throw new Error("This category item-number range is full.");
-      const update={category_id:target.id,master_item_number:masterItemNumber,category_review:false,category_reason:null};
+      // category_reason:"confirmed" marks explicit client action so that an
+      // unresolved engine result cannot silently downgrade an intentional placement.
+      const update={category_id:target.id,master_item_number:masterItemNumber,category_review:false,category_reason:"confirmed"};
       const saved=await run(table("catalog_items").update(update).eq("id",catalogItemId).select("master_item_number"),"Could not move the item");
       return saved?.[0]?.master_item_number??masterItemNumber;
     },
