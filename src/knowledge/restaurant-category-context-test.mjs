@@ -63,6 +63,10 @@ function classify(desc,cats){
   const r=restaurantCategoryContext(normalize(desc),cats);
   return r&&r.category?r.category.name:"(none)";
 }
+/** Returns the full context result for confidence-level assertions. */
+function classifyFull(desc,cats){
+  return restaurantCategoryContext(normalize(desc),cats);
+}
 
 let passed=0,failed=0;
 function t(label,actual,expected){
@@ -259,6 +263,95 @@ t("EYE ROUND ROAST (5-cat) → Meat",
 // "round" alone must not fire
 t("DINNER ROLL ROUND (5-cat) → none (round alone ambiguous)",
   classify("DINNER ROLL ROUND",FIVE_CAT),"(none)");
+
+// ── Blue cheese: companion-word + form-word requirement ──────────────────────
+// "blue" alone is a color — must not route to Dairy.
+// "blue" + a cheese companion word (cheese, chs, chse) establishes a cheese
+// REFERENCE in the text — it does not confirm the finished-product form.
+// "CHUNKY BLUE CHS KENS KEN" has a cheese reference but no form word
+// (crumbles, shredded, sliced, wedge, block, chunk) — product type is
+// unresolved; context engine returns null and keyword scoring decides.
+// Only route to Dairy confidently when a form word confirms solid cheese.
+// Unambiguous variety names (gorgonzola, bleu, swiss, etc.) do not require
+// a form word — the variety name is sufficient evidence on its own.
+console.log("\n── Blue cheese: companion-word + form-word requirement ──");
+// Abbreviated description, form unresolved → confidence:"review" (Dairy suggested, type ambiguous).
+// The context engine now returns a "review" confidence result so keyword scoring cannot
+// override it. The category name is Dairy — but the confidence is NOT "confident".
+t("CHUNKY BLUE CHS KENS KEN (rich) → Dairy (review confidence: form unresolved, type ambiguous)",
+  classify("CHUNKY BLUE CHS KENS KEN",RICH_CAT),"Dairy");
+t("CHUNKY BLUE CHS KENS KEN (rich) → confidence:review (not confident, blocks Order Guide)",
+  classifyFull("CHUNKY BLUE CHS KENS KEN",RICH_CAT)?.confidence,"review");
+// Form word "crumbles" present → Dairy confirmed
+t("BLUE CHEESE CRUMBLES (rich) → Dairy (form word 'crumbles' confirms solid cheese)",
+  classify("BLUE CHEESE CRUMBLES",RICH_CAT),"Dairy");
+// "bleu" is an unambiguous variety name — form word not required
+t("BLEU CHEESE CRUMBLES (rich) → Dairy",
+  classify("BLEU CHEESE CRUMBLES",RICH_CAT),"Dairy");
+// Abbreviated form with form word
+t("BLUE CHS CRUMBLES (rich) → Dairy (chs companion + crumbles form word)",
+  classify("BLUE CHS CRUMBLES",RICH_CAT),"Dairy");
+// Abbreviated dressing forms: cheese rule blocked by dressing guard, dressing rule catches
+t("BLUE CHS DRESSING (rich) → Condiments (blue+chs companion, dressing guard active)",
+  classify("BLUE CHS DRESSING",RICH_CAT),"Condiments");
+t("BLEU CHS DRESSING (rich) → Condiments (bleu in DRESSING_VARIETIES + dressing guard)",
+  classify("BLEU CHS DRESSING",RICH_CAT),"Condiments");
+// "blue" alone (no cheese companion) must NOT route to Dairy
+t("BLUE NAPKINS (5-cat) → none ('blue' alone is a color)",
+  classify("BLUE NAPKINS",FIVE_CAT),"(none)");
+t("BLUE APRONS (5-cat) → none ('blue' alone is a color)",
+  classify("BLUE APRONS",FIVE_CAT),"(none)");
+t("BLUE GLOVES (5-cat) → none ('blue' alone is a color)",
+  classify("BLUE GLOVES",FIVE_CAT),"(none)");
+// Blue cheese dressing/dip: cheese rule blocked by guard, dressing rule catches it
+t("BLUE CHEESE DRESSING (rich) → Condiments",
+  classify("BLUE CHEESE DRESSING",RICH_CAT),"Condiments");
+t("CHUNKY BLUE CHEESE DRESSING (rich) → Condiments",
+  classify("CHUNKY BLUE CHEESE DRESSING",RICH_CAT),"Condiments");
+t("BLUE CHEESE DIP (rich) → Condiments",
+  classify("BLUE CHEESE DIP",RICH_CAT),"Condiments");
+// Blue cheese dressing without a cheese companion: dressing rule still fires (blue in DRESSING_VARIETIES + context word)
+t("BLUE DRESSING (rich) → Condiments",
+  classify("BLUE DRESSING",RICH_CAT),"Condiments");
+// Bleu in dressing context — guarded by dressing keyword
+t("BLEU CHEESE DRESSING (rich) → Condiments",
+  classify("BLEU CHEESE DRESSING",RICH_CAT),"Condiments");
+
+// ── Exact screenshot descriptions ─────────────────────────────────────────────
+// These are the live import descriptions from the screenshots. The expected result
+// from the context engine is "(none)" — they fall to keyword scoring. The actual
+// live classification depends on category.keywords in the database, which is not
+// available here. Reported as "(none)" to confirm no rule fires incorrectly.
+console.log("\n── Screenshot descriptions through context engine ──");
+t("(KENS) PARM.PEPPERCORN (rich) → none (no rule fires)",
+  classify("(KENS) PARM.PEPPERCORN",RICH_CAT),"(none)");
+t("HALF DEEP PAN (rich) → none (no context rule; keyword-driven)",
+  classify("HALF DEEP PAN",RICH_CAT),"(none)");
+// "CHUNKY BLUE CHS KENS KEN" — blue+chs is a cheese reference but form is
+// unresolved (no crumbles/shredded/block/wedge); context returns confidence:"review".
+// Dairy is the suggested category, but the confidence is explicitly NOT "confident" —
+// keyword scoring cannot override this signal, and the uncertainty survives into
+// import_row.reviewRequired=true, blocking the Order Guide until a human resolves it.
+t("CHUNKY BLUE CHS KENS KEN (rich) → Dairy (screenshot row: review confidence, blocks Order Guide)",
+  classify("CHUNKY BLUE CHS KENS KEN",RICH_CAT),"Dairy");
+t("CHUNKY BLUE CHS KENS KEN (rich) → confidence:review (not overridable by keyword scoring)",
+  classifyFull("CHUNKY BLUE CHS KENS KEN",RICH_CAT)?.confidence,"review");
+
+// ── Italian cheese and Caesar salad kit — direct classification ───────────────
+// Tests the classification engine directly (not compareProductIdentity).
+// "ITALIAN CHEESE": no recognized cheese variety, no dressing variety → none
+// "CAESAR SALAD KIT": caesar in DRESSING_VARIETIES but "salad" not in DRESSING_CONTEXT → none
+// Both fall to keyword scoring against live categories.
+console.log("\n── Italian cheese and Caesar salad kit classification ──");
+t("ITALIAN CHEESE (rich) → none (no cheese variety word triggers context rule)",
+  classify("ITALIAN CHEESE",RICH_CAT),"(none)");
+t("CAESAR SALAD KIT (rich) → none ('salad' excluded from DRESSING_CONTEXT)",
+  classify("CAESAR SALAD KIT",RICH_CAT),"(none)");
+t("KENS CAESAR DRESSING (rich) → Condiments",
+  classify("KENS CAESAR DRESSING",RICH_CAT),"Condiments");
+// "KENS ITALIAN DRESSING": 'italian' not in DRESSING_VARIETIES → none (keyword-driven)
+t("KENS ITALIAN DRESSING (rich) → none ('italian' not in DRESSING_VARIETIES)",
+  classify("KENS ITALIAN DRESSING",RICH_CAT),"(none)");
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${failed} failed`);

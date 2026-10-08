@@ -52,7 +52,20 @@ const SEAFOOD_SPECIES = new Set([
 // Removed: gorgonzola, bleu, roquefort — these are cheese varieties that should
 // route to Dairy/Cheese, not condiments (handled at the cheese rule above).
 // "thousand" is kept but requires "island" as companion (too generic alone).
-const DRESSING_VARIETIES = new Set(["caesar","ranch","vinaigrette","balsamic","tzatziki"]);
+// "blue" is included so that "BLUE CHEESE DRESSING" and "BLUE CHEESE DIP" route
+// to condiments when a DRESSING_CONTEXT word is also present. This works in concert
+// with the cheese rule: the cheese rule for "blue" fires only when a cheese companion
+// (chs, chse, cheese, cheeses) is also present, and only when no dressing/dip/sauce
+// word appears in the description. When "dressing" or "dip" IS present, the cheese
+// rule's negative guard blocks it and this dressing rule catches it instead.
+// "BLUE NAPKINS", "BLUE APRONS" etc. are unaffected: they contain no cheese companion
+// (so the cheese rule never fires) and no DRESSING_CONTEXT word (so this rule never
+// fires either) — they fall through to keyword scoring.
+// "bleu" is added alongside "blue": "BLEU CHEESE DRESSING" and "BLEU CHEESE DIP"
+// must route to condiments. The same cheese-rule negative guard (which includes
+// "dressing" and "dip") blocks the cheese rule for both spellings, so adding
+// "bleu" here does not create a conflict with the BLUE_MOLD_CHEESES cheese rule.
+const DRESSING_VARIETIES = new Set(["caesar","ranch","vinaigrette","balsamic","tzatziki","blue","bleu"]);
 // A dressing variety alone is insufficient — the description must also contain a
 // word establishing dressing/condiment context. "salad" is intentionally excluded:
 //   "CAESAR SALAD KIT" should not route to Condiments — it is a salad product.
@@ -66,8 +79,22 @@ const DRESSING_CONTEXT = new Set(["dress","dressing","dip","sauce"]);
 const NAMED_SPREADS = new Set(["nutella","vegemite","marmite","jif","skippy"]);
 
 // ── Cheese varieties that the main guard doesn't cover ───────────────────────
-// Includes blue-mold cheeses that also appear in dressing names; cheese context wins.
+// Includes blue-mold cheeses that appear in dressing contexts; cheese route wins
+// when no dressing/dip/sauce form word is present (those are caught by the dressing
+// rule below after this rule's negative guard blocks them).
+// "bleu", "gorgonzola", "roquefort", "stilton" are unambiguous cheese names and fire
+// the cheese rule on their own.
+// "blue" is NOT included here — it is a common color word that appears in non-food
+// descriptions (BLUE NAPKINS, BLUE APRONS, BLUE GLOVES). Instead, the cheese rule is
+// extended below to also check for "blue" when a cheese companion word is present.
+// See BLUE_CHEESE_COMPANIONS below.
 const BLUE_MOLD_CHEESES = new Set(["gorgonzola","roquefort","stilton","bleu"]);
+// Companion words that establish "blue" as a cheese variety rather than a color.
+// "chs" and "chse" are distributor abbreviations for "cheese". All must normalize
+// to their canonical form (trailing-s stripped when length>3 and not -ss).
+// Canonical forms: "cheese"→"chees", "chs"→"chs", "cheeses"→"chees".
+// We include both canonical and surface forms here since the caller may pass either.
+const BLUE_CHEESE_COMPANIONS = new Set(["cheese","chees","chs","chse","cheeses"]);
 
 // ── Beverage form indicators ──────────────────────────────────────────────────
 // Establishes that the product is a drinkable / hot-beverage product, not just
@@ -109,9 +136,39 @@ export function restaurantCategoryContext(words, categories) {
 
   // Recognized hard cheese varieties — includes blue-mold cheeses that also appear
   // in dressing contexts. Cheese identity wins when no competing form word is present.
-  if((has("swiss","provolone","cheddar","mozzarella")||words.some(w=>BLUE_MOLD_CHEESES.has(w)))
-    &&!has("chard","dressing","sauce","bread","cracker","crackers","powder","sandwich","flavored"))
+  // "blue" alone is not sufficient — it is a common color word. It must be accompanied
+  // by a cheese companion (cheese, chs, chse) to fire this rule. "bleu", "gorgonzola",
+  // "roquefort", "stilton" are unambiguous and fire on their own.
+  // Negative guard includes "dip" in addition to "dressing"/"sauce": "BLUE CHEESE DIP"
+  // must route to condiments, not Dairy.
+  //
+  // IMPORTANT — blue + companion establishes a cheese REFERENCE in the text, not
+  // confirmation that the finished product is a solid cheese rather than a dressing
+  // or dip. "CHUNKY BLUE CHS KENS KEN" references blue cheese but the product form
+  // (crumbles? dressing?) is unresolved. To confidently route to Dairy when the
+  // cheese reference comes via blue + companion (rather than an unambiguous variety
+  // name like "gorgonzola"), a product-form word that confirms solid cheese must also
+  // be present. Without one, return null and let keyword scoring handle it.
+  // Unambiguous names (gorgonzola, roquefort, stilton, bleu, swiss, provolone,
+  // cheddar, mozzarella) do not require a form word — the variety name alone is
+  // sufficient evidence of finished-product identity.
+  const CHEESE_FORM_WORDS = new Set(["crumble","crumbles","shredded","sliced","wedge","block","chunk","chunks","loaf","wheel"]);
+  const blueIsCheeseVariety=has("blue")&&words.some(w=>BLUE_CHEESE_COMPANIONS.has(w));
+  const blueCheeseFormConfirmed=blueIsCheeseVariety&&words.some(w=>CHEESE_FORM_WORDS.has(w));
+  const unambiguousCheese=has("swiss","provolone","cheddar","mozzarella")||words.some(w=>BLUE_MOLD_CHEESES.has(w));
+  if((unambiguousCheese||blueCheeseFormConfirmed)
+    &&!has("chard","dressing","dip","sauce","bread","cracker","crackers","powder","sandwich","flavored"))
     return choose([/^dairy$/i,/^cheese$/i],"Recognized cheese variety");
+  // blue + companion present but no form word — cheese reference is in the text but
+  // finished-product type is unresolved. Return a "review" confidence result pointing
+  // at Dairy so that keyword scoring cannot override this signal, and so the
+  // uncertainty propagates through the full classification path. The caller must
+  // treat "review" confidence as requiring human resolution before Order Guide
+  // qualification — it must not be promoted to "confident" by keyword scoring.
+  if(blueIsCheeseVariety&&!has("chard","dressing","dip","sauce","bread","cracker","crackers","powder","sandwich","flavored")){
+    const reviewed=choose([/^dairy$/i,/^cheese$/i],"Blue cheese reference without product-form confirmation — Dairy suggested; verify finished-product type (crumbles, shredded, dressing, dip)");
+    if(reviewed)return {...reviewed,confidence:"review"};
+  }
 
   // ── Seafood by species (before beef-cut rules to protect TUNA LOIN etc.) ────
   // SPICE_PRODUCT guard: "SALMON SEASONING" is a spice blend, not seafood.
