@@ -22,7 +22,7 @@ const service=createCatalogService({records:{query},catalog:{saveRow:async reque
 const verified=mappingVerification({id:"v2",description:"American cheese",pack_size:"120 CT"},{id:"c1",name:"American cheese"},[{id:"v1",description:"American cheese",pack_size:"120 CT"}]);
 assert.equal(verified.comparison_track,"exact");
 assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:"160 CT"},{id:"c1",name:"American cheese"},[{id:"v1",description:"American cheese",pack_size:"120 CT"}]).comparison_track,"review");
-assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:"120 CT",brand:"A"},{id:"c1",name:"American cheese"},[{id:"v1",description:"American cheese",pack_size:"120 CT",brand:"B"}]).comparison_track,"review");
+assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:"120 CT",brand:"A"},{id:"c1",name:"American cheese",brand_locked:true},[{id:"v1",description:"American cheese",pack_size:"120 CT",brand:"B"}]).comparison_track,"review");
 assert.equal(mappingVerification({id:"v2",description:"American cheese sliced",pack_size:"120 CT"},{id:"c1",name:"American cheese"},[{id:"v1",description:"American cheese slab",pack_size:"120 CT"}]).comparison_track,"review");
 assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:null},{id:"c1",name:"American cheese"},[]).comparison_track,"review");
 assert.equal(mappingVerification({id:"v2",description:"American cheese",pack_size:"1-40# CB"},{id:"c1",name:"American cheese"},[]).comparison_track,"review");
@@ -65,22 +65,25 @@ assert.ok(["exact","review"].includes(exact.track),"links to existing entry");
 const mixedPeers=[{id:"v1",vendor_id:"vendor-a",description:"American cheese",pack_size:"120 CT"},
   {id:"v2",vendor_id:"vendor-c",description:"American cheese",pack_size:"160 CT"}];
 const conflicted=await service.matchOrCreate({organizationId:"o1",vendorId:"vendor-b",description:"American cheese",packSize:"120 CT",catalogItems:[...established],categories:[],vendorItems:mixedPeers,mappings:[...mappings,{catalog_item_id:"c1",vendor_item_id:"v2"}]});
-// Mixed packs on entry: incoming 120 CT matches one peer — links at review for client to resolve.
-assert.ok(["review","exact"].includes(conflicted.track),"links to existing entry at review when pack conflict exists");
-assert.equal(conflicted.catalogItemId,"c1","still links to same KERDOS entry — client resolves pack conflict");
+// Mixed packs on entry: engine cannot confirm identity, pack agreement, or brand-lock
+// without unambiguous evidence. No automatic association — a new entry is created.
+// The client links manually via Item Catalog if the products are confirmed the same.
+assert.equal(conflicted.track,"new","mixed-pack entry: no automatic association without confirmed identity and pack");
+assert.notEqual(conflicted.catalogItemId,"c1","mixed-pack entry: incoming item must not be auto-linked to the conflicted entry");
 assert.equal(associationEvidence({description:"American cheese",packSize:"120 CT"},{linkedVendorItems:mixedPeers}).exact,false);
 const singleVendor=await service.matchOrCreate({organizationId:"o1",vendorId:"vendor-a",description:"American cheese",packSize:"120 CT",catalogItems:[...established],categories:[],vendorItems,mappings});
 assert.ok(["exact","review"].includes(singleVendor.track),"same description+pack links to existing entry");
 const differentBrand=await service.matchOrCreate({organizationId:"o1",description:"American cheese",packSize:"120 CT",brand:"B",catalogItems:[...established],categories:[],vendorItems:[{id:"v1",description:"American cheese",pack_size:"120 CT",brand:"A"}],mappings});
-assert.equal(differentBrand.track,"review");
-const reviewed=await service.matchOrCreate({organizationId:"o1",description:"American cheese",packSize:"160 CT",catalogItems:[...established],categories:[],vendorItems,mappings});
+assert.equal(differentBrand.track,"exact","unlocked catalog item: different brands are acceptable alternatives");
+const reviewed=await service.matchOrCreate({organizationId:"o1",description:"American cheese",packSize:"160 CT",catalogItems:[...established],categories:[{id:"h",name:"Uncategorized",is_holding_pen:true,range_start:30000}],vendorItems,mappings});
 // Same product (American cheese), different pack (160 CT vs 120 CT).
-// Hard rule: same understood product + pack conflict → join at review so client can resolve.
-assert.equal(reviewed.track,"review","same product different pack joins at review, not a new entry");
-assert.equal(reviewed.catalogItemId,"c1","links to the same KERDOS entry for client to resolve pack conflict");
+// Different purchasing packs → separate catalog entries. A human links them if needed.
+assert.equal(reviewed.track,"new","same product different pack creates a new catalog entry");
 const differingWords=await service.matchOrCreate({organizationId:"o1",description:"CHEESE AMER SLI 160 WHITE",packSize:"4/5 LB",catalogItems:[{id:"c2",name:"CHEESE AMERICAN 160CT WHITE",matching_behavior:"flexible"}],categories:[],vendorItems:[{id:"v2",description:"CHEESE AMERICAN 160CT WHITE",pack_size:"4/5 LB"}],mappings:[{catalog_item_id:"c2",vendor_item_id:"v2"}]});
-// Abbreviated description + same pack — should link to c2 at review for client to confirm
-assert.ok(["review","exact"].includes(differingWords.track),"abbreviated description links at review");
+// Without vocabulary confirmation that "AMER"="AMERICAN", the engine cannot confirm
+// these are the same product. A new entry is created; the client can merge manually.
+// Linking on unresolved abbreviations risks collisions with genuinely different products.
+assert.equal(differingWords.track,"new","unresolved abbreviation without vocabulary creates a new entry — client merges if same product");
 
 // ── THE HARD RULE ────────────────────────────────────────────────────────────
 // Every vendor item lands on an existing KERDOS entry when the engine
@@ -100,11 +103,10 @@ assert.ok(["review","exact"].includes(differingWords.track),"abbreviated descrip
   assert.equal(r1.catalogItemId,"p1","same description same pack → exact link to existing entry");
   assert.equal(r1.track,"exact");
 
-  // Same understood product + different pack → review on same entry (client resolves pack conflict)
-  // A pack difference is information, not a reason to create a new entry.
-  const r2=await service.matchOrCreate(args("ITEM ALPHA STANDARD","5 EA"));
-  assert.equal(r2.catalogItemId,"p1","same description different pack → review on existing entry, not new");
-  assert.equal(r2.track,"review");
+  // Same understood product + different pack → new entry (separate purchasing unit).
+  // 10 EA and 5 EA are distinct purchasing quantities; a human links them if needed.
+  const r2=await service.matchOrCreate({...args("ITEM ALPHA STANDARD","5 EA"),categories:rule_cats});
+  assert.equal(r2.track,"new","same description different confirmed pack → separate catalog entry");
 
   // Genuinely different product (conflicting defining terms) → new entry
   // The engine must never suggest an entry when product terms conflict.
@@ -115,8 +117,9 @@ assert.ok(["review","exact"].includes(differingWords.track),"abbreviated descrip
   }catch{r3track="new";}
   assert.equal(r3track,"new","conflicting product terms → new entry, never matched to a different product");
 
-  // Mixed-pack conflict: entry has two vendors with different packs already.
-  // Incoming item matching one of those packs joins at review so client can resolve.
+  // Mixed-pack conflict: entry has two vendors with different packs already (24 CT and 48 CT).
+  // The engine cannot confirm pack agreement — knownPack is null (no consensus).
+  // No automatic association. A new entry is created; the client links manually if needed.
   const p2={id:"p2",name:"ITEM GAMMA UNIT",category_id:"cat1",master_item_number:1002,brand_locked:false,matching_behavior:"flexible",category_review:false};
   const vi2={id:"v2",vendor_id:"vendor-one",description:"ITEM GAMMA UNIT",pack_size:"24 CT",brand:null,gtin:null,manufacturer_code:null};
   const vi3={id:"v3",vendor_id:"vendor-two",description:"ITEM GAMMA UNIT",pack_size:"48 CT",brand:null,gtin:null,manufacturer_code:null};
@@ -124,8 +127,8 @@ assert.ok(["review","exact"].includes(differingWords.track),"abbreviated descrip
   const m3={id:"m3",catalog_item_id:"p2",vendor_item_id:"v3",comparison_track:"review",confidence_score:80};
   const r4=await service.matchOrCreate({organizationId:"o",vendorId:"vendor-three",description:"ITEM GAMMA UNIT",packSize:"24 CT",brand:null,gtin:null,manufacturerCode:null,
     catalogItems:[{...p2}],categories:rule_cats,vendorItems:[vi2,vi3],mappings:[m2,m3]});
-  assert.equal(r4.catalogItemId,"p2","mixed-pack conflict: incoming item joins at review, not a new entry");
-  assert.equal(r4.track,"review");
+  assert.equal(r4.track,"new","mixed-pack conflict: no automatic association — engine cannot confirm pack agreement");
+  assert.notEqual(r4.catalogItemId,"p2","mixed-pack conflict: incoming item must not be auto-linked to the conflicted entry");
 }
 console.log("KERDOS provider-neutral catalog-service tests passed");
 
