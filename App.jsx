@@ -1,20 +1,21 @@
+import {alternativeGroups,automaticAlternativeVerified} from "./core/alternative-groups.js";
+import {defaultComparisonUnit} from "./core/quote-controls.js";
+import {AssociateAlternatives} from "./pages/AssociateAlternatives.jsx";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { backend } from "./backend/index.js";
 import { createSessionController } from "./session.js";
 import { createDocumentService } from "./services/documents.js";
-import { createCatalogService } from "./services/catalog.js";
-import { autoPlaceable } from "./core/catalog-fields.js";
+import { autoPlaceable,orderGuideAssessment,BLOCKER_LABELS } from "./core/catalog-fields.js";
 import { holdingPen } from "./services/categories.js";
 import { createOrganizationService } from "./services/organization.js";
 import { createVendorService } from "./services/vendors.js";
+import { createCatalogService } from "./services/catalog.js";
 import { createOperationsService } from "./services/operations.js";
-import { createImportService } from "./services/imports.js";
 import { loadSnapshot, saveSnapshot } from "./offline-store.js";
-import { configureVocabulary, eachPrice, pricePerUnit, parsePackSize, brandsMatch, quoteStatus, comparePurchasingPack, compareProductIdentity, casePriceFromQuote } from "./procurement.js";
-import { blockReason, orderable, priceForOffer, rankVendorOffers, solveOrder } from "./core/ordering.js";
-import { compareItems, itemMatchesSearch, comparisonReviewCandidates } from "./core/catalog-browse.js";
+import { configureProcurement, priceBasisFor, eachPrice, pricePerUnit, parsePackSize, brandsMatch, quoteStatus, comparePurchasingPack, compareProductIdentity, casePriceFromQuote } from "./procurement.js";
+import { blockReason, orderable, priceForOffer, rankVendorOffers, offerDollarDifference, solveOrder } from "./core/ordering.js";
+import { compareItems, itemMatchesSearch } from "./core/catalog-browse.js";
 import { configureLocale, formatDate, formatMoney } from "./localization.js";
-import {configureCategoryProfile} from "./knowledge/category-profiles.js";
 import { buildVarianceReportCSV, downloadTextFile } from "./reporting.js";
 import {InvoicesPage,PriceSheetsPage} from "./pages/DocumentPages.jsx";
 import {LandingGate,OrgGate} from "./pages/AccessPages.jsx";
@@ -27,11 +28,10 @@ import {VendorDetail} from "./pages/VendorDetail.jsx";
 import {PALETTE,btn,chipStyle,inp} from "./ui/styles.js";
 
 const documents=createDocumentService(backend);
-const catalogService=createCatalogService(backend);
 const organizationService=createOrganizationService(backend);
 const vendorService=createVendorService(backend);
 const operationsService=createOperationsService(backend);
-const importService=createImportService(backend);
+const catalogService=createCatalogService(backend);
 const sessionController=createSessionController(backend.session);
 
 
@@ -67,6 +67,8 @@ function r2(n) { return Math.round(n * 100) / 100; }
 
 // ── LANDING ───────────────────────────────────────────────────────────
 export default function App() {
+  const automaticGrouping=useRef(false);
+  const [alternativeSelections,setAlternativeSelections]=useState(new Set());
   const [session,setSession]=useState(undefined);
   const [org,setOrg]=useState(null);
   const [organizations,setOrganizations]=useState([]);
@@ -79,6 +81,8 @@ export default function App() {
   const [purchaseOrders,setPurchaseOrders]=useState([]);
   const [priceHistory,setPriceHistory]=useState([]);
   const [importDocuments,setImportDocuments]=useState([]);
+  const [importDocumentsHasMore,setImportDocumentsHasMore]=useState(false);
+  const [loadingOlderDocuments,setLoadingOlderDocuments]=useState(false);
   const [priceHistoryHasMore,setPriceHistoryHasMore]=useState(false);
   const [loadingOlderPrices,setLoadingOlderPrices]=useState(false);
   const [vocabulary,setVocabulary]=useState([]);
@@ -95,6 +99,21 @@ export default function App() {
   const [showPaste,setShowPaste]=useState(false);
   // One plain line after an import finishes on its own; it clears itself.
   const [importNotice,setImportNotice]=useState(null);
+  // Who is on the team, by user id, so a cell someone edited can show their
+  // initials. Loaded once per organization for owners and managers.
+  const [editors,setEditors]=useState({});
+  useEffect(()=>{
+    if(!org||org.role==="employee"){setEditors({});return;}
+    let cancelled=false;
+    organizationService.team(org.id).then(team=>{
+      if(cancelled)return;
+      const map={};
+      for(const member of team?.members||[])map[member.user_id]={email:member.email||"",name:member.name||member.full_name||""};
+      if(session?.user?.id&&!map[session.user.id])map[session.user.id]={email:session.user.email||""};
+      setEditors(map);
+    }).catch(()=>{ if(!cancelled&&session?.user?.id)setEditors({[session.user.id]:{email:session.user.email||""}}); });
+    return ()=>{cancelled=true;};
+  },[org?.id,org?.role,session?.user?.id]);
   useEffect(()=>{ if(!importNotice) return; const t=setTimeout(()=>setImportNotice(null),8000); return ()=>clearTimeout(t); },[importNotice]);
   const [selectedVendorId,setSelectedVendorId]=useState(null);
   const [importMode,setImportMode]=useState("pricelist");
@@ -108,6 +127,14 @@ export default function App() {
   const [negotiatedPrices,setNegotiatedPrices]=useState({}); // unit key -> vendor ID -> agreed price
   const [splitOrders,setSplitOrders]=useState({}); // {item/unit key: {vendorId, quantity}}
   const [openPriceMenu,setOpenPriceMenu]=useState(null);
+  useEffect(()=>{
+    if(openPriceMenu==null)return;
+    const closeOutside=event=>{if(!(event.target instanceof Element)||!event.target.closest("[data-price-menu]"))setOpenPriceMenu(null);};
+    const closeEscape=event=>{if(event.key==="Escape")setOpenPriceMenu(null);};
+    document.addEventListener("pointerdown",closeOutside);
+    document.addEventListener("keydown",closeEscape);
+    return ()=>{document.removeEventListener("pointerdown",closeOutside);document.removeEventListener("keydown",closeEscape);};
+  },[openPriceMenu]);
   const [customPriceDrafts,setCustomPriceDrafts]=useState({});
   const [negotiatedVendorDrafts,setNegotiatedVendorDrafts]=useState({});
   const [negotiationErrors,setNegotiationErrors]=useState({});
@@ -184,8 +211,15 @@ export default function App() {
     return ()=>window.removeEventListener("online",reconnect);
   },[session,org?.id]);
 
+  // The first load, and a switch of organization, show the loading
+  // screen. Every later refresh (after a save, an import, automatic
+  // placement) updates the data in place: the page stays put, nothing
+  // flashes, and unsaved edits in other rows are untouched.
+  const loadedOnce=useRef(false);
+  const [loadSeq,setLoadSeq]=useState(0);
   async function loadData(requestedOrganizationId=null){
-    setLoading(true);
+    const silent=loadedOnce.current&&!requestedOrganizationId;
+    if(!silent)setLoading(true);
     const membershipKey=`memberships:${session.user.id}`;
     let mem, usingLocal=null;
     try{
@@ -210,7 +244,6 @@ export default function App() {
     const o=available.find(candidate=>candidate.id===selectedId)||available[0];
     try{sessionStorage.setItem("kerdos.organizationId",o.id);}catch{}
     configureLocale(o.settings);
-    configureCategoryProfile(o.industry);
     setOrg(o);
     if(o.logo_url) getSignedUrl(o.logo_url).then(setLogoUrl); else setLogoUrl(null);
     const id=o.id;
@@ -234,7 +267,26 @@ export default function App() {
     setOffline(usingLocal);
     // The engine reads this org's vocabulary from here on - before any
     // matching, parsing, or per-unit pricing in this session runs.
-    configureVocabulary(snapshot.vocabulary);
+    configureProcurement({industry:o.industry,vocabulary:snapshot.vocabulary});
+    // Automatic cross-vendor grouping writes removed per consensus (2026-10-05).
+    // alternativeGroups() still runs at display time for Item Catalog grouping UI.
+    // Only explicit client decisions via AssociateAlternatives write to the database.
+    if(false&&!usingLocal&&["owner","manager"].includes(o.role)&&backend.catalog.groupAutomaticAlternatives&&!automaticGrouping.current){
+      automaticGrouping.current=true;
+      let changed=false;
+      try{
+        const groups=alternativeGroups(snapshot).slice(0,20);
+        for(const group of groups){
+          await backend.catalog.groupAutomaticAlternatives({organizationId:id,vendorItemIds:group.rows.map(v=>v.id),targetCatalogItemId:group.targetCatalogItemId,key:group.key,dimension:group.dimension,revisions:Object.fromEntries(group.rows.map(v=>[v.id,v.row_revision||0]))});
+          changed=true;
+        }
+        if(changed){snapshot=await backend.workspace.snapshot(id);void saveSnapshot(snapshotKey,snapshot);}
+      }catch(error){
+        if(changed){try{snapshot=await backend.workspace.snapshot(id);void saveSnapshot(snapshotKey,snapshot);}catch{}}
+        setImportNotice({message:"Automatic associations need attention: "+error.message});
+      }
+      finally{automaticGrouping.current=false;}
+    }
     setVocabulary(snapshot.vocabulary);
     setVendors(snapshot.vendors);
     setCatalogItems(snapshot.catalogItems);
@@ -245,8 +297,11 @@ export default function App() {
     setPurchaseOrders(snapshot.purchaseOrders);
     setPriceHistory(snapshot.priceHistory);
     setImportDocuments(snapshot.importDocuments||[]);
+    setImportDocumentsHasMore((snapshot.importDocuments||[]).length===500);
     setPriceHistoryHasMore(snapshot.priceHistory.length===2000);
+    loadedOnce.current=true;
     setLoading(false);
+    setLoadSeq(n=>n+1);
   }
 
   async function switchOrganization(organizationId){
@@ -256,9 +311,9 @@ export default function App() {
   }
 
   useEffect(()=>{
-    if(!org) return;
-    return backend.realtime.subscribeToOrganization(org.id,loadData);
-  },[org?.id]);
+    if(!org||showPaste) return;
+    return backend.realtime.subscribeToOrganization(org.id,()=>{void loadData();});
+  },[org?.id,showPaste]);
 
   const vendorColors=useMemo(()=>new Map(vendors.map((v,i)=>[v.id,PALETTE[i%PALETTE.length]])),[vendors]);
 
@@ -272,29 +327,13 @@ export default function App() {
   const [backfilling,setBackfilling]=useState(false);
   const [catalogRepairError,setCatalogRepairError]=useState("");
   const attemptedCatalogRepair=useRef(new Set());
+  // Automatic association writes removed per consensus (2026-10-05).
+  // Unmapped rows appear in Item Catalog for explicit client linking.
   async function backfillMappings(){
-    setBackfilling(true);
+    // Automatic association writes removed per consensus (2026-10-05).
+    // Unmapped rows appear in Item Catalog for explicit client linking.
+    setBackfilling(false);
     setCatalogRepairError("");
-    const mappedIds=new Set(mappings.map(m=>m.vendor_item_id));
-    const unmapped=vendorItems.filter(vi=>!mappedIds.has(vi.id));
-    const workingCatalogItems=[...catalogItems];
-    const workingCategories=[...categories];
-    const workingMappings=[...mappings];
-    let failed=0, firstError=null;
-    for(const vi of unmapped){
-      try{
-        const match=await catalogService.matchOrCreate({organizationId:org.id,vendorId:vi.vendor_id,description:vi.description,packSize:vi.pack_size,brand:vi.brand||null,gtin:vi.gtin||null,manufacturerCode:vi.manufacturer_code||null,catalogItems:workingCatalogItems,categories:workingCategories,vendorItems,mappings:workingMappings});
-        if(!match) continue;
-        await importService.createMapping({
-          organization_id:org.id, catalog_item_id:match.catalogItemId, vendor_item_id:vi.id,
-          confidence_score:Math.round((match.score??0)*100),
-          match_method:"rule_based", comparison_track:match.track,
-        });
-        workingMappings.push({vendor_item_id:vi.id,catalog_item_id:match.catalogItemId});
-      }catch(err){ failed++; if(!firstError) firstError=err.message||String(err); }
-    }
-    if(failed)setCatalogRepairError(`${failed} vendor item${failed===1?"":"s"} could not be linked. ${firstError}`);
-    try{await loadData();}finally{setBackfilling(false);}
   }
 
   // Automatic placement. Any row whose fields are all solved goes into the
@@ -302,26 +341,34 @@ export default function App() {
   // best-guess category is accepted. Runs after every data load for owners
   // and managers; each set of rows is attempted once, so a refused write
   // can't loop.
+        // Automatic standalone placement: a vendor item with all required fields
+  // solved gets its own exact association and reaches the Order Guide without
+  // any click. This only fires for items that mappingVerification independently
+  // confirms as exact — which for a single-vendor item means the item's own
+  // fields check out, not that it was compared to another vendor's product.
+  // Cross-vendor equivalence still requires an explicit client decision.
   const attemptedAutoPlace=useRef(new Set());
   const [autoPlacing,setAutoPlacing]=useState(false);
+  const [autoPlaceError,setAutoPlaceError]=useState("");
+  const [autoPlaceRetry,setAutoPlaceRetry]=useState(0);
   useEffect(()=>{
     if(!org||org.role==="employee"||loading||autoPlacing||backfilling)return;
-    const ready=autoPlaceable({catalogItems,vendorItems,mappings,vendors,categories});
+    const ready=autoPlaceable({catalogItems,vendorItems,mappings,vendors,categories,settings:org.settings});
     if(!ready.length)return;
-    const key=`${org.id}:${ready.map(r=>r.mappingId).sort().join(",")}`;
+    const key=JSON.stringify([org.id,autoPlaceRetry,ready.map(r=>r.mappingId).sort()]);
     if(attemptedAutoPlace.current.has(key))return;
     attemptedAutoPlace.current.add(key);
-    setAutoPlacing(true);
+    setAutoPlacing(true);setAutoPlaceError("");
     (async()=>{
       try{
         await catalogService.confirmMappings(ready);
         const guessed=[...new Set(ready.filter(r=>r.clearCategoryReview).map(r=>r.catalogItemId))];
         if(guessed.length)await catalogService.confirmCategories(guessed);
         await loadData();
-      }catch(error){console.error("Automatic placement:",error);}
+      }catch(error){setAutoPlaceError(`Automatic placement could not finish: ${error.message||String(error)}`);}
       finally{setAutoPlacing(false);}
     })();
-  },[org?.id,org?.role,loading,autoPlacing,backfilling,catalogItems,vendorItems,mappings,vendors,categories]);
+  },[org?.id,org?.role,org?.settings,autoPlaceRetry,loading,autoPlacing,backfilling,loadSeq]);
 
   useEffect(()=>{
     if(tab!=="catalog"||!org||org.role==="employee"||backfilling||!unmappedCount)return;
@@ -337,8 +384,11 @@ export default function App() {
     const vMap=new Map(vendors.map(v=>[v.id,v]));
     const penName=holdingPen(categories)?.name||"Uncategorized";
 
+    const mappingsByCatalog=new Map();
+    for(const mapping of mappings){const group=mappingsByCatalog.get(mapping.catalog_item_id)||[];group.push(mapping);mappingsByCatalog.set(mapping.catalog_item_id,group);}
+    const categoriesById=new Map(categories.map(category=>[category.id,category]));
     return catalogItems.map(ci=>{
-      const ciMappings=mappings.filter(m=>m.catalog_item_id===ci.id);
+      const ciMappings=mappingsByCatalog.get(ci.id)||[];
       const lockedBrand=ci.brand_locked?(ci.locked_brand||null):null;
       const options=ciMappings.map(m=>{
         const vi=viMap.get(m.vendor_item_id);
@@ -349,15 +399,19 @@ export default function App() {
         const quote=quoteStatus(vi,org?.settings||{});
         const expired=quote==="expired";
         const invoiceOnly=quote==="invoice_only";
-        const pack=vi.pack_size;
+        const clientApproved=m.match_method==="manual"&&!!vi.field_resolutions?.row_approval;
+        const costOverride=clientApproved?vi.field_resolutions?.unit_cost_override?.value:null;
+        const pack=vi.pack_size||(costOverride?"Client-approved purchasing pack":null);
+        const assessment=orderGuideAssessment({item:ci,vendorItem:vi,mapping:m,vendor:v,category:categoriesById.get(ci.category_id),
+          peers:ciMappings.filter(other=>other.id!==m.id).map(other=>viMap.get(other.vendor_item_id)).filter(Boolean),categories,settings:org?.settings||{}});
         // Every vendor is ranked on the price of one full pack. A quote
         // recorded per pound/gallon/each is converted through the pack;
         // legacy rows with no recorded basis were always pack prices.
-        const quoteBasis=vi.price_basis||null;
-        const quoteUnit=vi.price_basis==="measure"?(vi.selling_unit||null):null;
-        const price=casePriceFromQuote(vi.price,quoteBasis,quoteUnit,pack);
+        const quoteBasis=vi.price_basis||priceBasisFor(vi.selling_unit)?.basis||null;
+        const quoteUnit=quoteBasis==="measure"?(vi.selling_unit||null):null;
+        const price=costOverride?Number(costOverride.packPrice):casePriceFromQuote(vi.price,quoteBasis,quoteUnit,pack);
         const basisUnconvertible=price==null&&!!quoteBasis&&quoteBasis!=="case";
-        const each=quote==="current"&&price!=null?eachPrice(price,pack):null;
+        const each=!costOverride&&quote==="current"&&price!=null?eachPrice(price,pack):null;
         // A locked brand blocks every vendor item that is a different
         // brand - and one with no brand listed, since "unknown" cannot
         // be verified as the locked brand.
@@ -365,7 +419,7 @@ export default function App() {
         return {
           vendorId:v.id, vendorName:v.name,
           vendorItemId:vi.id, vendorItemCode:vi.vendor_item_code,vendorNvim:vi.nvim_number,
-          brand:vi.brand, packSize:pack, description:vi.description,
+          brand:vi.brand, packSize:pack, description:vi.description,clientApproved,costOverride,automaticAlternative:automaticAlternativeVerified(vi,ci,ciMappings.map(other=>viMap.get(other.vendor_item_id)).filter(Boolean)),
           casePrice:quote==="unavailable"&&vi.price_basis==null?null:price??(vi.price==null?null:parseFloat(vi.price)),
           quotedPrice:vi.price==null?null:parseFloat(vi.price), quoteBasis, quoteUnit, basisUnconvertible,
           eachPrice:each?.price||null, eachSize:each?.size||null,
@@ -374,8 +428,12 @@ export default function App() {
           expired,
           priceUnavailable:quote==="unavailable",
           invoiceOnly,
-          unverified:m.comparison_track!=="exact"||m.confidence_score!==100||!parsePackSize(pack)?.parsed,
+          unverified:m.comparison_track!=="exact"||m.confidence_score!==100||!assessment.ready,
+          qualificationBlockers:assessment.blockers,qualificationReason:assessment.blockers.map(code=>BLOCKER_LABELS[code]).join("; "),
           brandMismatch,
+          // Unresolved-field explanations and arithmetic conflicts from cell analysis
+          cellUnresolved:vi.import_row?.evidence?.cellUnresolved||null,
+          cellConflicts:vi.import_row?.evidence?.cellConflicts||null,
         };
       }).filter(Boolean).sort((a,b)=>{
         // Blocked options (stale price, wrong brand) always sink to the
@@ -392,9 +450,10 @@ export default function App() {
           if(other.vendorItemId===option.vendorItemId)return false;
           return comparePurchasingPack(option.packSize,other.packSize).status!=="same" ||
             compareProductIdentity(option.description,other.description).status!=="same" ||
-            (!!(option.brand||other.brand)&&!brandsMatch(option.brand,other.brand));
+            // Brand difference only matters when the client requires a specific brand
+          (ci.brand_locked&&!!(option.brand||other.brand)&&!brandsMatch(option.brand,other.brand));
         });
-        if(conflicting){
+        if(conflicting&&((!option.clientApproved&&!option.automaticAlternative)||ci.comparison_mode==="exact")){
           option.unverified=true;
           option.comparisonWarning="Linked vendor products differ in description or pack; review this catalog item";
         }
@@ -404,11 +463,14 @@ export default function App() {
       // the unit the client chose for this item (canonical_unit), or,
       // until they choose one, the unit of the first readable pack.
       const firstPack=options.map(o=>parsePackSize(o.packSize)).find(p=>p?.parsed);
-      const displayUnit=ci.canonical_unit||firstPack?.unit||null;
+      const displayUnit=ci.canonical_unit||defaultComparisonUnit(options.find(o=>parsePackSize(o.packSize)?.parsed)?.packSize,org?.industry)||options.find(o=>o.costOverride)?.costOverride.unit||null;
       for(const o of options){
-        o.perUnit=(orderable(o)&&displayUnit)?pricePerUnit(o.casePrice,o.packSize,displayUnit):null;
+        o.perUnit=o.costOverride?{price:Number(o.costOverride.price),unit:o.costOverride.unit}:(orderable(o)&&displayUnit)?pricePerUnit(o.casePrice,o.packSize,displayUnit):null;
         // Never represent unlike dimensions as competing per-unit offers.
         if(o.perUnit && o.perUnit.unit!==displayUnit) o.perUnit=null;
+        if(orderable(o)&&options.filter(orderable).length>1&&!o.perUnit){
+          o.unverified=true;o.qualificationReason="Choose a shared comparison measurement or correct the pack before ranking alternatives";
+        }
       }
 
       return {
@@ -419,6 +481,7 @@ export default function App() {
         categoryReview:!!ci.category_review, categoryReason:ci.category_reason||null,
         createdAt:ci.created_at,
         brandLocked:ci.brand_locked||false,
+        preferredBrand:ci.preferred_brand||null,comparisonMode:ci.comparison_mode||"alternatives",
         lockedBrand,
         matchingBehavior:ci.matching_behavior||"flexible",
         canonicalUnit:ci.canonical_unit||null,
@@ -457,33 +520,12 @@ export default function App() {
     }),
   [vendorItems,vMap]);
 
-  // Price Sheets tab's own review data: prices marked unavailable, or
-  // past this org's refresh window. Lives here (not Item Catalog)
-  // because it's specifically about price-sheet data health.
-  const priceUnavailableItems=useMemo(()=>
-    vendorItems.filter(vi=>vi.price_unavailable).map(vi=>{
-      const v=vMap.get(vi.vendor_id);
-      return {id:vi.id, vendorName:v?.name||"—", vendorId:vi.vendor_id, description:vi.description, lastUpdated:vi.last_updated};
-    }),
-  [vendorItems,vMap]);
-
-  const expiredItems=useMemo(()=>{
-    return vendorItems.filter(vi=>quoteStatus(vi,org?.settings||{})==="expired").map(vi=>{
-      const v=vMap.get(vi.vendor_id);
-      return {id:vi.id, vendorName:v?.name||"—", vendorId:vi.vendor_id, description:vi.description, lastUpdated:vi.last_updated};
-    });
-  },[vendorItems,vMap,org?.settings,clockTick]);
-
-  // Item Catalog's nav badge is scoped to catalog MAPPING issues only
-  // (fuzzy vendor-item matches) - invoice-line issues get their own
-  // badge on Invoices, price-sheet health (unavailable/stale) gets its
-  // own badge on Price Sheets. Each tab's badge reflects only what's
-  // actually reviewable on that tab.
+  // Review belongs with catalog items and invoice comparisons. Price Sheets
+  // is an archive of imported documents, so it has no item-activity badge.
   const needsAttentionCount=useMemo(()=>
     mappings.filter(m=>m.comparison_track!=="exact"||m.confidence_score!==100).length,
   [mappings]);
   const invoiceReviewCount=flaggedInvoiceLines.length;
-  const priceSheetReviewCount=priceUnavailableItems.length+expiredItems.length;
 
   const setQty=(key,val)=>setQuantities(p=>({...p,[key]:Math.max(0,val)}));
 
@@ -553,12 +595,13 @@ export default function App() {
       if(caseQty>0){
         const customVendorId=vendorOverride[caseKey]||null;
         const negotiation=negotiatedPrices[caseKey];
-        const preferredVendorId=customVendorId||rankVendorOffers(prod.options,negotiation).find(orderable)?.vendorId;
+        const ranked=rankVendorOffers(prod.options,negotiation);
+        const preferredVendorId=ranked.find(o=>orderable(o)&&(o.vendorItemId===customVendorId||o.vendorId===customVendorId))?.vendorId||(ranked.find(o=>orderable(o)&&prod.preferredBrand&&brandsMatch(o.brand,prod.preferredBrand))||ranked.find(orderable))?.vendorId;
         const split=splitOrders[caseKey];
         const splitQty=split&&split.vendorId!==preferredVendorId&&prod.options.some(o=>o.vendorId===split.vendorId&&orderable(o))?Math.min(caseQty-1,Math.max(0,Math.floor(Number(split.quantity)||0))):0;
         items.push({...prod,quantity:caseQty-splitQty,orderUnit:"case",
           options:prod.options.map(o=>({...o,price:priceForOffer(o,negotiation),orderUnit:"case"})),
-          forcedVendorId:splitQty>0?preferredVendorId:customVendorId,
+          forcedVendorId:splitQty>0?preferredVendorId:customVendorId||rankVendorOffers(prod.options,negotiation).find(o=>orderable(o)&&prod.preferredBrand&&brandsMatch(o.brand,prod.preferredBrand))?.vendorItemId||null,
           forcedPrice:null});
         if(splitQty>0)items.push({...prod,catalogItemId:`${prod.catalogItemId}_split_case`,quantity:splitQty,orderUnit:"case",
           options:prod.options.map(o=>({...o,price:priceForOffer(o,negotiation),orderUnit:"case"})),forcedVendorId:split.vendorId,forcedPrice:null});
@@ -566,12 +609,13 @@ export default function App() {
       if(eachQty>0&&prod.options.some(o=>o.eachPrice)){
         const customVendorId=vendorOverride[eachKey]||null;
         const negotiation=negotiatedPrices[eachKey];
-        const preferredVendorId=customVendorId||rankVendorOffers(prod.options.filter(o=>o.eachPrice),negotiation,"each").find(orderable)?.vendorId;
+        const ranked=rankVendorOffers(prod.options.filter(o=>o.eachPrice),negotiation,"each");
+        const preferredVendorId=ranked.find(o=>orderable(o)&&(o.vendorItemId===customVendorId||o.vendorId===customVendorId))?.vendorId||(ranked.find(o=>orderable(o)&&prod.preferredBrand&&brandsMatch(o.brand,prod.preferredBrand))||ranked.find(orderable))?.vendorId;
         const split=splitOrders[eachKey];
         const splitQty=split&&split.vendorId!==preferredVendorId&&prod.options.some(o=>o.vendorId===split.vendorId&&o.eachPrice&&orderable(o))?Math.min(eachQty-1,Math.max(0,Math.floor(Number(split.quantity)||0))):0;
         items.push({...prod,catalogItemId:`${prod.catalogItemId}_each`,quantity:eachQty-splitQty,orderUnit:"each",
           options:prod.options.filter(o=>o.eachPrice).map(o=>({...o,price:priceForOffer(o,negotiation,"each"),packSize:o.eachSize,orderUnit:"each"})),
-          forcedVendorId:splitQty>0?preferredVendorId:customVendorId,
+          forcedVendorId:splitQty>0?preferredVendorId:customVendorId||rankVendorOffers(prod.options.filter(o=>o.eachPrice),negotiation,"each").find(o=>orderable(o)&&prod.preferredBrand&&brandsMatch(o.brand,prod.preferredBrand))?.vendorItemId||null,
           forcedPrice:null});
         if(splitQty>0)items.push({...prod,catalogItemId:`${prod.catalogItemId}_split_each`,quantity:splitQty,orderUnit:"each",
           options:prod.options.filter(o=>o.eachPrice).map(o=>({...o,price:priceForOffer(o,negotiation,"each"),packSize:o.eachSize,orderUnit:"each"})),forcedVendorId:split.vendorId,forcedPrice:null});
@@ -668,9 +712,6 @@ export default function App() {
   }
 
   async function deletePriceSheet(doc,reimport=false){
-    if(String(doc.id).startsWith("legacy__")){
-      alert("This older price history has no individual source document ID. Its price can be cleared, but this file cannot be safely deleted on its own.");return;
-    }
     if(!window.confirm(`Delete ${doc.fileName}? Its quote history from this sheet will be removed and its current prices cleared. Product mappings and other sheets remain. You can then import the file again.`))return;
     try{
       const result=await operationsService.deletePriceSheet(org.id,doc.id);
@@ -701,6 +742,20 @@ export default function App() {
       setPriceHistoryHasMore(page.length===2000);
     }catch(err){alert(err.message);}
     setLoadingOlderPrices(false);
+  }
+
+  async function loadOlderDocuments(){
+    if(!org?.id||loadingOlderDocuments)return;
+    setLoadingOlderDocuments(true);
+    try{
+      const page=await documents.olderPriceDocuments(org.id,importDocuments.length);
+      setImportDocuments(current=>{
+        const existing=new Set(current.map(doc=>doc.id));
+        return [...current,...page.filter(doc=>!existing.has(doc.id))];
+      });
+      setImportDocumentsHasMore(page.length===500);
+    }catch(err){alert(err.message);}
+    finally{setLoadingOlderDocuments(false);}
   }
 
   async function expireVendorQuotes(vendorId){
@@ -833,7 +888,7 @@ export default function App() {
       <div style={{background:"white",display:"flex",borderBottom:"1px solid #EEE",position:"sticky",top:52,zIndex:100}}>
         {[["order","📋 Order Guide"],
           ["catalog",`🗂️ Item Catalog${needsAttentionCount>0?` (${needsAttentionCount})`:""}`],
-          ["priceSheets",`📊 Price Sheets${priceSheetReviewCount>0?` (${priceSheetReviewCount})`:""}`],
+          ["priceSheets","📊 Price Sheets"],
           ["invoices",`📁 Invoices${invoiceReviewCount>0?` (${invoiceReviewCount})`:""}`],
           ...(org.role==="owner"||org.role==="manager"?[["team","👥 Admin"]]:[])].map(([id,label])=>(
           <button key={id} onClick={()=>id==="order"?openOrderGuide():setTab(id)}
@@ -935,10 +990,11 @@ export default function App() {
                 </div>
               )}
 
+              {["owner","manager"].includes(org.role)&&<AssociateAlternatives orgId={org.id} selectedVendorIds={productList.filter(i=>alternativeSelections.has(i.catalogItemId)).flatMap(i=>i.options.map(o=>o.vendorItemId))} vendorItems={vendorItems} catalogItems={catalogItems} mappings={mappings} vendors={vendors} onUpdated={()=>loadData()} onClear={()=>setAlternativeSelections(new Set())}/>}
               {filtered.map(group=>(
                 <div key={group.category} style={{marginBottom:8}}>
                   <div style={{fontSize:11,fontWeight:800,color:"rgba(255,255,255,0.75)",letterSpacing:"0.08em",textTransform:"uppercase",margin:"14px 0 6px"}}>{group.category}</div>
-                  <div style={{background:"white",borderRadius:8,overflow:"hidden"}}>
+                  <div style={{background:"white",borderRadius:8}}>
                     <div style={{display:"grid",gridTemplateColumns:"minmax(220px,1fr) 88px 104px minmax(370px,420px)",columnGap:10,rowGap:2,alignItems:"center",padding:"8px 12px"}}>
                       <div className="order-column-head" style={{padding:"2px 2px 7px"}}>Item</div>
                       <div className="order-column-head" style={{padding:"2px 6px 7px"}}>Unit</div>
@@ -950,6 +1006,7 @@ export default function App() {
                         const caseQty=quantities[caseKey]||0;
                         const eachQty=quantities[eachKey]||0;
                         const hasEach=item.options.some(o=>o.eachPrice);
+                        const linkedVendorCount=new Set(item.options.map(o=>o.vendorId)).size;
                         const cheapest=item.options[0];
                         const selectedUnit=hasEach?(unitSelection[item.catalogItemId]||"case"):"case";
                         const activeKey=selectedUnit==="case"?caseKey:eachKey;
@@ -958,15 +1015,11 @@ export default function App() {
                         const cartItemIdForActive=selectedUnit==="case"?item.catalogItemId:item.catalogItemId+"_each";
                         const assignment=assignMap.get(cartItemIdForActive);
                         const negotiation=negotiatedPrices[activeKey];
-                        const isCustomPrice=!!negotiation&&Object.keys(negotiation).length>0;
                         const unitOptions=rankVendorOffers(selectedUnit==="case"?item.options:item.options.filter(o=>o.eachPrice),negotiation,selectedUnit);
-                        const cheapestUnitPrice=unitOptions.find(orderable)?.unitPrice;
                         const rankedOptions=unitOptions.filter(orderable);
-                        const pendingVendors=rankedOptions.length<2
-                          ?comparisonReviewCandidates(item,vendorItems,mappings,vendors,org?.settings||{}):[];
                         const displayOption=assignment
                           ?unitOptions.find(opt=>opt.vendorItemId===assignment.vendorItemId)
-                          :rankedOptions[0];
+                          :rankedOptions.find(o=>o.vendorItemId===vendorOverride[activeKey]||o.vendorId===vendorOverride[activeKey])||rankedOptions.find(o=>item.preferredBrand&&brandsMatch(o.brand,item.preferredBrand))||rankedOptions[0];
                         const activePrice=assignment?assignment.price:displayOption?.unitPrice;
                         const activeVendorName=assignment?assignment.assignedVendorName:displayOption?.vendorName;
                         const activeVendorId=assignment?.assignedVendorId||displayOption?.vendorId;
@@ -974,11 +1027,6 @@ export default function App() {
                         const customPriceIsWinner=Number.isFinite(negotiation?.[activeVendorId]);
                         const negotiationVendorId=negotiatedVendorDrafts[activeKey]||activeVendorId||rankedOptions[0]?.vendorId||"";
                         const customPriceValue=negotiation?.[negotiationVendorId];
-                        const activeRankIndex=rankedOptions.findIndex(opt=>opt.vendorItemId===displayOption?.vendorItemId);
-                        const nextRankedOption=rankedOptions[activeRankIndex>=0?activeRankIndex+1:1]||null;
-                        const nextPriceDifference=nextRankedOption&&activePrice!=null?nextRankedOption.unitPrice-activePrice:null;
-                        const isBestPrice=activePrice!=null&&cheapestUnitPrice!=null&&activePrice<=cheapestUnitPrice+0.001;
-                        const primaryPriceLabel=customPriceIsWinner?"Negotiated price":isBestPrice?"Best price":"Selected price";
                         const menuOpen=openPriceMenu===activeKey;
                         const activeBlocked=assignment?assignment.unorderable:!displayOption;
                         const activeBlockReason=activeBlocked?(displayOption?blockReason(displayOption):"No price on file"):null;
@@ -986,6 +1034,16 @@ export default function App() {
                         const activeMatchTrack=activeOption?.matchTrack;
                         const activeMatchConfidence=activeOption?.matchConfidence;
 
+                        const alternativesMenu=menuOpen&&<div role="listbox" aria-label={`Alternatives for ${item.name}`} style={{position:"absolute",top:"100%",right:0,zIndex:30,width:"min(520px, calc(100vw - 32px))",maxHeight:280,overflowY:"auto",background:"white",border:"1px solid #CBD5E1",padding:4}}>
+                          <div style={{display:"grid",gridTemplateColumns:"minmax(120px,2fr) minmax(90px,1fr) 75px 85px",gap:8,padding:"5px 8px",fontSize:10,color:"#667085"}}><span>Item</span><span>Vendor</span><span>Price</span><span>Difference ($)</span></div>
+                          {rankedOptions.filter(opt=>opt.vendorItemId!==displayOption?.vendorItemId).map(opt=><button key={opt.vendorItemId} role="option" aria-selected={false} onClick={()=>{setVendorOverride(prev=>({...prev,[activeKey]:opt.vendorItemId}));setOpenPriceMenu(null);}}
+                            style={{width:"100%",display:"grid",gridTemplateColumns:"minmax(120px,2fr) minmax(90px,1fr) 75px 85px",gap:8,padding:"7px 8px",background:"white",border:0,borderTop:"1px solid #EEE",fontSize:12,fontWeight:400,textAlign:"left",cursor:"pointer"}}>
+                            <span title={opt.description} style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{opt.description}</span>
+                            <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{opt.vendorName}</span>
+                            <span style={{textAlign:"right"}}>{formatMoney(opt.unitPrice)}</span>
+                            <span title={opt.comparisonUnit?"Dollar difference for the same quantity as the lowest-cost purchasing pack":"Dollar difference from the lowest eligible price"} style={{textAlign:"right"}}>{offerDollarDifference(opt,rankedOptions[0])>0?"+":""}{formatMoney(offerDollarDifference(opt,rankedOptions[0]))}</span>
+                          </button>)}
+                        </div>;
                         const cells=[
                           <div key={item.catalogItemId+"_name"} draggable={!activeBlocked}
                             onDragStart={event=>{event.dataTransfer.effectAllowed="copy";event.dataTransfer.setData("text/plain",activeKey);setDragItem({catalogItemId:item.catalogItemId,key:activeKey,name:item.name});}}
@@ -993,8 +1051,10 @@ export default function App() {
                             title={activeBlocked?undefined:"Drag onto a vendor basket to order from that vendor"}
                             style={{minWidth:0,padding:"8px 8px 8px 2px",borderTop:"1px solid #F2F2F2",cursor:activeBlocked?"default":"grab",opacity:dragItem?.key===activeKey?0.5:1}}>
                             <div style={{fontWeight:600,fontSize:12.5,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                              {["owner","manager"].includes(org.role)&&<input type="checkbox" aria-label={`Select ${item.name} for alternatives`} checked={alternativeSelections.has(item.catalogItemId)} onChange={()=>setAlternativeSelections(prev=>{const next=new Set(prev);if(next.has(item.catalogItemId))next.delete(item.catalogItemId);else next.add(item.catalogItemId);return next;})} style={{marginRight:6}}/>}
                               {item.name}
                               {hasEach&&<span title="Available by case or by each" style={{marginLeft:5,fontSize:9,background:"#E0F2F1",color:"#00695C",padding:"2px 5px",borderRadius:4,fontWeight:800}}>CASE + EACH</span>}
+                              {linkedVendorCount>1&&<span title={`${linkedVendorCount} vendors linked to this item`} style={{marginLeft:5,fontSize:9,background:"#E8F1FF",color:"#1565C0",padding:"2px 5px",borderRadius:4,fontWeight:400}}>{linkedVendorCount} VENDORS</span>}
                               {item.lockedBrand&&<span title={`Locked to ${item.lockedBrand} - other brands are never ordered for this item`} style={{marginLeft:4,fontSize:9,background:"#E3F2FD",color:"#1565C0",padding:"1px 4px",borderRadius:4,fontWeight:700}}>🔒 {item.lockedBrand}</span>}
                               {["similar","review"].includes(activeMatchTrack)&&(
                                 <span title="Auto-matched to this product below full confidence - worth double-checking it's really the same item"
@@ -1025,23 +1085,16 @@ export default function App() {
                           </div>,
                           <div key={item.catalogItemId+"_price"} style={{padding:"6px",borderTop:"1px solid #F2F2F2",borderLeft:"1px solid #EEE",background:"#FAFBFC"}}>
                             <div className="order-price-grid">
-                              <button className="order-price-card" onClick={()=>{
-                                setOpenPriceMenu(menuOpen?null:activeKey);
-                              }} aria-expanded={menuOpen} title="Power ranked vendor prices"
-                                style={{border:`1px solid ${activeBlocked?"#FFCC80":isBestPrice?"#81C784":vc.light}`,cursor:"pointer",boxShadow:isBestPrice?"0 1px 3px rgba(46,125,50,.12)":"none"}}>
-                                {activeBlocked?(
-                                  <div style={{fontWeight:700,fontSize:11,color:"#E65100"}}>⚠ {activeBlockReason}{activeOption?` (last ${formatMoney(activeOption.casePrice)})`:""}</div>
-                                ):(
-                                  <>
-                                    <div style={{fontSize:8,fontWeight:900,letterSpacing:".06em",textTransform:"uppercase",color:isBestPrice?"#2E7D32":"#667085",marginBottom:2}}>{primaryPriceLabel}</div>
-                                    <div style={{fontWeight:900,fontSize:15,color:isBestPrice?"#2E7D32":vc.accent}}>{formatMoney(activePrice)}{customPriceIsWinner&&<span title="Negotiated price" style={{marginLeft:2,fontSize:9}}>✎</span>}</div>
-                                  </>
-                                )}
-                                <div style={{fontSize:10,fontWeight:800,color:activeBlocked?"#E65100":vc.accent,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{activeBlocked?"":activeVendorName} · {rankedOptions.length>1?"Compare vendors":pendingVendors.length?"Review possible vendors":"One linked vendor"} {menuOpen?"▲":"▾"}</div>
-                                {!activeBlocked&&nextRankedOption&&nextPriceDifference!=null&&nextPriceDifference>=0&&<div style={{fontSize:8,color:"#2E7D32",marginTop:2,fontWeight:700}}>Save {formatMoney(nextPriceDifference)} vs next</div>}
+                              <div className="order-price-card" data-price-menu style={{border:"1px solid #CBD5E1",position:"relative"}}>
+                              <div style={{fontSize:10,color:"#667085",marginBottom:4}}>Vendor price · Power Ranked</div>
+                              <button onClick={()=>setOpenPriceMenu(menuOpen?null:activeKey)} aria-label={`Power Ranked alternatives for ${item.name}`} aria-haspopup="listbox" aria-expanded={menuOpen} title="Power Ranked alternatives" style={{width:"100%",textAlign:"left",padding:"7px 9px",border:"1px solid #CBD5E1",borderRadius:6,background:"white",cursor:"pointer",fontSize:12,fontWeight:400}}>
+                                {activeBlocked?activeBlockReason:`${activeVendorName} · ${formatMoney(activePrice)}${customPriceIsWinner?" negotiated":""}`} <span style={{float:"right"}}>{menuOpen?"▴":"▾"}</span>
                               </button>
-                              <div className="order-price-card" title="Price agreed with the vendor you select" style={{border:`1px solid ${isCustomPrice?"#81C784":"#E3E7ED"}`,background:isCustomPrice?"#E8F5E9":"white"}}>
-                                <div style={{fontSize:8,fontWeight:900,textTransform:"uppercase",letterSpacing:".06em",color:"#667085",marginBottom:4}}>Negotiated price</div>
+                              {vendorOverride[activeKey]&&<button onClick={()=>setVendorOverride(prev=>{const next={...prev};delete next[activeKey];return next;})} style={{fontSize:10,background:"none",border:0,padding:"4px 0 0",cursor:"pointer"}}>Use lowest price</button>}
+                              {alternativesMenu}
+                              </div>
+                              <div className="order-price-card" title="Price agreed with the vendor you select" style={{border:"1px solid #E3E7ED",background:"white"}}>
+                                <div style={{fontSize:10,fontWeight:400,color:"#667085",marginBottom:4}}>Negotiated price</div>
                                 <select aria-label={`Negotiated vendor for ${item.name}`} value={negotiationVendorId} onChange={e=>{setNegotiatedVendorDrafts(prev=>({...prev,[activeKey]:e.target.value}));setCustomPriceDrafts(prev=>{const next={...prev};delete next[activeKey];return next;});setNegotiationErrors(prev=>{const next={...prev};delete next[activeKey];return next;});}}
                                   style={{width:"100%",fontSize:10,border:"1px solid #CBD5E1",borderRadius:5,padding:"3px",marginBottom:4,background:"white"}}>
                                   {!rankedOptions.length&&<option value="">No eligible vendor</option>}
@@ -1069,54 +1122,9 @@ export default function App() {
                                   setNegotiatedVendorDrafts(prev=>{const next={...prev};delete next[activeKey];return next;});
                                   setCustomPriceDrafts(prev=>{const next={...prev};delete next[activeKey];return next;});
                                 }} style={{border:0,background:"none",padding:"3px 0 0",fontSize:9,color:"#2563EB",cursor:"pointer"}}>↺ Remove this vendor's negotiated price</button>}
-                              </div>
-                            </div>
-                          </div>,
-                        ];
-
-                        if(menuOpen){
-                          cells.push(
-                            <div key={item.catalogItemId+"_menu"} style={{gridColumn:"4",background:"white",border:"1px solid #CBD5E1",borderRadius:8,padding:4,margin:"0 6px 6px",boxShadow:"0 8px 20px rgba(15,23,42,.12)"}}>
-                              <div style={{fontSize:10,color:"#56718F",fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",padding:"6px 10px"}}>{rankedOptions.length>1?"Vendor prices · select a vendor":"One linked vendor · review other listings in Item Catalog"}</div>
-                              <button onClick={()=>{setVendorOverride(prev=>{const next={...prev};delete next[activeKey];return next;});setOpenPriceMenu(null);}} style={{width:"100%",textAlign:"left",background:"#F2F7FF",border:"1px solid #C6D7EE",borderRadius:5,padding:"7px 10px",marginBottom:5,fontSize:11,fontWeight:700,cursor:"pointer",color:"#003584"}}>✓ Automatically use the lowest eligible price</button>
-                              {unitOptions.map(opt=>{
-                                const isSelected=displayOption?.vendorItemId===opt.vendorItemId;
-                                const blocked=!orderable(opt);
-                                return (
-                                  <button key={opt.vendorItemId} onClick={()=>{
-                                      if(blocked) return;
-                                      setVendorOverride(prev=>({...prev,[activeKey]:opt.vendorId}));
-                                      setOpenPriceMenu(null);
-                                    }}
-                                    disabled={blocked}
-                                    title={blocked?blockReason(opt):undefined}
-                                    style={{width:"100%",display:"grid",gridTemplateColumns:"minmax(90px,1fr) auto minmax(72px,auto) 18px",gap:8,alignItems:"center",
-                                      background:isSelected?"#E8F1FF":"white",border:isSelected?"1px solid #60A5FA":"1px solid #E2E8F0",marginBottom:4,
-                                      borderRadius:4,padding:"9px 10px",cursor:blocked?"not-allowed":"pointer",textAlign:"left",opacity:blocked?0.58:1}}>
-                                    <span style={{fontSize:12,fontWeight:isSelected?700:500,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{opt.vendorName}</span>
-                                    {blocked?(
-                                      <span style={{fontSize:11,fontWeight:600,color:"#94A3B8",gridColumn:"2 / 4",textAlign:"right"}}>Unavailable</span>
-                                    ):(
-                                      <>
-                                        <span style={{fontSize:12,fontWeight:700,textAlign:"right",whiteSpace:"nowrap"}} title={opt.quoteBasis&&opt.quoteBasis!=="case"?`Vendor quotes ${formatMoney(opt.quotedPrice)} per ${opt.quoteUnit||"each"}; shown as one full pack`:undefined}>{formatMoney(opt.unitPrice)}</span>
-                                        <span style={{fontSize:10,fontWeight:600,color:"#64748B",textAlign:"right",whiteSpace:"nowrap"}}>{opt.difference===0?"Best":`+${formatMoney(opt.difference)}`}</span>
-                                      </>
-                                    )}
-                                    <span style={{fontSize:12,color:"#2563EB",textAlign:"center"}}>{isSelected?"✓":""}</span>
-                                  </button>
-                                );
-                              })}
-                              {pendingVendors.length>0&&<div style={{borderTop:"1px solid #E2E8F0",padding:"8px 10px",fontSize:10,color:"#475569"}}>
-                                <b>Possible listings awaiting mapping</b>
-                                {pendingVendors.slice(0,5).map(candidate=><div key={candidate.vendorId+candidate.description} style={{marginTop:5}}>
-                                  {candidate.vendorName} · {candidate.price!=null?formatMoney(candidate.price):"No comparable current quote"} · {candidate.packSize||"Pack missing"}
-                                  <span style={{display:"block",color:"#64748B"}}>{candidate.description} · Verify identity and pack before price comparison</span>
-                                </div>)}
-                                <button onClick={()=>{setTab("catalog");setOpenPriceMenu(null);}} style={{...btn("#E8F1FF","#003584",{fontSize:10,padding:"5px 9px",marginTop:7})}}>Review in Item Catalog</button>
-                              </div>}
                               {activeQty>1&&rankedOptions.some(opt=>opt.vendorId!==activeVendorId)&&(
-                                <div style={{padding:"9px 10px",borderTop:"1px solid #E2E8F0",fontSize:11,color:"#475569"}}>
-                                  <div style={{fontWeight:700,marginBottom:6}}>Vendor short? Split {selectedUnit==="case"?"cases":"units"} across two vendors</div>
+                                <details open={!!splitOrders[activeKey]?.vendorId} style={{marginTop:6,fontSize:11,color:"#475569"}}>
+                                  <summary style={{cursor:"pointer"}}>Split order</summary>
                                   <div style={{display:"flex",alignItems:"center",gap:6}}>
                                     <select aria-label={`Split vendor for ${item.name}`} value={splitOrders[activeKey]?.vendorId||""}
                                       onChange={e=>setSplitOrders(prev=>({...prev,[activeKey]:{vendorId:e.target.value,quantity:prev[activeKey]?.quantity||1}}))}
@@ -1131,11 +1139,13 @@ export default function App() {
                                   </div>
                                   {splitOrders[activeKey]?.vendorId&&<button onClick={()=>setSplitOrders(prev=>{const next={...prev};delete next[activeKey];return next;})}
                                     style={{border:0,background:"none",color:"#2563EB",padding:"6px 0 0",cursor:"pointer",fontSize:10}}>Remove split</button>}
-                                </div>
+                                </details>
                               )}
+                              </div>
                             </div>
-                          );
-                        }
+                          </div>,
+                        ];
+
                         return cells;
                       })}
                     </div>
@@ -1352,16 +1362,15 @@ export default function App() {
 
         {tab==="priceSheets"&&(
           <PriceSheetsPage
-            vendors={vendors} vendorItems={vendorItems} priceHistory={priceHistory} importDocuments={importDocuments}
+            vendors={vendors} importDocuments={importDocuments}
             vendorFilter={priceSheetVendorFilter} setVendorFilter={setPriceSheetVendorFilter} vendorColors={vendorColors}
-            formatDate={formatDate} formatMoney={formatMoney} orgSettings={org.settings} role={org.role}
+            formatDate={formatDate} role={org.role}
             onImport={vendorId=>{setSelectedVendorId(vendorId);setImportMode("pricelist");setShowPaste(true);}}
-            onExpireVendor={expireVendorQuotes} onExpireOne={expireOneQuote}
+            onExpireVendor={expireVendorQuotes}
             onDelete={deletePriceSheet} onClear={clearPriceSheet}
             onViewOriginal={viewStoredFile} onViewSource={viewSourceDocument}
             expandedId={expandedPricePeriod} setExpandedId={setExpandedPricePeriod}
-            unavailableCount={priceUnavailableItems.length} expiredCount={expiredItems.length}
-            hasMore={priceHistoryHasMore} loadingMore={loadingOlderPrices} onLoadMore={loadOlderPriceHistory}
+            hasMore={importDocumentsHasMore} loadingMore={loadingOlderDocuments} onLoadMore={loadOlderDocuments}
           />
         )}
 
@@ -1380,6 +1389,9 @@ export default function App() {
               onUpdated={loadData}
               onEditInvoice={setEditingInvoice}
               onDeleteInvoice={deleteInvoice}
+              onExpireOne={expireOneQuote} orgSettings={org.settings}
+              hasMorePrices={priceHistoryHasMore} loadingMorePrices={loadingOlderPrices} onLoadMorePrices={loadOlderPriceHistory}
+              onImport={vendorId=>{setSelectedVendorId(vendorId);setImportMode("pricelist");setShowPaste(true);}}
             />
           );
         })()}
@@ -1392,8 +1404,12 @@ export default function App() {
                 <div role="status" style={{fontWeight:800,color:"#E65100"}}>{backfilling?`Bringing ${unmappedCount} imported item${unmappedCount===1?"":"s"} into the catalog…`:catalogRepairError||`${unmappedCount} imported item${unmappedCount===1?"":"s"} waiting for catalog links`}</div>
               </div>
             )}
-            <ItemCatalogPanel orgId={org.id} role={org.role} productList={productList} vendors={vendors} catalogItems={catalogItems} mappings={mappings}
-              vendorItems={vendorItems} categories={categories} vocabulary={vocabulary}
+
+            {autoPlaceError&&org.role!=="employee"&&<div role="alert" style={{background:"#FFF3E0",padding:12,marginBottom:12,borderRadius:8}}>
+              {autoPlaceError} <button disabled={autoPlacing} onClick={()=>setAutoPlaceRetry(n=>n+1)} style={btn("#003584")}>Retry</button>
+            </div>}
+            <ItemCatalogPanel industry={org.industry} settings={org.settings} orgId={org.id} role={org.role} productList={productList} vendors={vendors} catalogItems={catalogItems} mappings={mappings}
+              vendorItems={vendorItems} categories={categories} vocabulary={vocabulary} editors={editors}
               onUpdated={loadData} />
           </>
         )}
@@ -1432,7 +1448,7 @@ export default function App() {
         )}
       </div>
 
-      {showPaste&&org.role!=="employee"&&<PasteModal vendors={vendors} orgId={org.id} orgSettings={org.settings} catalogItems={catalogItems} categories={categories} vocabulary={vocabulary} vendorItems={vendorItems} mappings={mappings} onClose={()=>setShowPaste(false)} onDone={loadData} onFinished={setImportNotice} initialVendorId={selectedVendorId} initialMode={importMode} />}
+      {showPaste&&org.role!=="employee"&&<PasteModal industry={org.industry} vendors={vendors} orgId={org.id} orgSettings={org.settings} catalogItems={catalogItems} categories={categories} vocabulary={vocabulary} vendorItems={vendorItems} mappings={mappings} onClose={()=>setShowPaste(false)} onDone={loadData} onFinished={setImportNotice} initialVendorId={selectedVendorId} initialMode={importMode} />}
       {importNotice&&(
         <div role="status" onClick={()=>setImportNotice(null)} style={{position:"fixed",left:"50%",bottom:24,transform:"translateX(-50%)",background:"#1B5E20",color:"white",padding:"12px 18px",borderRadius:8,fontSize:13,fontWeight:700,boxShadow:"0 6px 20px rgba(0,0,0,0.25)",zIndex:1000,cursor:"pointer"}}>
           {importNotice.message}
