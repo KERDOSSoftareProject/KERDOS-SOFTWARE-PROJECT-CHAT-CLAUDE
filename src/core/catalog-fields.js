@@ -2,7 +2,7 @@ import {automaticAlternativeVerified} from "./alternative-groups.js";
 import {vendorListingLabel} from "./vendor-listing.js";
 import {calculatedUnitCost} from "./quote-controls.js";
 import {casePriceFromQuote,parsePackSize,priceBasisFor,compareProductIdentity,comparePurchasingPack,suggestCategory,quoteStatus,brandsMatch} from "../procurement.js";
-import {mappingVerification} from "../services/catalog.js";
+import {mappingVerification,mappingGap} from "../services/catalog.js";
 
 export const CATALOG_COLUMNS=[
   ["itemNumber","KERDOS item #"],["vendor","Vendor name"],["vendorItemNumber","Vendor item number"],["category","Category"],
@@ -83,7 +83,15 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
     else{
       packAcc=byClient("pack_size")?STATED:provenance.packSource==="description"?DERIVED:provenance.packSource==="column"||!provenance.packSource?STATED:DERIVED;
       packWhy=byClient("pack_size")?"Set by you":provenance.packSource==="description"?"Read from the end of the description":provenance.packSource==="invoice"?"Filled from the vendor's invoice":"Read from the sheet";
-      if(basis?.basis==="measure"&&pack.dimension!=="unknown"&&casePrice==null){packAcc=Math.min(packAcc,DOUBTFUL);packWhy+="; doesn't fit a price quoted per "+(basis.unit||vi.selling_unit);}
+      if(pack.dimension==="unknown"){
+        // Named can sizes (#10 CAN) are a known container identity: the count
+        // is certain, only the inner volume is unspecified. These are priceable
+        // per-case and do not require a pack blocker.
+        // Bare unresolved container codes (CN, TUB, JAR with a numeric size
+        // but no # prefix) are ambiguous — flag them for client confirmation.
+        const isNamedCanSize=/^#\d/.test(pack.unit||"");
+        if(!isNamedCanSize){packAcc=Math.min(packAcc,DOUBTFUL);packWhy+="; unit '"+pack.unit+"' is not a recognised dimension — confirm whether this is a can size code, a count abbreviation, or something else";}
+      }else if(basis?.basis==="measure"&&casePrice==null){packAcc=Math.min(packAcc,DOUBTFUL);packWhy+="; doesn't fit a price quoted per "+(basis.unit||vi.selling_unit);}
       const disagree=!comparableAlternatives&&otherVendors.find(p=>p.pack_size&&parsePackSize(p.pack_size)?.parsed&&comparePurchasingPack(vi.pack_size,p.pack_size).status!=="same");
       if(disagree){packAcc=Math.min(packAcc,GUESSED);packWhy+=`; another vendor lists ${disagree.pack_size}`;}
       else if(provenPeers.length&&provenPeers.every(p=>comparePurchasingPack(vi.pack_size,p.pack_size).status==="same")){
@@ -103,8 +111,8 @@ export function catalogRowEvidence({item,vendorItem,mapping,vendor,category,peer
   if(!empty(vi.selling_unit)){
     if(!basis){unitAcc=DOUBTFUL;unitWhy=["WEIGHT","VOLUME","MEASURE"].includes(vi.selling_unit)?"Choose the measurement for this quoted price":"Not a unit KERDOS recognises";}
     else{
-      unitAcc=byClient("selling_unit")?STATED:provenance.sellingUnitSource==="sheet"?DERIVED:STATED;
-      unitWhy=provenance.sellingUnitSource==="remembered"?"Reused from this vendor’s verified product and pack":byClient("selling_unit")?"Set by you":provenance.sellingUnitSource==="sheet"?"Applied to the whole sheet at import":"Stated on the sheet";
+      unitAcc=byClient("selling_unit")?STATED:provenance.sellingUnitSource==="sheet"?DERIVED:provenance.sellingUnitSource==="inferred"?GUESSED:STATED;
+      unitWhy=provenance.sellingUnitSource==="remembered"?"Reused from this vendor’s verified product and pack":byClient("selling_unit")?"Set by you":provenance.sellingUnitSource==="sheet"?"Applied to the whole sheet at import":provenance.sellingUnitSource==="inferred"?"Suggested—not confirmed":"Stated on the sheet";
       if(!byClient("selling_unit")&&["price cell","price header","document note"].includes(provenance.sellingUnitSource))unitWhy=`Stated in the ${provenance.sellingUnitSource}`;
       if(basis.basis==="measure"&&pack?.parsed&&casePrice==null){unitAcc=Math.min(unitAcc,DOUBTFUL);unitWhy+="; the pack isn't measured in "+(basis.unit||vi.selling_unit);}
       if(vi.price_basis&&vi.price_basis!==basis.basis){unitAcc=Math.min(unitAcc,DOUBTFUL);unitWhy+="; saved price basis conflicts with quoted unit";}
@@ -252,8 +260,20 @@ export function orderGuideAssessment(input){
   if(item.brand_locked&&!brandsMatch(vendorItem.brand,item.locked_brand))blockers.push("brand");
   const fieldsReady=blockers.length===0;
   const approved=mapping.comparison_track==="exact"&&mapping.confidence_score===100;
+  // A first-import item with no other vendor listing yet qualifies on field quality alone.
+  // A second vendor enables cross-vendor price comparison; it is not required for ordering.
+  // The association blocker applies when peers exist and disagree, or when a manual
+  // association has not been verified (approved=false and peers are present).
+  // Standalone qualification: no other vendor lists this item yet, all fields are
+  // resolved, and the vendor description is not a different product from the catalog
+  // item it was matched to. A second vendor enables cross-vendor price comparison;
+  // it is not required for ordering. The gap check ensures the description and
+  // catalog item name share at least some product identity — a chicken row matched
+  // to a tomato catalog item ("No shared defining product terms") does not qualify.
+  const gap=!peers.length&&fieldsReady?mappingGap(vendorItem,item,[]):null;
+  const standaloneQualified=!!gap&&gap.code==="single-vendor-ready";
   const verification=approved&&((clientApproved&&item.comparison_mode!=="exact")||automaticAlternativeVerified(vendorItem,item,peers)||!peers.length)?mapping:mappingVerification(vendorItem,item,peers);
-  if(verification.comparison_track!=="exact")blockers.push("association");
+  if(!standaloneQualified&&verification.comparison_track!=="exact")blockers.push("association");
   return {ready:blockers.length===0,fieldsReady,blockers,evidence,verification};
 }
 export function orderGuideReady(input){return orderGuideAssessment(input).ready;}
