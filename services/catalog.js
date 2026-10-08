@@ -16,7 +16,33 @@ export function mappingVerification(vendorItem,catalogItem,linkedVendorItems=[])
   const brandsAgree=peers.every(peer=>!vendorItem.brand&&!peer.brand||brandsMatch(vendorItem.brand,peer.brand));
   const identifiersAgree=peers.every(peer=>(!vendorItem.gtin||!peer.gtin||vendorItem.gtin===peer.gtin)&&
     (!vendorItem.manufacturer_code||!peer.manufacturer_code||vendorItem.manufacturer_code===peer.manufacturer_code));
-  const exact=!!parsePackSize(vendorItem.pack_size)?.parsed&&brandsAgree&&identifiersAgree&&identity.every(result=>result.status==="same")&&packs.every(result=>result.status==="same");
+  // When every peer shares a GTIN (or mfr code + brand), the identifier resolves
+  // abbreviation uncertainty — "CHIC BRST" and "Chicken Breast Boneless" are the
+  // same trade item when their barcodes match. But identifier agreement does not
+  // override an explicit product conflict: when descriptions name demonstrably
+  // different products (no shared core terms, or explicitly different attributes),
+  // the GTIN data is suspect (mis-scan, data error) and must not be trusted.
+  // The gap code "wording" with "No shared defining product terms" is the reliable
+  // signal — compareProductIdentity alone sometimes returns "review" for
+  // zero-overlap descriptions when unresolved abbreviations prevent the "different"
+  // path, so we use mappingGap with peers as the conflict detector.
+  const allPeersHaveIdentifier=peers.length>0&&peers.every(peer=>
+    (vendorItem.gtin&&peer.gtin&&vendorItem.gtin===peer.gtin)||
+    (vendorItem.manufacturer_code&&peer.manufacturer_code&&vendorItem.manufacturer_code===peer.manufacturer_code&&
+      vendorItem.brand&&peer.brand&&brandsMatch(vendorItem.brand,peer.brand)));
+  // Two signals for an explicit conflict. mappingGap catches zero-overlap descriptions
+  // even when unresolved abbreviations prevent compareProductIdentity from reaching
+  // "different". compareProductIdentity "different" catches confirmed conflicts
+  // (boneless vs bone-in, ground beef vs whole muscle) where terms fully resolve.
+  // Either signal means the GTIN data is suspect; don't grant exact.
+  const noProductConflict=allPeersHaveIdentifier&&!peers.some((peer,i)=>{
+    if(identity[i]?.status==="different")return true;
+    const g=mappingGap(vendorItem,catalogItem,[peer]);
+    return g.code==="wording"&&g.detail==="No shared defining product terms";
+  });
+  const identityOk=(allPeersHaveIdentifier&&noProductConflict)||identity.every(result=>result.status==="same");
+  const brandOk=!catalogItem.brand_locked||brandsAgree;
+  const exact=!!parsePackSize(vendorItem.pack_size)?.parsed&&brandOk&&identifiersAgree&&identityOk&&packs.every(result=>result.status==="same");
   return {comparison_track:exact?"exact":"review",confidence_score:exact?100:null,match_method:"manual"};
 }
 async function run(promise,operation){
@@ -88,10 +114,14 @@ export function identifierMatch({gtin=null,manufacturerCode=null,brand=null,pack
 // catalog label alone cannot override a conflicting linked vendor listing.
 export function associationEvidence({description,packSize,brand,gtin,manufacturerCode},candidate){
   const peers=candidate.linkedVendorItems||[];
+  const brandLocked=candidate.brand_locked??false;
   const checks=peers.map(peer=>({
     identity:compareProductIdentity(description,peer.description).status,
     pack:comparePurchasingPack(packSize,peer.pack_size).status,
-    brand:!brand||!peer.brand||brandsMatch(brand,peer.brand),
+    // When brand_locked=false, different brands are acceptable alternatives —
+    // the same product sold under different brand names should share one KERDOS entry.
+    // When brand_locked=true, brands must agree.
+    brand:!brandLocked||!brand||!peer.brand||brandsMatch(brand,peer.brand),
     identifier:(!gtin||!peer.gtin||gtin===peer.gtin)&&
       (!manufacturerCode||!peer.manufacturer_code||!brand||!peer.brand||
         !brandsMatch(brand,peer.brand)||manufacturerCode===peer.manufacturer_code),
@@ -153,29 +183,55 @@ export function createCatalogService(backend){
       // Same description + same pack = same item = same KERDOS number.
       // Link the incoming vendor item to the existing entry directly.
       // Multiple vendors under one KERDOS number is exactly the goal.
-      const brandVerified=match&&(!brand&&!match.catalogItem.knownBrand||brandsMatch(brand,match.catalogItem.knownBrand));
+      // brand_locked=true: brands must agree for auto-exact.
+      // brand_locked=false (default): different brands are acceptable — unlocked items
+      // are generic; multiple competing brands share the same entry.
+      const brandLocked=match?.catalogItem?.brand_locked??false;
+      const brandVerified=match&&(!brandLocked||!brand||!match.catalogItem.knownBrand||brandsMatch(brand,match.catalogItem.knownBrand));
       if(match?.track==="exact"&&brandVerified){
         const evidence=associationEvidence({description,packSize,brand,gtin,manufacturerCode},match.catalogItem);
         if(evidence.exact)return {catalogItemId:match.catalogItem.id,track:"exact",score:1,method:"description_pack",reason:"Same description and pack as an existing item"};
       }
-      // Fix 1: same description different pack → join at review so the client can
-      // resolve whether it is a data entry issue or genuinely a different purchase unit.
-      // A pack conflict is visible information; creating a new entry hides it.
+      // Different purchasing packs are separate catalog items even when the product
+      // description is the same. 3/12 LB and 1/12 LB of CHEESE PROVOLONE SLICING are
+      // distinct purchasing units — sharing one catalog entry hides the distinction and
+      // makes price-per-unit comparison ambiguous. A human can always link two separate
+      // entries; a false shared entry is harder to undo.
+      // When a similar match exists (identity uncertain or pack doesn't match), fall through
+      // to create a new entry. Mixed or unknown packs do NOT trigger automatic attachment —
+      // without confirmed identity, pack, and brand-lock agreement a link is unsafe.
       if(match?.track==="similar"){
-        return {catalogItemId:match.catalogItem.id,track:"review",score:match.score??0.9,
-          method:"pack_conflict",reason:"Description matches but pack differs — confirm before comparing prices"};
+        // No automatic attachment for any similar match — fall through to new entry.
+        // If a suggestion exists with confirmed identity ("same"), it is offered below.
       }
 
-      // Fix 2: only suggest when description identity is not outright different.
+      // Fix 2: only suggest when description identity is confirmed same, not just plausible.
       // "Chicken thigh" must never be suggested as the same item as "chicken breast".
+      // "CANDY SKITTLES" must never be linked to "CANDY M&M" even as a review suggestion —
+      // unresolved terms on either side may mean genuinely different products.
+      // Only allow suggestions when identity is "same"; "review" now falls through to new entry.
       const rawSuggestion=bestPurchasingSuggestion(description,packSize,candidates);
-      const suggestionSafe=rawSuggestion&&compareProductIdentity(description,rawSuggestion.catalogItem.name).status!=="different";
+      const suggestionIdentity=rawSuggestion?compareProductIdentity(description,rawSuggestion.catalogItem.name):null;
+      // When the candidate is brand-locked and the incoming brand disagrees with the known brand,
+      // don't suggest linking — a brand-locked item must not absorb a different brand at review.
+      const suggestionBrandOk=!rawSuggestion||(()=>{
+        const ci=rawSuggestion.catalogItem;
+        if(!ci.brand_locked)return true;
+        return !brand||!ci.knownBrand||brandsMatch(brand,ci.knownBrand);
+      })();
+      // Only suggest when description identity is confirmed "same".
+      // Vocabulary gaps (unresolved abbreviations, unknown modifiers like "DIET") return "review"
+      // and must not drive a suggestion — unresolved terms may mean genuinely different products.
+      // CANDY SKITTLES ≠ CANDY M&M; SODA BIRCH WHITE ≠ SODA BIRCH WHITE DIET.
+      // Abbreviation variants ("AMER" for "AMERICAN") without vocabulary confirmation also fall
+      // through to a new entry; the client can merge manually if the products are the same.
+      const suggestionSafe=rawSuggestion&&suggestionIdentity?.status==="same"&&suggestionBrandOk;
       const suggestion=suggestionSafe?rawSuggestion:null;
-      // If a plausible match exists, link to that item at review track so the client
-      // can confirm whether it is the same thing. Never create a new entry when
-      // an existing item is a plausible match — that would fragment the catalog.
+      // If a plausible, identity-confirmed match exists, link to that item at review track
+      // so the client can confirm pack agreement. Only link when product identity is confirmed.
       if(suggestion?.catalogItem?.id){
-        return {catalogItemId:suggestion.catalogItem.id,track:"review",score:Math.round((suggestion.score??0.5)*100)/100,
+        const suggestionScore=Math.round((suggestion.score??0.5)*100)/100;
+        return {catalogItemId:suggestion.catalogItem.id,track:"review",score:suggestionScore,
           method:"suggestion",reason:suggestion.reason||"Possible match — confirm before including in price comparisons"};
       }
       // No match at all: create a new catalog entry.

@@ -42,7 +42,8 @@ for(const changed of [{organizationId:'other-client'},{vendorId:'other-vendor'}]
 assert.equal(resolveFromInvoiceArithmetic(sheet,[entry({...billed,billingUnitEvidence:null,priceBasis:'measure'})],scope).conflict,true,'priceBasis alone is not provenance');
 assert.equal(preparePriceImport(sheet,null,null,[],[],scope).requiresReview,true,'Fresh sheets without evidence stay reviewable');
 
-// Keep the actual import caller connected; isolated resolver tests cannot catch this omission.
-const modal=fs.readFileSync(new URL('../pages/ImportModal.jsx',import.meta.url),'utf8');
-assert.match(modal,/preparePriceImport\(row,ex,priorMapping,rowNeedsReview\?rowIssues:\[\],invoiceSources,\{organizationId:orgId,vendorId\}\)/);
+// Keep the actual import orchestrator connected; isolated resolver tests cannot catch this omission.
+// The call now lives in the shared import-price-row.js, not directly in ImportModal.jsx.
+const importPriceRowSrc=fs.readFileSync(new URL('./import-price-row.js',import.meta.url),'utf8');
+assert.match(importPriceRowSrc,/preparePriceImport\(row,\s*ex,\s*priorMapping,\s*rowNeedsReview\s*\?\s*rowIssues\s*:\s*\[\],\s*invoiceSources,\s*\{organizationId:\s*orgId,\s*vendorId\}\)/);
 console.log('Invoice billing integration passed: real CSV and goods invoices, original header, source reference, ordering-unit rejection, incomplete evidence and client/vendor isolation.');
